@@ -1,0 +1,101 @@
+.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pump - Music Player</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script src="https://kit.fontawesome.com/a076d05399.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <h1>Pump</h1>
+                <p>Music Analyzer</p>
+            </div>
+            <div class="search-container">
+                <input type="text" id="search-input" placeholder="Search for tracks...">
+                <button id="search-button"><i class="fas fa-search"></i></button>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <div class="sidebar">
+                <h3>Library</h3>
+                <ul>
+                    <li><a href="#" class="active"><i class="fas fa-home"></i> Home</a></li>
+                    <li><a href="#" id="explore-link"><i class="fas fa-compass"></i> Explore</a></li>
+                    <li><a href="#"><i class="fas fa-history"></i> Recently Played</a></li>
+                    <li><a href="#"><i class="fas fa-heart"></i> Favorites</a></li>
+                </ul>
+                
+                <h3>Playlists</h3>
+                <ul id="playlist-list">
+                    <!-- Playlists will be added here dynamically -->
+                </ul>
+            </div>
+            
+            <div class="content">
+                <div class="section" id="welcome-section">
+                    <h2>Welcome to Pump</h2>
+                    <p>Search for tracks or explore to generate music playlists based on similarity.</p>
+                </div>
+                
+                <div class="section" id="search-results">
+                    <h2>Search Results</h2>
+                    <div class="track-list" id="search-results-list"></div>
+                </div>
+                
+                <div class="section" id="explore-section">
+                    <h2>Explore</h2>
+                    <div class="track-list" id="explore-list"></div>
+                </div>
+                
+                <div class="section" id="playlist-section">
+                    <h2 id="playlist-title">Playlist</h2>
+                    <div class="playlist-info">
+                        <div class="playlist-options">
+                            <label for="num-tracks">Number of tracks:</label>
+                            <select id="num-tracks">
+                                <option value="5">5</option>
+                                <option value="10" selected>10</option>
+                                <option value="15">15</option>
+                                <option value="20">20</option>
+                            </select>
+                            <button id="regenerate-playlist">Regenerate</button>
+                        </div>
+                    </div>
+                    <div class="track-list" id="playlist-tracks"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="player-bar">
+            <div class="track-info">
+                <div class="track-image">
+                    <i class="fas fa-music"></i>
+                </div>
+                <div class="track-details">
+                    <div class="track-name">No track selected</div>
+                    <div class="track-artist">-</div>
+                </div>
+            </div>
+            
+            <div class="player-controls">
+                <button class="control-button"><i class="fas fa-step-backward"></i></button>
+                <button class="control-button play-button"><i class="fas fa-play"></i></button>
+                <button class="control-button"><i class="fas fa-step-forward"></i></button>
+            </div>
+            
+            <div class="volume-control">
+                <i class="fas fa-volume-up"></i>
+                <input type="range" min="0" max="100" value="50" class="volume-slider">
+            </div>
+        </div>
+    </div>
+    
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
