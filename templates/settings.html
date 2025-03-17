@@ -54,12 +54,116 @@
                 </div>
             </div>
             
+            <div class="settings-section">
+                <h2>Album Art Cache</h2>
+                <p>PUMP caches album art to improve performance and reduce external API calls</p>
+                
+                <div class="cache-stats">
+                    <div class="stats-loading">Loading cache statistics...</div>
+                </div>
+                
+                <div class="button-group">
+                    <button type="button" id="clear-cache-btn" class="secondary-button">Clear Cache</button>
+                    <button type="button" id="refresh-stats-btn" class="secondary-button">Refresh Stats</button>
+                </div>
+            </div>
+            
             <button type="submit" class="primary-button">Save Settings</button>
         </form>
     </div>
     
     <script>
         // Add any settings-related JavaScript here
+
+        // Cache management
+        document.addEventListener('DOMContentLoaded', function() {
+            const cacheStatsContainer = document.querySelector('.cache-stats');
+            const clearCacheBtn = document.getElementById('clear-cache-btn');
+            const refreshStatsBtn = document.getElementById('refresh-stats-btn');
+            
+            // Load initial stats
+            loadCacheStats();
+            
+            // Event listeners
+            if (clearCacheBtn) {
+                clearCacheBtn.addEventListener('click', clearCache);
+            }
+            
+            if (refreshStatsBtn) {
+                refreshStatsBtn.addEventListener('click', loadCacheStats);
+            }
+            
+            function loadCacheStats() {
+                cacheStatsContainer.innerHTML = '<div class="stats-loading">Loading cache statistics...</div>';
+                
+                fetch('/cache/stats')
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.error) {
+                            cacheStatsContainer.innerHTML = `<div class="error">Error: ${data.error}</div>`;
+                            return;
+                        }
+                        
+                        const statsHtml = `
+                            <div class="stats-grid">
+                                <div class="stat-box">
+                                    <div class="stat-value">${data.file_count}</div>
+                                    <div class="stat-label">Cached Files</div>
+                                </div>
+                                <div class="stat-box">
+                                    <div class="stat-value">${data.total_size_mb} MB</div>
+                                    <div class="stat-label">Cache Size</div>
+                                </div>
+                                <div class="stat-box">
+                                    <div class="stat-value">${data.usage_percent}%</div>
+                                    <div class="stat-label">Usage</div>
+                                </div>
+                                <div class="stat-box">
+                                    <div class="stat-value">${data.max_size_mb} MB</div>
+                                    <div class="stat-label">Maximum Size</div>
+                                </div>
+                            </div>
+                            <div class="usage-bar">
+                                <div class="usage-fill" style="width: ${Math.min(data.usage_percent, 100)}%"></div>
+                            </div>
+                        `;
+                        
+                        cacheStatsContainer.innerHTML = statsHtml;
+                    })
+                    .catch(error => {
+                        console.error('Error fetching cache stats:', error);
+                        cacheStatsContainer.innerHTML = '<div class="error">Failed to load cache statistics</div>';
+                    });
+            }
+            
+            function clearCache() {
+                if (confirm('Are you sure you want to clear the album art cache? This will delete all cached images.')) {
+                    clearCacheBtn.disabled = true;
+                    clearCacheBtn.textContent = 'Clearing...';
+                    
+                    fetch('/cache/clear', {
+                        method: 'POST'
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.error) {
+                            alert(`Error: ${data.error}`);
+                        } else {
+                            alert(`${data.message}`);
+                            loadCacheStats();
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error clearing cache:', error);
+                        alert('Failed to clear cache. See console for details.');
+                    })
+                    .finally(() => {
+                        clearCacheBtn.disabled = false;
+                        clearCacheBtn.textContent = 'Clear Cache';
+                    });
+                }
+            }
+        });
     </script>
 </body>
 </html>

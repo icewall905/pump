@@ -17,3 +17,6 @@ ENV/
 # OS specific files
 .DS_Store
 Thumbs.db
+
+#Cache
+album_art_cache/

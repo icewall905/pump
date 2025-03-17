@@ -3,11 +3,15 @@ import sqlite3
 import random
 import configparser
 import logging
-from flask import Flask, render_template, request, jsonify, Response
+import hashlib
+from flask import Flask, render_template, request, jsonify, Response, send_file
 from music_analyzer import MusicAnalyzer
 from werkzeug.serving import run_simple
 import requests
 from urllib.parse import unquote
+
+# Add this to your imports at the top
+import pathlib
 
 # Set up logging
 logging.basicConfig(
@@ -63,6 +67,14 @@ if not config.has_section('api_keys'):
     config.set('api_keys', 'lastfm_api_secret', '')
     config_updated = True
 
+# Add configuration for image caching
+if not config.has_section('cache'):
+    logger.info("Adding cache section")
+    config.add_section('cache')
+    config.set('cache', 'image_cache_dir', 'album_art_cache')
+    config.set('cache', 'max_cache_size_mb', '500')  # 500MB default cache size
+    config_updated = True
+
 # Write config file only if it was changed or didn't exist
 if config_updated or not os.path.exists(config_file):
     logger.info(f"Writing updated configuration to {config_file}")
@@ -90,6 +102,15 @@ except Exception as e:
     DB_PATH = 'pump.db'
     DEFAULT_PLAYLIST_SIZE = 10
     MAX_SEARCH_RESULTS = 50
+
+# Get cache configuration
+CACHE_DIR = config.get('cache', 'image_cache_dir', fallback='album_art_cache')
+MAX_CACHE_SIZE_MB = config.getint('cache', 'max_cache_size_mb', fallback=500)
+
+# Create cache directory if it doesn't exist
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
+    logger.info(f"Created album art cache directory: {CACHE_DIR}")
 
 # Create Flask app
 app = Flask(__name__)
@@ -336,10 +357,21 @@ def debug_metadata():
 
 @app.route('/albumart/<path:url>')
 def album_art_proxy(url):
-    """Proxy for album art to avoid CORS issues"""
+    """Proxy for album art with local caching to avoid CORS issues and reduce API calls"""
     try:
         # Decode URL
         url = unquote(url)
+        
+        # Generate a cache filename based on URL hash
+        url_hash = hashlib.md5(url.encode()).hexdigest()
+        cache_path = os.path.join(CACHE_DIR, f"{url_hash}.jpg")
+        
+        # Check if the image is already in cache
+        if os.path.exists(cache_path):
+            logger.debug(f"Serving cached album art for: {url}")
+            return send_file(cache_path, mimetype='image/jpeg')
+        
+        # If not in cache, fetch from source
         logger.info(f"Fetching album art from: {url}")
         
         # Fetch the image
@@ -349,11 +381,19 @@ def album_art_proxy(url):
             # Get content type from response
             content_type = response.headers.get('Content-Type', 'image/jpeg')
             
+            # Read the image data
+            image_data = response.raw.read()
+            
+            # Save to cache
+            with open(cache_path, 'wb') as f:
+                f.write(image_data)
+            
+            # Check cache size and clean if necessary (periodically)
+            if random.randint(1, 100) <= 5:  # 5% chance to check cache size
+                cleanup_cache()
+            
             # Return the image data
-            return Response(
-                response.raw.read(),
-                content_type=content_type
-            )
+            return Response(image_data, content_type=content_type)
         else:
             logger.error(f"Failed to fetch album art: HTTP {response.status_code}")
             return '', 404
@@ -361,6 +401,101 @@ def album_art_proxy(url):
     except Exception as e:
         logger.error(f"Error proxying album art: {e}")
         return '', 500
+
+def cleanup_cache():
+    """Cleanup the image cache if it exceeds the maximum size"""
+    try:
+        # Calculate current cache size
+        total_size = 0
+        files = []
+        
+        for file in os.listdir(CACHE_DIR):
+            file_path = os.path.join(CACHE_DIR, file)
+            if os.path.isfile(file_path):
+                file_size = os.path.getsize(file_path)
+                total_size += file_size
+                files.append((file_path, os.path.getmtime(file_path), file_size))
+        
+        # Convert to MB
+        total_size_mb = total_size / (1024 * 1024)
+        
+        if total_size_mb > MAX_CACHE_SIZE_MB:
+            logger.info(f"Cache size ({total_size_mb:.2f}MB) exceeds limit ({MAX_CACHE_SIZE_MB}MB). Cleaning up...")
+            
+            # Sort by modification time (oldest first)
+            files.sort(key=lambda x: x[1])
+            
+            # Remove files until we're under the limit
+            space_to_free = total_size - (MAX_CACHE_SIZE_MB * 0.9 * 1024 * 1024)  # Free to 90% of limit
+            space_freed = 0
+            
+            for file_path, _, file_size in files:
+                if space_freed >= space_to_free:
+                    break
+                    
+                try:
+                    os.remove(file_path)
+                    space_freed += file_size
+                    logger.debug(f"Removed cached file: {file_path}")
+                except Exception as e:
+                    logger.error(f"Error removing cache file {file_path}: {e}")
+            
+            logger.info(f"Cache cleanup complete. Freed {space_freed / (1024 * 1024):.2f}MB")
+    
+    except Exception as e:
+        logger.error(f"Error cleaning up cache: {e}")
+
+@app.route('/cache/stats')
+def cache_stats():
+    """Get statistics about the album art cache"""
+    try:
+        # Calculate current cache size
+        total_size = 0
+        file_count = 0
+        
+        for file in os.listdir(CACHE_DIR):
+            file_path = os.path.join(CACHE_DIR, file)
+            if os.path.isfile(file_path):
+                total_size += os.path.getsize(file_path)
+                file_count += 1
+        
+        # Convert to MB
+        total_size_mb = total_size / (1024 * 1024)
+        
+        return jsonify({
+            'status': 'success',
+            'cache_directory': CACHE_DIR,
+            'file_count': file_count,
+            'total_size_mb': round(total_size_mb, 2),
+            'max_size_mb': MAX_CACHE_SIZE_MB,
+            'usage_percent': round((total_size_mb / MAX_CACHE_SIZE_MB) * 100, 2) if MAX_CACHE_SIZE_MB > 0 else 0
+        })
+    
+    except Exception as e:
+        logger.error(f"Error getting cache stats: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/cache/clear', methods=['POST'])
+def clear_cache():
+    """Clear the album art cache"""
+    try:
+        file_count = 0
+        for file in os.listdir(CACHE_DIR):
+            file_path = os.path.join(CACHE_DIR, file)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                file_count += 1
+        
+        logger.info(f"Cache cleared. Removed {file_count} files.")
+        return jsonify({
+            'status': 'success',
+            'message': f'Cache cleared. Removed {file_count} files.',
+            'files_removed': file_count
+        })
+    
+    except Exception as e:
+        logger.error(f"Error clearing cache: {e}")
+        return jsonify({'error': str(e)}), 500
 
 def run_server():
     """Run the Flask server"""
