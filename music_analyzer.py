@@ -9,6 +9,7 @@ from pathlib import Path
 
 import librosa.display
 import matplotlib.pyplot as plt
+from metadata_service import MetadataService
 
 
 class MusicAnalyzer:
@@ -16,7 +17,7 @@ class MusicAnalyzer:
     A class for analyzing music files and extracting audio features for music categorization.
     """
 
-    def __init__(self, db_path: str = "music_features.db"):
+    def __init__(self, db_path: str = "pump.db"):
         """
         Initialize the MusicAnalyzer.
         
@@ -25,6 +26,7 @@ class MusicAnalyzer:
         """
         self.db_path = db_path
         self._initialize_db()
+        self.metadata_service = MetadataService()
         
     def _initialize_db(self):
         """Create database tables if they don't exist."""
@@ -39,6 +41,8 @@ class MusicAnalyzer:
             title TEXT,
             artist TEXT,
             album TEXT,
+            album_art_url TEXT,
+            metadata_source TEXT,
             duration REAL
         )
         ''')
@@ -75,7 +79,13 @@ class MusicAnalyzer:
             Dictionary containing the extracted features
         """
         try:
-            # Load the audio file
+            # First, get metadata from the file itself
+            metadata = self.metadata_service.get_metadata_from_file(file_path)
+            
+            # Next, try to enhance metadata from online services
+            enhanced_metadata = self.metadata_service.enrich_metadata(metadata)
+            
+            # Load the audio file for analysis
             y, sr = librosa.load(file_path, sr=None)
             
             # Basic audio properties
@@ -85,6 +95,11 @@ class MusicAnalyzer:
             features = {
                 "file_path": file_path,
                 "duration": duration,
+                "title": enhanced_metadata.get("title", ""),
+                "artist": enhanced_metadata.get("artist", ""),
+                "album": enhanced_metadata.get("album", ""),
+                "album_art_url": enhanced_metadata.get("album_art_url", ""),
+                "metadata_source": enhanced_metadata.get("metadata_source", "unknown"),
                 **self._extract_time_domain_features(y, sr),
                 **self._extract_frequency_domain_features(y, sr),
                 **self._extract_rhythm_features(y, sr),
@@ -210,29 +225,44 @@ class MusicAnalyzer:
         return danceability_value
     
     def _save_to_db(self, features: Dict):
-        """Save the extracted features to the database."""
+        """Save audio features to the database."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Insert basic file info
+        # Insert audio file info
         cursor.execute('''
-        INSERT OR IGNORE INTO audio_files (file_path, duration)
-        VALUES (?, ?)
-        ''', (features['file_path'], features['duration']))
+            INSERT OR REPLACE INTO audio_files 
+            (file_path, title, artist, album, album_art_url, metadata_source, duration) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            features["file_path"],
+            features.get("title", ""),
+            features.get("artist", ""),
+            features.get("album", ""),
+            features.get("album_art_url", ""),
+            features.get("metadata_source", "unknown"),
+            features.get("duration", 0)
+        ))
         
-        # Get the file ID
-        cursor.execute('SELECT id FROM audio_files WHERE file_path = ?', (features['file_path'],))
-        file_id = cursor.fetchone()[0]
+        # Get the ID of the audio file
+        file_id = cursor.lastrowid
         
-        # Insert features
+        # Insert audio features
         cursor.execute('''
-        INSERT OR REPLACE INTO audio_features 
-        (file_id, tempo, key, mode, energy, danceability, brightness, noisiness)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (file_id, features.get('tempo', 0), features.get('key', 0), 
-              features.get('mode', 0), features.get('energy', 0),
-              features.get('danceability', 0), features.get('brightness', 0),
-              features.get('zero_crossing_rate', 0)))
+            INSERT OR REPLACE INTO audio_features
+            (file_id, tempo, key, mode, time_signature, energy, danceability, brightness, noisiness)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            file_id,
+            features.get("tempo", 0),
+            features.get("key", 0),
+            features.get("mode", 0),
+            features.get("time_signature", 4),
+            features.get("energy", 0),
+            features.get("danceability", 0),
+            features.get("brightness", 0),
+            features.get("noisiness", 0)
+        ))
         
         conn.commit()
         conn.close()
@@ -245,8 +275,12 @@ class MusicAnalyzer:
             directory: Directory path containing audio files
             recursive: Whether to analyze subdirectories
             extensions: List of file extensions to process
+            
+        Returns:
+            Dict with statistics about processed files
         """
         files_processed = 0
+        tracks_added = 0
         
         if recursive:
             # Analyze all files in directory and subdirectories
@@ -255,18 +289,26 @@ class MusicAnalyzer:
                     if any(file.lower().endswith(ext) for ext in extensions):
                         file_path = os.path.join(root, file)
                         print(f"Analyzing {file_path}...")
-                        self.analyze_file(file_path)
+                        result = self.analyze_file(file_path)
                         files_processed += 1
+                        if result and 'error' not in result:
+                            tracks_added += 1
         else:
             # Analyze only files in the top-level directory
             for file in os.listdir(directory):
                 file_path = os.path.join(directory, file)
                 if os.path.isfile(file_path) and any(file.lower().endswith(ext) for ext in extensions):
                     print(f"Analyzing {file_path}...")
-                    self.analyze_file(file_path)
+                    result = self.analyze_file(file_path)
                     files_processed += 1
+                    if result and 'error' not in result:
+                        tracks_added += 1
         
         print(f"Processed {files_processed} files.")
+        return {
+            'files_processed': files_processed,
+            'tracks_added': tracks_added
+        }
     
     def create_station(self, seed_track_path: str, num_tracks: int = 10) -> List[str]:
         """
@@ -413,7 +455,7 @@ def main():
     
     # Create a station from the first track
     first_track = all_audio_files[0] if all_audio_files else None
-    if first_track:
+    if (first_track):
         print(f"Creating a station based on: {os.path.basename(first_track)}")
         station = analyzer.create_station(first_track, num_tracks=args.num_tracks)
         print(f"\nStation based on {os.path.basename(first_track)}:")

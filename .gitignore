@@ -1,1 +1,19 @@
+# Configuration files with sensitive data
+pump.conf
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+env/
+venv/
+ENV/
+
+# Database files
+*.db
+
+# OS specific files
 .DS_Store
+Thumbs.db

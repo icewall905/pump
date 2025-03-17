@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PUMP - Music Player</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h2>PUMP</h2>
+        </div>
+        <div class="sidebar-content">
+            <div class="sidebar-section">
+                <h3>Library</h3>
+                <form id="analyze-form" action="/analyze" method="post">
+                    <div class="form-group">
+                        <label for="folder-path">Music Folder Path:</label>
+                        <input type="text" id="folder-path" name="folder_path" placeholder="/path/to/music">
+                    </div>
+                    <div class="form-group">
+                        <div class="checkbox-wrapper">
+                            <input type="checkbox" id="recursive" name="recursive" checked>
+                            <label for="recursive">Include subfolders</label>
+                        </div>
+                    </div>
+                    <button type="submit" class="primary-button">Analyze Music</button>
+                </form>
+                <div id="analyze-status"></div>
+            </div>
+            <div class="sidebar-section">
+                <h3>Browse</h3>
+                <ul class="sidebar-nav">
+                    <li><a href="#" id="explore-link">Discover</a></li>
+                    <li><a href="#" id="recent-link">Recently Added</a></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    
+    <div class="main-content">
+        <div class="search-container">
+            <input type="text" id="search-input" placeholder="Search for artists, albums, or tracks...">
+            <button id="search-button">Search</button>
+        </div>
+        
+        <div class="results-container">
+            <h2>Search Results</h2>
+            <div id="search-results"></div>
+        </div>
+        
+        <div class="playlist-container">
+            <h2>Current Playlist</h2>
+            <div id="playlist"></div>
+        </div>
+        
+        <div class="player-controls">
+            <div id="now-playing"></div>
+            <div class="controls">
+                <button id="prev-button">Previous</button>
+                <button id="play-button">Play</button>
+                <button id="next-button">Next</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="{{ url_for('static', filename='js/player.js') }}"></script>
+</body>
+</html>

@@ -18,5 +18,5 @@ max_search_results = 50
 
 [api_keys]
 # Last.fm API credentials - get yours from https://www.last.fm/api/account/create
-lastfm_api_key = 87f179346c5833cfc65627a18dd07a62
-lastfm_api_secret = cc5258b5a594ea5fd58bf5b51bc93a25
+lastfm_api_key = YOUR_LASTFM_API_KEY
+lastfm_api_secret = YOUR_LASTFM_API_SECRET

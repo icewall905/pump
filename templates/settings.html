@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PUMP - Music Player Settings</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h2>PUMP</h2>
+        </div>
+        <div class="sidebar-content">
+            <div class="sidebar-section">
+                <h3>Navigation</h3>
+                <ul class="sidebar-nav">
+                    <li><a href="/">Home</a></li>
+                    <li><a href="/settings" class="active">Settings</a></li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    
+    <div class="main-content">
+        <h1>Settings</h1>
+        
+        {% if message %}
+        <div class="message success">{{ message }}</div>
+        {% endif %}
+        
+        {% if error %}
+        <div class="message error">{{ error }}</div>
+        {% endif %}
+        
+        <form action="/settings" method="post" class="settings-form">
+            <div class="settings-section">
+                <h2>External API Configuration</h2>
+                <p>Connect to external services to enhance music metadata</p>
+                
+                <div class="settings-group">
+                    <h3>Last.fm API</h3>
+                    <p>Get a free API key from <a href="https://www.last.fm/api/account/create" target="_blank">Last.fm</a></p>
+                    
+                    <div class="form-group">
+                        <label for="lastfm_api_key">API Key:</label>
+                        <input type="text" id="lastfm_api_key" name="lastfm_api_key" value="{{ lastfm_api_key }}">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="lastfm_api_secret">API Secret:</label>
+                        <input type="password" id="lastfm_api_secret" name="lastfm_api_secret" value="{{ lastfm_api_secret }}">
+                    </div>
+                </div>
+            </div>
+            
+            <button type="submit" class="primary-button">Save Settings</button>
+        </form>
+    </div>
+    
+    <script>
+        // Add any settings-related JavaScript here
+    </script>
+</body>
+</html>
