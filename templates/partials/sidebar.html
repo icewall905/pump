@@ -1,6 +1,8 @@
 <div class="sidebar">
     <div class="sidebar-header">
-        <h2>PUMP</h2>
+        <div class="logo-container">
+            <img src="{{ url_for('static', filename='images/logo.png') }}" alt="PUMP" class="sidebar-logo">
+        </div>
         <p class="tagline">Private Untitled Music Player</p>
     </div>
     
@@ -11,6 +13,7 @@
                 <a href="/" class="nav-button {% if active_page == 'home' %}active{% endif %}">Home</a>
                 <a href="#" id="explore-link" class="nav-button {% if active_page == 'explore' %}active{% endif %}">Discover</a>
                 <a href="#" id="recent-link" class="nav-button {% if active_page == 'recent' %}active{% endif %}">Recently Added</a>
+                <a href="/settings" class="nav-button {% if active_page == 'settings' %}active{% endif %}">Settings</a>
             </div>
         </div>
         
@@ -22,9 +25,9 @@
         </div>
         
         <div class="sidebar-section">
-            <h3>Settings</h3>
-            <div class="nav-buttons">
-                <a href="/settings" class="nav-button {% if active_page == 'settings' %}active{% endif %}">Settings</a>
+            <h3>Music Library</h3>
+            <div class="music-library-stats">
+                <div id="track-count" class="stat">-- tracks</div>
             </div>
         </div>
     </div>

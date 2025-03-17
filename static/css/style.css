@@ -23,12 +23,20 @@ body {
     padding: 20px;
     text-align: center;
     border-bottom: 1px solid #444;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
 
 .sidebar-header h2 {
-    margin: 0;
-    font-size: 28px;
-    color: #6a8a5e;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
 }
 
 .sidebar-header .tagline {
@@ -324,7 +332,6 @@ h1, h2 {
 .track-actions button {
     flex: 1;
     margin: 0 5px;
-    padding: 8px;
 }
 
 /* Add these styles for the settings page */
@@ -710,12 +717,20 @@ body:has(.global-status[style*="display: block"]) .sidebar {
     padding: 20px;
     text-align: center;
     border-bottom: 1px solid #444;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
 
 .sidebar-header h2 {
-    margin: 0;
-    font-size: 28px;
-    color: #6a8a5e;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
 }
 
 .sidebar-header .tagline {
@@ -1042,4 +1057,20 @@ body:has(.global-status[style*="display: block"]) .sidebar {
 /* Adjust main content to make room for the player bar */
 .main-content {
     padding-bottom: 100px;
+}
+
+/* Logo styles */
+.logo-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin-bottom: 2px;
+    width: 100%;
+}
+
+.sidebar-logo {
+    max-width: 200%;
+    height: auto;
+    max-height: 200px;
+    display: block;
 }
