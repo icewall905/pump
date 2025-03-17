@@ -13,28 +13,22 @@
         </div>
         <div class="sidebar-content">
             <div class="sidebar-section">
-                <h3>Library</h3>
-                <form id="analyze-form" action="/analyze" method="post">
-                    <div class="form-group">
-                        <label for="folder-path">Music Folder Path:</label>
-                        <input type="text" id="folder-path" name="folder_path" placeholder="/path/to/music">
-                    </div>
-                    <div class="form-group">
-                        <div class="checkbox-wrapper">
-                            <input type="checkbox" id="recursive" name="recursive" checked>
-                            <label for="recursive">Include subfolders</label>
-                        </div>
-                    </div>
-                    <button type="submit" class="primary-button">Analyze Music</button>
-                </form>
-                <div id="analyze-status"></div>
-            </div>
-            <div class="sidebar-section">
                 <h3>Browse</h3>
                 <ul class="sidebar-nav">
                     <li><a href="#" id="explore-link">Discover</a></li>
                     <li><a href="#" id="recent-link">Recently Added</a></li>
+                    <li><a href="/settings" target="_blank">Settings</a></li>
                 </ul>
+            </div>
+            
+            <div class="sidebar-section">
+                <h3>Playlists</h3>
+                <ul id="playlist-list" class="sidebar-nav">
+                    <li class="loading">Loading playlists...</li>
+                </ul>
+                <button id="refresh-playlists" class="text-button">
+                    <span class="icon">↻</span> Refresh
+                </button>
             </div>
         </div>
     </div>
@@ -51,8 +45,32 @@
         </div>
         
         <div class="playlist-container">
-            <h2>Current Playlist</h2>
+            <div class="playlist-header">
+                <h2>Current Playlist</h2>
+                <div class="playlist-actions">
+                    <button id="save-playlist-btn" class="primary-button" disabled>Save Playlist</button>
+                </div>
+            </div>
             <div id="playlist"></div>
+        </div>
+        
+        <!-- Save Playlist Modal -->
+        <div id="save-playlist-modal" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h2>Save Playlist</h2>
+                <form id="save-playlist-form">
+                    <div class="form-group">
+                        <label for="playlist-name">Playlist Name:</label>
+                        <input type="text" id="playlist-name" name="playlist-name" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="playlist-description">Description (optional):</label>
+                        <textarea id="playlist-description" name="playlist-description" rows="3"></textarea>
+                    </div>
+                    <button type="submit" class="primary-button">Save</button>
+                </form>
+            </div>
         </div>
         
         <div class="player-controls">

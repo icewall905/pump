@@ -184,7 +184,7 @@ table th {
 }
 
 #analyze-status {
-    margin-top: 10px;
+    margin-top: 15px;
     padding: 10px;
     border-radius: 4px;
 }
@@ -412,4 +412,185 @@ h1, h2 {
     height: 100%;
     background-color: #4a6741;
     transition: width 0.5s ease;
+}
+
+/* Add these styles for playlist management */
+
+.playlist-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.playlist-actions {
+    display: flex;
+    gap: 10px;
+}
+
+.text-button {
+    background: none;
+    border: none;
+    color: #aaa;
+    cursor: pointer;
+    padding: 5px;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+}
+
+.text-button:hover {
+    color: #6a8a5e;
+}
+
+.text-button .icon {
+    margin-right: 5px;
+}
+
+#playlist-list {
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+#playlist-list .loading {
+    color: #777;
+    font-style: italic;
+}
+
+.playlist-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.playlist-item .playlist-name {
+    flex: 1;
+}
+
+.playlist-item .playlist-count {
+    color: #777;
+    font-size: 0.8rem;
+    margin-left: 5px;
+}
+
+.playlist-item .playlist-actions {
+    visibility: hidden;
+}
+
+.playlist-item:hover .playlist-actions {
+    visibility: visible;
+}
+
+.playlist-item button {
+    background: none;
+    border: none;
+    color: #777;
+    cursor: pointer;
+    padding: 3px;
+    font-size: 0.8rem;
+}
+
+.playlist-item button:hover {
+    color: #6a8a5e;
+}
+
+/* Modal styles */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 999;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0, 0, 0, 0.7);
+}
+
+.modal-content {
+    background-color: #333;
+    margin: 15% auto;
+    padding: 20px;
+    border-radius: 8px;
+    width: 70%;
+    max-width: 500px;
+    position: relative;
+}
+
+.close {
+    color: #aaa;
+    float: right;
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.close:hover {
+    color: #fff;
+}
+
+textarea {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #444;
+    background-color: #252525;
+    color: #fff;
+    border-radius: 4px;
+    resize: vertical;
+    box-sizing: border-box;
+}
+
+/* Add these styles for the analyze section in settings */
+
+.analyze-controls {
+    margin-top: 15px;
+}
+
+#analyze-status {
+    margin-top: 15px;
+}
+
+.status-progress, .status-error, .status-success {
+    padding: 10px;
+    border-radius: 4px;
+    margin-top: 10px;
+}
+
+.status-progress {
+    background-color: rgba(65, 90, 119, 0.3);
+    color: #8eacd0;
+}
+
+.status-error {
+    background-color: rgba(184, 67, 54, 0.3);
+    color: #e88e86;
+}
+
+.status-success {
+    background-color: rgba(74, 103, 65, 0.3);
+    color: #a5c094;
+}
+
+/* Add loading indicator style */
+.loading {
+    text-align: center;
+    padding: 30px;
+    color: #aaa;
+    font-style: italic;
+    background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="38" height="38" viewBox="0 0 38 38"><g fill="none" fill-rule="evenodd"><g transform="translate(1 1)" stroke-width="2"><circle stroke="%23333" stroke-opacity=".5" cx="18" cy="18" r="18"/><path d="M36 18c0-9.94-8.06-18-18-18" stroke="%236a8a5e"><animateTransform attributeName="transform" type="rotate" from="0 18 18" to="360 18 18" dur="1s" repeatCount="indefinite"/></path></g></g></svg>') center center no-repeat;
+    height: 80px;
+}
+
+.loading-large {
+    text-align: center;
+    padding: 40px;
+    color: #aaa;
+    font-style: italic;
+    background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 38 38"><g fill="none" fill-rule="evenodd"><g transform="translate(1 1)" stroke-width="2"><circle stroke="%23333" stroke-opacity=".5" cx="18" cy="18" r="18"/><path d="M36 18c0-9.94-8.06-18-18-18" stroke="%236a8a5e"><animateTransform attributeName="transform" type="rotate" from="0 18 18" to="360 18 18" dur="1s" repeatCount="indefinite"/></path></g></g></svg>') center top no-repeat;
+    height: 120px;
+    margin: 20px auto;
+    font-size: 18px;
+    border-radius: 8px;
+    background-color: rgba(0, 0, 0, 0.03);
+    max-width: 600px;
 }

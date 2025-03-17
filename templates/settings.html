@@ -34,6 +34,32 @@
         {% endif %}
         
         <form action="/settings" method="post" class="settings-form">
+            <!-- Music Library Configuration Section -->
+            <div class="settings-section">
+                <h2>Music Library</h2>
+                <p>Configure your music folder and analyze your collection</p>
+                
+                <div class="settings-group">
+                    <div class="form-group">
+                        <label for="music_folder_path">Music Folder Path:</label>
+                        <input type="text" id="music_folder_path" name="music_folder_path" value="{{ music_folder_path }}" placeholder="/path/to/music">
+                    </div>
+                    
+                    <div class="form-group">
+                        <div class="checkbox-wrapper">
+                            <input type="checkbox" id="recursive" name="recursive" {% if recursive %}checked{% endif %}>
+                            <label for="recursive">Include subfolders when analyzing</label>
+                        </div>
+                    </div>
+                    
+                    <div class="analyze-controls">
+                        <button type="button" id="analyze-button" class="secondary-button">Analyze Music Library</button>
+                        <div id="analyze-status"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- External API Configuration Section -->
             <div class="settings-section">
                 <h2>External API Configuration</h2>
                 <p>Connect to external services to enhance music metadata</p>
@@ -54,32 +80,33 @@
                 </div>
             </div>
             
-            <div class="settings-section">
-                <h2>Album Art Cache</h2>
-                <p>PUMP caches album art to improve performance and reduce external API calls</p>
-                
-                <div class="cache-stats">
-                    <div class="stats-loading">Loading cache statistics...</div>
-                </div>
-                
-                <div class="button-group">
-                    <button type="button" id="clear-cache-btn" class="secondary-button">Clear Cache</button>
-                    <button type="button" id="refresh-stats-btn" class="secondary-button">Refresh Stats</button>
-                </div>
-            </div>
-            
             <button type="submit" class="primary-button">Save Settings</button>
         </form>
+
+        <!-- Album Art Cache Section -->
+        <div class="settings-section">
+            <h2>Album Art Cache</h2>
+            <p>PUMP caches album art to improve performance and reduce external API calls</p>
+            
+            <div class="cache-stats">
+                <div class="stats-loading">Loading cache statistics...</div>
+            </div>
+            
+            <div class="button-group">
+                <button type="button" id="clear-cache-btn" class="secondary-button">Clear Cache</button>
+                <button type="button" id="refresh-stats-btn" class="secondary-button">Refresh Stats</button>
+            </div>
+        </div>
     </div>
     
     <script>
-        // Add any settings-related JavaScript here
-
         // Cache management
         document.addEventListener('DOMContentLoaded', function() {
             const cacheStatsContainer = document.querySelector('.cache-stats');
             const clearCacheBtn = document.getElementById('clear-cache-btn');
             const refreshStatsBtn = document.getElementById('refresh-stats-btn');
+            const analyzeBtn = document.getElementById('analyze-button');
+            const analyzeStatus = document.getElementById('analyze-status');
             
             // Load initial stats
             loadCacheStats();
@@ -91,6 +118,10 @@
             
             if (refreshStatsBtn) {
                 refreshStatsBtn.addEventListener('click', loadCacheStats);
+            }
+            
+            if (analyzeBtn) {
+                analyzeBtn.addEventListener('click', analyzeMusic);
             }
             
             function loadCacheStats() {
@@ -162,6 +193,50 @@
                         clearCacheBtn.textContent = 'Clear Cache';
                     });
                 }
+            }
+            
+            function analyzeMusic() {
+                const folderPath = document.getElementById('music_folder_path').value;
+                const recursive = document.getElementById('recursive').checked;
+                
+                if (!folderPath) {
+                    alert('Please enter a music folder path');
+                    return;
+                }
+                
+                // Show analyzing status
+                analyzeStatus.innerHTML = '<div class="status-progress">Analyzing music folder...</div>';
+                analyzeBtn.disabled = true;
+                
+                // Send request to analyze folder
+                const formData = new FormData();
+                formData.append('folder_path', folderPath);
+                formData.append('recursive', recursive ? 'true' : 'false');
+                
+                fetch('/analyze', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        analyzeStatus.innerHTML = `<div class="status-error">Error: ${data.error}</div>`;
+                    } else {
+                        analyzeStatus.innerHTML = `
+                            <div class="status-success">
+                                Successfully processed ${data.files_processed} files.<br>
+                                Added ${data.tracks_added} tracks to the library.
+                            </div>
+                        `;
+                    }
+                })
+                .catch(error => {
+                    console.error('Error analyzing folder:', error);
+                    analyzeStatus.innerHTML = '<div class="status-error">Failed to analyze folder. See console for details.</div>';
+                })
+                .finally(() => {
+                    analyzeBtn.disabled = false;
+                });
             }
         });
     </script>
