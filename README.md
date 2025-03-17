@@ -1,4 +1,4 @@
-# PUMP - Personal Unnamed Music Player
+# PUMP - Private Untitled Music Player
 
 PUMP is a web-based music player that analyzes your music collection and creates personalized playlists based on audio features and similarity.
 

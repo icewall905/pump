@@ -3,20 +3,8 @@
 {% block title %}PUMP - Music Player Settings{% endblock %}
 
 {% block content %}
-<div class="sidebar">
-    <div class="sidebar-header">
-        <h2>PUMP</h2>
-    </div>
-    <div class="sidebar-content">
-        <div class="sidebar-section">
-            <h3>Navigation</h3>
-            <ul class="sidebar-nav">
-                <li><a href="/">Home</a></li>
-                <li><a href="/settings" class="active">Settings</a></li>
-            </ul>
-        </div>
-    </div>
-</div>
+{% set active_page = 'settings' %}
+{% include 'partials/sidebar.html' %}
     
 <div class="main-content">
     <h1>Settings</h1>
@@ -236,6 +224,15 @@
                 if (data.success) {
                     // Start polling for status updates
                     startStatusPolling();
+                    
+                    // IMPORTANT NEW CODE: Force global status bar update immediately
+                    // This directly updates the global status bar without waiting for its interval
+                    if (window.globalStatusBar && typeof window.checkGlobalAnalysisStatus === 'function') {
+                        console.log("Triggering global status update");
+                        window.checkGlobalAnalysisStatus();
+                    } else {
+                        console.log("Global status bar or function not available");
+                    }
                 } else if (data.error) {
                     showStatus(`Error: ${data.error}`, 'error');
                     if (analyzeBtn) analyzeBtn.disabled = false;

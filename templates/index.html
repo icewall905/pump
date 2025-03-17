@@ -3,31 +3,8 @@
 {% block title %}PUMP - Music Player{% endblock %}
 
 {% block content %}
-<div class="sidebar">
-    <div class="sidebar-header">
-        <h2>PUMP</h2>
-    </div>
-    <div class="sidebar-content">
-        <div class="sidebar-section">
-            <h3>Browse</h3>
-            <ul class="sidebar-nav">
-                <li><a href="#" id="explore-link">Discover</a></li>
-                <li><a href="#" id="recent-link">Recently Added</a></li>
-                <li><a href="/settings" target="_blank">Settings</a></li>
-            </ul>
-        </div>
-        
-        <div class="sidebar-section">
-            <h3>Playlists</h3>
-            <ul id="playlist-list" class="sidebar-nav">
-                <li class="loading">Loading playlists...</li>
-            </ul>
-            <button id="refresh-playlists" class="text-button">
-                <span class="icon">↻</span> Refresh
-            </button>
-        </div>
-    </div>
-</div>
+{% set active_page = 'home' %}
+{% include 'partials/sidebar.html' %}
     
 <div class="main-content">
     <div class="search-container">

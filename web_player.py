@@ -401,70 +401,49 @@ def run_analysis(folder_path, recursive):
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
-    """Settings page for the app"""
-    if request.method == 'POST':
-        try:
-            # Update API keys
-            api_key = request.form.get('lastfm_api_key', '')
-            api_secret = request.form.get('lastfm_api_secret', '')
-            music_folder_path = request.form.get('music_folder_path', '')
-            recursive = request.form.get('recursive') == 'on'
-            
-            # Load existing config
-            config = configparser.ConfigParser()
-            config.read(config_file)
-            
-            # Ensure sections exist
-            if not config.has_section('api_keys'):
-                config.add_section('api_keys')
-                
-            if not config.has_section('music'):
-                config.add_section('music')
-            
-            # Update settings
-            config.set('api_keys', 'lastfm_api_key', api_key)
-            config.set('api_keys', 'lastfm_api_secret', api_secret)
-            config.set('music', 'folder_path', music_folder_path)
-            config.set('music', 'recursive', str(recursive).lower())
-            
-            # Write updated config
-            with open(config_file, 'w') as f:
-                config.write(f)
-                
-            # Reinitialize metadata service
-            if analyzer and hasattr(analyzer, 'metadata_service'):
-                analyzer.metadata_service = MetadataService(config_file)
-            
-            return render_template('settings.html', 
-                                  message='Settings saved successfully!',
-                                  lastfm_api_key=api_key,
-                                  lastfm_api_secret=api_secret,
-                                  music_folder_path=music_folder_path,
-                                  recursive=recursive)
-            
-        except Exception as e:
-            logger.error(f"Error saving settings: {e}")
-            return render_template('settings.html', error=f'Error: {str(e)}')
+    """Settings page"""
+    global config  # Add this line to access the module-level config variable
     
-    # For GET requests, load current settings
-    try:
-        config = configparser.ConfigParser()
-        config.read(config_file)
+    if request.method == 'POST':
+        # Handle form submission
+        music_folder_path = request.form.get('music_folder_path', '')
+        recursive = request.form.get('recursive') == 'on'
+        lastfm_api_key = request.form.get('lastfm_api_key', '')
+        lastfm_api_secret = request.form.get('lastfm_api_secret', '')
         
-        api_key = config.get('api_keys', 'lastfm_api_key', fallback='')
-        api_secret = config.get('api_keys', 'lastfm_api_secret', fallback='')
-        music_folder_path = config.get('music', 'folder_path', fallback='')
-        recursive = config.getboolean('music', 'recursive', fallback=True)
+        # Update config
+        if not config.has_section('music'):
+            config.add_section('music')
+        config.set('music', 'folder_path', music_folder_path)
+        config.set('music', 'recursive', 'true' if recursive else 'false')
         
-        return render_template('settings.html', 
-                              lastfm_api_key=api_key,
-                              lastfm_api_secret=api_secret,
-                              music_folder_path=music_folder_path,
-                              recursive=recursive)
-                              
-    except Exception as e:
-        logger.error(f"Error loading settings: {e}")
-        return render_template('settings.html', error=f'Error: {str(e)}')
+        if not config.has_section('lastfm'):
+            config.add_section('lastfm')
+        config.set('lastfm', 'api_key', lastfm_api_key)
+        config.set('lastfm', 'api_secret', lastfm_api_secret)
+        
+        # Save config
+        with open(config_file, 'w') as f:
+            config.write(f)
+        
+        logger.info("Settings updated successfully")
+        return redirect(url_for('settings', message='Settings saved successfully'))
+    
+    # Get settings from config
+    music_folder_path = config.get('music', 'folder_path', fallback='')
+    recursive = config.getboolean('music', 'recursive', fallback=True)
+    lastfm_api_key = config.get('lastfm', 'api_key', fallback='')
+    lastfm_api_secret = config.get('lastfm', 'api_secret', fallback='')
+    
+    return render_template(
+        'settings.html',
+        music_folder_path=music_folder_path,
+        recursive=recursive,
+        lastfm_api_key=lastfm_api_key,
+        lastfm_api_secret=lastfm_api_secret,
+        message=request.args.get('message'),
+        error=request.args.get('error')
+    )
 
 @app.route('/debug/metadata')
 def debug_metadata():

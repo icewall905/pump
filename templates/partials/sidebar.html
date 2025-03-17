@@ -1,0 +1,30 @@
+<div class="sidebar">
+    <div class="sidebar-header">
+        <h2>PUMP</h2>
+        <p class="tagline">Python Universal Music Player</p>
+    </div>
+    <nav class="sidebar-nav">
+        <div class="nav-section">
+            <h3>Browse</h3>
+            <ul>
+                <li><a href="/" {% if active_page == 'home' %}class="active"{% endif %}>Home</a></li>
+                <li><a href="#" id="explore-link" {% if active_page == 'explore' %}class="active"{% endif %}>Discover</a></li>
+                <li><a href="#" id="recent-link" {% if active_page == 'recent' %}class="active"{% endif %}>Recently Added</a></li>
+            </ul>
+        </div>
+        
+        <div class="nav-section">
+            <h3>Playlists</h3>
+            <ul id="playlist-list">
+                <li class="loading">Loading playlists...</li>
+            </ul>
+        </div>
+        
+        <div class="nav-section">
+            <h3>Settings</h3>
+            <ul>
+                <li><a href="/settings" {% if active_page == 'settings' %}class="active"{% endif %}>Settings</a></li>
+            </ul>
+        </div>
+    </nav>
+</div>

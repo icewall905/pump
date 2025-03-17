@@ -13,103 +13,126 @@
     
     {% block content %}{% endblock %}
     
+    <!-- Common scripts used across all pages -->
+    <script src="{{ url_for('static', filename='js/sidebar.js') }}"></script>
+    
     <script>
-        // Check for ongoing analysis every 2 seconds
-        let statusInterval;
+        // Global analysis status checking
+        const globalStatusBar = document.getElementById('global-status-bar');
+        let globalStatusInterval = null;
         
-        function checkAnalysisStatus() {
+        function checkGlobalAnalysisStatus() {
             fetch('/api/analysis/status')
                 .then(response => response.json())
                 .then(data => {
-                    const statusBar = document.getElementById('global-status-bar');
-                    
                     if (data.running) {
                         // Show status bar
+                        const filesProcessed = data.files_processed || 0;
+                        const totalFiles = data.total_files || 0;
+                        const percent = data.percent_complete || 0;
+                        
                         let statusHtml = `
                             <div class="status-content">
                                 <div class="status-spinner"></div>
                                 <div class="status-text">
                                     <strong>Analyzing Music Library:</strong> 
-                                    ${data.files_processed} of ${data.total_files} files (${data.percent_complete}%)
+                                    ${filesProcessed} of ${totalFiles} files (${percent}%)
                                 </div>
                             </div>
                             <div class="progress-bar">
-                                <div class="progress-fill" style="width: ${data.percent_complete}%"></div>
+                                <div class="progress-fill" style="width: ${percent}%"></div>
                             </div>
                         `;
                         
-                        statusBar.innerHTML = statusHtml;
-                        statusBar.style.display = 'block';
+                        globalStatusBar.innerHTML = statusHtml;
+                        globalStatusBar.style.display = 'block';
+                        globalStatusBar.classList.remove('status-error', 'status-success');
                         
                         // Ensure interval is running
-                        if (!statusInterval) {
-                            statusInterval = setInterval(checkAnalysisStatus, 2000);
+                        if (!globalStatusInterval) {
+                            globalStatusInterval = setInterval(checkGlobalAnalysisStatus, 2000);
                         }
                     } else if (data.error) {
                         // Show error
-                        statusBar.innerHTML = `
+                        globalStatusBar.innerHTML = `
                             <div class="status-content">
                                 <div class="status-error-icon">⚠️</div>
                                 <div class="status-text">
                                     <strong>Analysis Error:</strong> ${data.error}
                                 </div>
-                                <div class="status-close" onclick="dismissStatus()">×</div>
+                                <div class="status-close" onclick="dismissGlobalStatus()">×</div>
                             </div>
                         `;
-                        statusBar.style.display = 'block';
-                        statusBar.classList.add('status-error');
+                        globalStatusBar.style.display = 'block';
+                        globalStatusBar.classList.add('status-error');
+                        globalStatusBar.classList.remove('status-success');
                         
                         // Clear interval after showing error
-                        clearInterval(statusInterval);
-                        statusInterval = null;
+                        clearInterval(globalStatusInterval);
+                        globalStatusInterval = null;
                     } else if (data.last_updated && new Date(data.last_updated) > new Date(Date.now() - 5000) && data.files_processed > 0) {
                         // Analysis just completed within the last 5 seconds
-                        statusBar.innerHTML = `
+                        globalStatusBar.innerHTML = `
                             <div class="status-content">
                                 <div class="status-success-icon">✓</div>
                                 <div class="status-text">
                                     <strong>Analysis Complete:</strong> 
                                     Processed ${data.files_processed} files, added ${data.tracks_added || 0} tracks
                                 </div>
-                                <div class="status-close" onclick="dismissStatus()">×</div>
+                                <div class="status-close" onclick="dismissGlobalStatus()">×</div>
                             </div>
                         `;
-                        statusBar.style.display = 'block';
-                        statusBar.classList.add('status-success');
+                        globalStatusBar.style.display = 'block';
+                        globalStatusBar.classList.add('status-success');
+                        globalStatusBar.classList.remove('status-error');
                         
                         // Auto-dismiss after 10 seconds
-                        setTimeout(dismissStatus, 10000);
+                        setTimeout(dismissGlobalStatus, 10000);
                         
                         // Clear interval
-                        clearInterval(statusInterval);
-                        statusInterval = null;
+                        clearInterval(globalStatusInterval);
+                        globalStatusInterval = null;
                     } else {
                         // No active analysis
-                        statusBar.style.display = 'none';
-                        statusBar.classList.remove('status-error', 'status-success');
+                        globalStatusBar.style.display = 'none';
+                        globalStatusBar.classList.remove('status-error', 'status-success');
                         
                         // Clear interval if there's nothing to check
-                        clearInterval(statusInterval);
-                        statusInterval = null;
+                        clearInterval(globalStatusInterval);
+                        globalStatusInterval = null;
                     }
                 })
                 .catch(error => {
-                    console.error('Error checking analysis status:', error);
+                    console.error('Error checking global analysis status:', error);
                     
                     // Clear interval on error
-                    clearInterval(statusInterval);
-                    statusInterval = null;
+                    clearInterval(globalStatusInterval);
+                    globalStatusInterval = null;
                 });
         }
         
-        function dismissStatus() {
-            const statusBar = document.getElementById('global-status-bar');
-            statusBar.style.display = 'none';
-            statusBar.classList.remove('status-error', 'status-success');
+        function dismissGlobalStatus() {
+            if (globalStatusBar) {
+                globalStatusBar.style.display = 'none';
+                globalStatusBar.classList.remove('status-error', 'status-success');
+            }
         }
         
-        // Initial check when page loads
-        document.addEventListener('DOMContentLoaded', checkAnalysisStatus);
+        // Make dismissGlobalStatus available globally
+        window.dismissGlobalStatus = dismissGlobalStatus;
+        window.globalStatusBar = globalStatusBar;
+        window.checkGlobalAnalysisStatus = checkGlobalAnalysisStatus;
+        
+        // Ensure this runs first before any page-specific scripts
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initial check on page load - run immediately
+            checkGlobalAnalysisStatus();
+            
+            // Also start polling right away if no interval exists
+            if (!globalStatusInterval) {
+                globalStatusInterval = setInterval(checkGlobalAnalysisStatus, 2000);
+            }
+        }, { once: true });  // Using 'once: true' to ensure it only runs once
     </script>
     
     {% block scripts %}{% endblock %}
