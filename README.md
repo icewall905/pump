@@ -1,5 +1,5 @@
-![logo](https://github.com/user-attachments/assets/70173471-015b-4eaf-961d-ad9e562dae92)
 
+![logo](https://github.com/user-attachments/assets/f6e0f0b0-98c0-42bc-bc71-2e8b8eef3a9d)
 PUMP is a web-based music player that analyzes your music collection and creates personalized playlists based on audio features and similarity.
 
 ## Installation
