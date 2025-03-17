@@ -1,244 +1,332 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PUMP - Music Player Settings</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-</head>
-<body>
-    <div class="sidebar">
-        <div class="sidebar-header">
-            <h2>PUMP</h2>
-        </div>
-        <div class="sidebar-content">
-            <div class="sidebar-section">
-                <h3>Navigation</h3>
-                <ul class="sidebar-nav">
-                    <li><a href="/">Home</a></li>
-                    <li><a href="/settings" class="active">Settings</a></li>
-                </ul>
-            </div>
+{% extends "layout.html" %}
+
+{% block title %}PUMP - Music Player Settings{% endblock %}
+
+{% block content %}
+<div class="sidebar">
+    <div class="sidebar-header">
+        <h2>PUMP</h2>
+    </div>
+    <div class="sidebar-content">
+        <div class="sidebar-section">
+            <h3>Navigation</h3>
+            <ul class="sidebar-nav">
+                <li><a href="/">Home</a></li>
+                <li><a href="/settings" class="active">Settings</a></li>
+            </ul>
         </div>
     </div>
+</div>
     
-    <div class="main-content">
-        <h1>Settings</h1>
-        
-        {% if message %}
-        <div class="message success">{{ message }}</div>
-        {% endif %}
-        
-        {% if error %}
-        <div class="message error">{{ error }}</div>
-        {% endif %}
-        
-        <form action="/settings" method="post" class="settings-form">
-            <!-- Music Library Configuration Section -->
-            <div class="settings-section">
-                <h2>Music Library</h2>
-                <p>Configure your music folder and analyze your collection</p>
-                
-                <div class="settings-group">
-                    <div class="form-group">
-                        <label for="music_folder_path">Music Folder Path:</label>
-                        <input type="text" id="music_folder_path" name="music_folder_path" value="{{ music_folder_path }}" placeholder="/path/to/music">
-                    </div>
-                    
-                    <div class="form-group">
-                        <div class="checkbox-wrapper">
-                            <input type="checkbox" id="recursive" name="recursive" {% if recursive %}checked{% endif %}>
-                            <label for="recursive">Include subfolders when analyzing</label>
-                        </div>
-                    </div>
-                    
-                    <div class="analyze-controls">
-                        <button type="button" id="analyze-button" class="secondary-button">Analyze Music Library</button>
-                        <div id="analyze-status"></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- External API Configuration Section -->
-            <div class="settings-section">
-                <h2>External API Configuration</h2>
-                <p>Connect to external services to enhance music metadata</p>
-                
-                <div class="settings-group">
-                    <h3>Last.fm API</h3>
-                    <p>Get a free API key from <a href="https://www.last.fm/api/account/create" target="_blank">Last.fm</a></p>
-                    
-                    <div class="form-group">
-                        <label for="lastfm_api_key">API Key:</label>
-                        <input type="text" id="lastfm_api_key" name="lastfm_api_key" value="{{ lastfm_api_key }}">
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="lastfm_api_secret">API Secret:</label>
-                        <input type="password" id="lastfm_api_secret" name="lastfm_api_secret" value="{{ lastfm_api_secret }}">
-                    </div>
-                </div>
-            </div>
-            
-            <button type="submit" class="primary-button">Save Settings</button>
-        </form>
-
-        <!-- Album Art Cache Section -->
+<div class="main-content">
+    <h1>Settings</h1>
+    
+    {% if message %}
+    <div class="message success">{{ message }}</div>
+    {% endif %}
+    
+    {% if error %}
+    <div class="message error">{{ error }}</div>
+    {% endif %}
+    
+    <form action="/settings" method="post" class="settings-form">
+        <!-- Music Library Configuration Section -->
         <div class="settings-section">
-            <h2>Album Art Cache</h2>
-            <p>PUMP caches album art to improve performance and reduce external API calls</p>
+            <h2>Music Library</h2>
+            <p>Configure your music folder and analyze your collection</p>
             
-            <div class="cache-stats">
-                <div class="stats-loading">Loading cache statistics...</div>
-            </div>
-            
-            <div class="button-group">
-                <button type="button" id="clear-cache-btn" class="secondary-button">Clear Cache</button>
-                <button type="button" id="refresh-stats-btn" class="secondary-button">Refresh Stats</button>
+            <div class="settings-group">
+                <div class="form-group">
+                    <label for="music_folder_path">Music Folder Path:</label>
+                    <input type="text" id="music_folder_path" name="music_folder_path" value="{{ music_folder_path }}" placeholder="/path/to/music">
+                </div>
+                
+                <div class="form-group">
+                    <div class="checkbox-wrapper">
+                        <input type="checkbox" id="recursive" name="recursive" {% if recursive %}checked{% endif %}>
+                        <label for="recursive">Include subfolders when analyzing</label>
+                    </div>
+                </div>
+                
+                <div class="analyze-controls">
+                    <button type="button" id="analyze-button" class="secondary-button">Analyze Music Library</button>
+                    <div id="analyze-status"></div>
+                </div>
             </div>
         </div>
+
+        <!-- External API Configuration Section -->
+        <div class="settings-section">
+            <h2>External API Configuration</h2>
+            <p>Connect to external services to enhance music metadata</p>
+            
+            <div class="settings-group">
+                <h3>Last.fm API</h3>
+                <p>Get a free API key from <a href="https://www.last.fm/api/account/create" target="_blank">Last.fm</a></p>
+                
+                <div class="form-group">
+                    <label for="lastfm_api_key">API Key:</label>
+                    <input type="text" id="lastfm_api_key" name="lastfm_api_key" value="{{ lastfm_api_key }}">
+                </div>
+                
+                <div class="form-group">
+                    <label for="lastfm_api_secret">API Secret:</label>
+                    <input type="password" id="lastfm_api_secret" name="lastfm_api_secret" value="{{ lastfm_api_secret }}">
+                </div>
+            </div>
+        </div>
+        
+        <button type="submit" class="primary-button">Save Settings</button>
+    </form>
+
+    <!-- Album Art Cache Section -->
+    <div class="settings-section">
+        <h2>Album Art Cache</h2>
+        <p>PUMP caches album art to improve performance and reduce external API calls</p>
+        
+        <div class="cache-stats">
+            <div class="stats-loading">Loading cache statistics...</div>
+        </div>
+        
+        <div class="button-group">
+            <button type="button" id="clear-cache-btn" class="secondary-button">Clear Cache</button>
+            <button type="button" id="refresh-stats-btn" class="secondary-button">Refresh Stats</button>
+        </div>
     </div>
-    
-    <script>
-        // Cache management
-        document.addEventListener('DOMContentLoaded', function() {
-            const cacheStatsContainer = document.querySelector('.cache-stats');
-            const clearCacheBtn = document.getElementById('clear-cache-btn');
-            const refreshStatsBtn = document.getElementById('refresh-stats-btn');
-            const analyzeBtn = document.getElementById('analyze-button');
-            const analyzeStatus = document.getElementById('analyze-status');
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Cache and analysis management
+    document.addEventListener('DOMContentLoaded', function() {
+        // DOM elements
+        const cacheStatsContainer = document.querySelector('.cache-stats');
+        const clearCacheBtn = document.getElementById('clear-cache-btn');
+        const refreshStatsBtn = document.getElementById('refresh-stats-btn');
+        const analyzeBtn = document.getElementById('analyze-button');
+        const analyzeStatus = document.getElementById('analyze-status');
+        const musicFolderInput = document.getElementById('music_folder_path');
+        const recursiveCheckbox = document.getElementById('recursive');
+        
+        // Status polling
+        let statusInterval = null;
+        
+        // Load initial stats
+        loadCacheStats();
+        
+        // Check if analysis is already running when page loads
+        checkAnalysisStatus();
+        
+        // Event listeners
+        if (clearCacheBtn) {
+            clearCacheBtn.addEventListener('click', clearCache);
+        }
+        
+        if (refreshStatsBtn) {
+            refreshStatsBtn.addEventListener('click', loadCacheStats);
+        }
+        
+        if (analyzeBtn) {
+            // IMPORTANT: Use only one event listener for the analyze button
+            analyzeBtn.addEventListener('click', startAnalysis);
+        }
+        
+        function loadCacheStats() {
+            cacheStatsContainer.innerHTML = '<div class="stats-loading">Loading cache statistics...</div>';
             
-            // Load initial stats
-            loadCacheStats();
-            
-            // Event listeners
-            if (clearCacheBtn) {
-                clearCacheBtn.addEventListener('click', clearCache);
-            }
-            
-            if (refreshStatsBtn) {
-                refreshStatsBtn.addEventListener('click', loadCacheStats);
-            }
-            
-            if (analyzeBtn) {
-                analyzeBtn.addEventListener('click', analyzeMusic);
-            }
-            
-            function loadCacheStats() {
-                cacheStatsContainer.innerHTML = '<div class="stats-loading">Loading cache statistics...</div>';
-                
-                fetch('/cache/stats')
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.error) {
-                            cacheStatsContainer.innerHTML = `<div class="error">Error: ${data.error}</div>`;
-                            return;
-                        }
-                        
-                        const statsHtml = `
-                            <div class="stats-grid">
-                                <div class="stat-box">
-                                    <div class="stat-value">${data.file_count}</div>
-                                    <div class="stat-label">Cached Files</div>
-                                </div>
-                                <div class="stat-box">
-                                    <div class="stat-value">${data.total_size_mb} MB</div>
-                                    <div class="stat-label">Cache Size</div>
-                                </div>
-                                <div class="stat-box">
-                                    <div class="stat-value">${data.usage_percent}%</div>
-                                    <div class="stat-label">Usage</div>
-                                </div>
-                                <div class="stat-box">
-                                    <div class="stat-value">${data.max_size_mb} MB</div>
-                                    <div class="stat-label">Maximum Size</div>
-                                </div>
-                            </div>
-                            <div class="usage-bar">
-                                <div class="usage-fill" style="width: ${Math.min(data.usage_percent, 100)}%"></div>
-                            </div>
-                        `;
-                        
-                        cacheStatsContainer.innerHTML = statsHtml;
-                    })
-                    .catch(error => {
-                        console.error('Error fetching cache stats:', error);
-                        cacheStatsContainer.innerHTML = '<div class="error">Failed to load cache statistics</div>';
-                    });
-            }
-            
-            function clearCache() {
-                if (confirm('Are you sure you want to clear the album art cache? This will delete all cached images.')) {
-                    clearCacheBtn.disabled = true;
-                    clearCacheBtn.textContent = 'Clearing...';
+            fetch('/cache/stats')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        cacheStatsContainer.innerHTML = `<div class="error">Error: ${data.error}</div>`;
+                        return;
+                    }
                     
-                    fetch('/cache/clear', {
-                        method: 'POST'
-                    })
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.error) {
-                            alert(`Error: ${data.error}`);
-                        } else {
-                            alert(`${data.message}`);
-                            loadCacheStats();
-                        }
-                    })
-                    .catch(error => {
-                        console.error('Error clearing cache:', error);
-                        alert('Failed to clear cache. See console for details.');
-                    })
-                    .finally(() => {
-                        clearCacheBtn.disabled = false;
-                        clearCacheBtn.textContent = 'Clear Cache';
-                    });
-                }
-            }
-            
-            function analyzeMusic() {
-                const folderPath = document.getElementById('music_folder_path').value;
-                const recursive = document.getElementById('recursive').checked;
+                    const statsHtml = `
+                        <div class="stats-grid">
+                            <div class="stat-box">
+                                <div class="stat-value">${data.file_count}</div>
+                                <div class="stat-label">Cached Files</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-value">${data.total_size_mb} MB</div>
+                                <div class="stat-label">Cache Size</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-value">${data.usage_percent}%</div>
+                                <div class="stat-label">Usage</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-value">${data.max_size_mb} MB</div>
+                                <div class="stat-label">Maximum Size</div>
+                            </div>
+                        </div>
+                        <div class="usage-bar">
+                            <div class="usage-fill" style="width: ${Math.min(data.usage_percent, 100)}%"></div>
+                        </div>
+                    `;
+                    
+                    cacheStatsContainer.innerHTML = statsHtml;
+                })
+                .catch(error => {
+                    console.error('Error fetching cache stats:', error);
+                    cacheStatsContainer.innerHTML = '<div class="error">Failed to load cache statistics</div>';
+                });
+        }
+        
+        function clearCache() {
+            if (confirm('Are you sure you want to clear the album art cache? This will delete all cached images.')) {
+                clearCacheBtn.disabled = true;
+                clearCacheBtn.textContent = 'Clearing...';
                 
-                if (!folderPath) {
-                    alert('Please enter a music folder path');
-                    return;
-                }
-                
-                // Show analyzing status
-                analyzeStatus.innerHTML = '<div class="status-progress">Analyzing music folder...</div>';
-                analyzeBtn.disabled = true;
-                
-                // Send request to analyze folder
-                const formData = new FormData();
-                formData.append('folder_path', folderPath);
-                formData.append('recursive', recursive ? 'true' : 'false');
-                
-                fetch('/analyze', {
-                    method: 'POST',
-                    body: formData
+                fetch('/cache/clear', {
+                    method: 'POST'
                 })
                 .then(response => response.json())
                 .then(data => {
                     if (data.error) {
-                        analyzeStatus.innerHTML = `<div class="status-error">Error: ${data.error}</div>`;
+                        alert(`Error: ${data.error}`);
                     } else {
-                        analyzeStatus.innerHTML = `
-                            <div class="status-success">
-                                Successfully processed ${data.files_processed} files.<br>
-                                Added ${data.tracks_added} tracks to the library.
-                            </div>
-                        `;
+                        alert(`${data.message}`);
+                        loadCacheStats();
                     }
                 })
                 .catch(error => {
-                    console.error('Error analyzing folder:', error);
-                    analyzeStatus.innerHTML = '<div class="status-error">Failed to analyze folder. See console for details.</div>';
+                    console.error('Error clearing cache:', error);
+                    alert('Failed to clear cache. See console for details.');
                 })
                 .finally(() => {
-                    analyzeBtn.disabled = false;
+                    clearCacheBtn.disabled = false;
+                    clearCacheBtn.textContent = 'Clear Cache';
                 });
             }
-        });
-    </script>
-</body>
-</html>
+        }
+        
+        function startAnalysis() {
+            console.log("Starting analysis...");
+            const folderPath = musicFolderInput.value.trim();
+            if (!folderPath) {
+                showStatus('Please enter a music folder path', 'error');
+                return;
+            }
+            
+            // Disable button during analysis
+            if (analyzeBtn) analyzeBtn.disabled = true;
+            
+            // Show initial status
+            showStatus('Starting analysis...', 'progress');
+            
+            // Prepare form data
+            const formData = new FormData();
+            formData.append('folder_path', folderPath);
+            formData.append('recursive', recursiveCheckbox.checked ? 'true' : 'false');
+            
+            console.log("Sending analyze request...");
+            
+            // Send request to start analysis
+            fetch('/analyze', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Analysis start response:', data);
+                
+                if (data.success) {
+                    // Start polling for status updates
+                    startStatusPolling();
+                } else if (data.error) {
+                    showStatus(`Error: ${data.error}`, 'error');
+                    if (analyzeBtn) analyzeBtn.disabled = false;
+                }
+            })
+            .catch(error => {
+                console.error('Error starting analysis:', error);
+                showStatus('Failed to start analysis', 'error');
+                if (analyzeBtn) analyzeBtn.disabled = false;
+            });
+        }
+        
+        function startStatusPolling() {
+            console.log("Starting status polling...");
+            // Clear any existing interval
+            if (statusInterval) {
+                clearInterval(statusInterval);
+            }
+            
+            // Poll every 2 seconds
+            statusInterval = setInterval(checkAnalysisStatus, 2000);
+            
+            // Immediate first check
+            checkAnalysisStatus();
+        }
+        
+        function checkAnalysisStatus() {
+            fetch('/api/analysis/status')
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Analysis status:', data);
+                    
+                    if (data.running) {
+                        // Show progress
+                        const filesProcessed = data.files_processed || 0;
+                        const totalFiles = data.total_files || 0;
+                        const percent = data.percent_complete || 0;
+                        
+                        let statusMessage = `Processing files: ${filesProcessed} of ${totalFiles} (${percent}%)`;
+                        if (data.current_file) {
+                            statusMessage += `<br>Current file: ${data.current_file}`;
+                        }
+                        
+                        showStatus(statusMessage, 'progress');
+                    } else {
+                        // Analysis complete or failed
+                        clearInterval(statusInterval);
+                        statusInterval = null;
+                        
+                        if (analyzeBtn) analyzeBtn.disabled = false;
+                        
+                        if (data.error) {
+                            showStatus(`Error: ${data.error}`, 'error');
+                        } else if (data.files_processed > 0) {
+                            showStatus(`Successfully processed ${data.files_processed} files.<br>Added ${data.tracks_added || 0} tracks to the library.`, 'success');
+                        } else {
+                            showStatus('Analysis completed, but no files were processed.', 'info');
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.error('Error checking analysis status:', error);
+                    clearInterval(statusInterval);
+                    statusInterval = null;
+                    if (analyzeBtn) analyzeBtn.disabled = false;
+                    showStatus('Failed to get analysis status', 'error');
+                });
+        }
+        
+        function showStatus(message, type) {
+            if (!analyzeStatus) return;
+            console.log(`Status update: ${message} (${type})`);
+            
+            let className = '';
+            switch (type) {
+                case 'progress':
+                    className = 'status-progress';
+                    break;
+                case 'error':
+                    className = 'status-error';
+                    break;
+                case 'success':
+                    className = 'status-success';
+                    break;
+                case 'info':
+                    className = 'status-info';
+                    break;
+            }
+            
+            analyzeStatus.innerHTML = `<div class="${className}">${message}</div>`;
+        }
+    });
+</script>
+{% endblock %}

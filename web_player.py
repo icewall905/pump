@@ -14,6 +14,9 @@ import pathlib
 
 from metadata_service import MetadataService
 
+# Add this with your other imports at the top of the file
+from datetime import datetime
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -125,6 +128,20 @@ try:
 except Exception as e:
     logger.error(f"Error initializing MusicAnalyzer: {e}")
     analyzer = None
+
+# Add these global variables near the top of the file
+
+# Analysis status tracking
+ANALYSIS_STATUS = {
+    'running': False,
+    'start_time': None,
+    'files_processed': 0,
+    'total_files': 0,
+    'current_file': '',
+    'percent_complete': 0,
+    'last_updated': None,
+    'error': None
+}
 
 @app.route('/')
 def index():
@@ -253,6 +270,15 @@ def explore():
 @app.route('/analyze', methods=['POST'])
 def analyze_folder():
     """Analyze a music folder and add tracks to the database"""
+    global ANALYSIS_STATUS
+    
+    # Don't start another analysis if one is already running
+    if ANALYSIS_STATUS['running']:
+        return jsonify({
+            'error': 'Analysis already in progress',
+            'status': ANALYSIS_STATUS
+        }), 409
+    
     folder_path = request.form.get('folder_path')
     recursive = request.form.get('recursive') == 'true'
     
@@ -272,19 +298,106 @@ def analyze_folder():
             logger.error("MusicAnalyzer not initialized")
             return jsonify({'error': 'Analyzer not available'}), 500
         
-        # Process the directory
-        result = analyzer.analyze_directory(folder_path, recursive)
+        # Reset analysis status
+        ANALYSIS_STATUS.update({
+            'running': True,
+            'start_time': datetime.now().isoformat(),
+            'files_processed': 0,
+            'total_files': 0,
+            'current_file': '',
+            'percent_complete': 0,
+            'last_updated': datetime.now().isoformat(),
+            'error': None
+        })
+        
+        # Start analysis in background thread
+        import threading
+        analysis_thread = threading.Thread(
+            target=run_analysis,
+            args=(folder_path, recursive)
+        )
+        analysis_thread.daemon = True
+        analysis_thread.start()
         
         return jsonify({
             'success': True,
-            'folder_path': folder_path,
-            'files_processed': result.get('files_processed', 0),
-            'tracks_added': result.get('tracks_added', 0)
+            'message': 'Analysis started in background',
+            'status': ANALYSIS_STATUS
         })
     
     except Exception as e:
         logger.error(f"Error analyzing folder: {e}")
+        ANALYSIS_STATUS.update({
+            'running': False,
+            'error': str(e),
+            'last_updated': datetime.now().isoformat()
+        })
         return jsonify({'error': str(e)}), 500
+
+# Add this function to run analysis in background
+def run_analysis(folder_path, recursive):
+    """Run the analysis in a background thread"""
+    global ANALYSIS_STATUS
+    
+    try:
+        # First count total files for progress tracking
+        total_files = 0
+        for root, _, files in os.walk(folder_path):
+            if not recursive and root != folder_path:
+                continue
+                
+            for file in files:
+                if file.lower().endswith(('.mp3', '.flac', '.ogg', '.m4a', '.wav')):
+                    total_files += 1
+        
+        ANALYSIS_STATUS['total_files'] = total_files
+        
+        # Now process the files and update status as we go
+        result = {'files_processed': 0, 'tracks_added': 0}
+        
+        for root, _, files in os.walk(folder_path):
+            if not recursive and root != folder_path:
+                continue
+                
+            for file in files:
+                if file.lower().endswith(('.mp3', '.flac', '.ogg', '.m4a', '.wav')):
+                    file_path = os.path.join(root, file)
+                    
+                    # Update status
+                    ANALYSIS_STATUS.update({
+                        'current_file': file,
+                        'files_processed': ANALYSIS_STATUS['files_processed'] + 1,
+                        'percent_complete': int((ANALYSIS_STATUS['files_processed'] / total_files) * 100),
+                        'last_updated': datetime.now().isoformat()
+                    })
+                    
+                    # Process file
+                    try:
+                        was_added = analyzer.analyze_file(file_path)
+                        result['files_processed'] += 1
+                        if was_added:
+                            result['tracks_added'] += 1
+                    except Exception as e:
+                        logger.error(f"Error analyzing file {file_path}: {e}")
+        
+        # Analysis complete
+        ANALYSIS_STATUS.update({
+            'running': False,
+            'files_processed': result['files_processed'],
+            'tracks_added': result.get('tracks_added', 0),
+            'percent_complete': 100,
+            'last_updated': datetime.now().isoformat()
+        })
+        
+        logger.info(f"Background analysis complete: {result['files_processed']} files processed, {result.get('tracks_added', 0)} tracks added")
+    
+    except Exception as e:
+        logger.error(f"Error in background analysis: {e}")
+        ANALYSIS_STATUS.update({
+            'running': False,
+            'error': str(e),
+            'last_updated': datetime.now().isoformat()
+        })
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
@@ -743,6 +856,12 @@ def recent_tracks():
     except Exception as e:
         logger.error(f"Error getting recent tracks: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/analysis/status')
+def get_analysis_status():
+    """Return the current status of music library analysis"""
+    global ANALYSIS_STATUS
+    return jsonify(ANALYSIS_STATUS)
 
 def run_server():
     """Run the Flask server"""

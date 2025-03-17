@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}PUMP - Music Player{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <!-- Global analysis status indicator -->
+    <div id="global-status-bar" class="global-status" style="display: none;"></div>
+    
+    {% block content %}{% endblock %}
+    
+    <script>
+        // Check for ongoing analysis every 2 seconds
+        let statusInterval;
+        
+        function checkAnalysisStatus() {
+            fetch('/api/analysis/status')
+                .then(response => response.json())
+                .then(data => {
+                    const statusBar = document.getElementById('global-status-bar');
+                    
+                    if (data.running) {
+                        // Show status bar
+                        let statusHtml = `
+                            <div class="status-content">
+                                <div class="status-spinner"></div>
+                                <div class="status-text">
+                                    <strong>Analyzing Music Library:</strong> 
+                                    ${data.files_processed} of ${data.total_files} files (${data.percent_complete}%)
+                                </div>
+                            </div>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${data.percent_complete}%"></div>
+                            </div>
+                        `;
+                        
+                        statusBar.innerHTML = statusHtml;
+                        statusBar.style.display = 'block';
+                        
+                        // Ensure interval is running
+                        if (!statusInterval) {
+                            statusInterval = setInterval(checkAnalysisStatus, 2000);
+                        }
+                    } else if (data.error) {
+                        // Show error
+                        statusBar.innerHTML = `
+                            <div class="status-content">
+                                <div class="status-error-icon">⚠️</div>
+                                <div class="status-text">
+                                    <strong>Analysis Error:</strong> ${data.error}
+                                </div>
+                                <div class="status-close" onclick="dismissStatus()">×</div>
+                            </div>
+                        `;
+                        statusBar.style.display = 'block';
+                        statusBar.classList.add('status-error');
+                        
+                        // Clear interval after showing error
+                        clearInterval(statusInterval);
+                        statusInterval = null;
+                    } else if (data.last_updated && new Date(data.last_updated) > new Date(Date.now() - 5000) && data.files_processed > 0) {
+                        // Analysis just completed within the last 5 seconds
+                        statusBar.innerHTML = `
+                            <div class="status-content">
+                                <div class="status-success-icon">✓</div>
+                                <div class="status-text">
+                                    <strong>Analysis Complete:</strong> 
+                                    Processed ${data.files_processed} files, added ${data.tracks_added || 0} tracks
+                                </div>
+                                <div class="status-close" onclick="dismissStatus()">×</div>
+                            </div>
+                        `;
+                        statusBar.style.display = 'block';
+                        statusBar.classList.add('status-success');
+                        
+                        // Auto-dismiss after 10 seconds
+                        setTimeout(dismissStatus, 10000);
+                        
+                        // Clear interval
+                        clearInterval(statusInterval);
+                        statusInterval = null;
+                    } else {
+                        // No active analysis
+                        statusBar.style.display = 'none';
+                        statusBar.classList.remove('status-error', 'status-success');
+                        
+                        // Clear interval if there's nothing to check
+                        clearInterval(statusInterval);
+                        statusInterval = null;
+                    }
+                })
+                .catch(error => {
+                    console.error('Error checking analysis status:', error);
+                    
+                    // Clear interval on error
+                    clearInterval(statusInterval);
+                    statusInterval = null;
+                });
+        }
+        
+        function dismissStatus() {
+            const statusBar = document.getElementById('global-status-bar');
+            statusBar.style.display = 'none';
+            statusBar.classList.remove('status-error', 'status-success');
+        }
+        
+        // Initial check when page loads
+        document.addEventListener('DOMContentLoaded', checkAnalysisStatus);
+    </script>
+    
+    {% block scripts %}{% endblock %}
+</body>
+</html>
