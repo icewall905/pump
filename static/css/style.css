@@ -21,8 +21,21 @@ body {
 
 .sidebar-header {
     padding: 20px;
-    border-bottom: 1px solid #333;
     text-align: center;
+    border-bottom: 1px solid #444;
+}
+
+.sidebar-header h2 {
+    margin: 0;
+    font-size: 28px;
+    color: #6a8a5e;
+}
+
+.sidebar-header .tagline {
+    margin: 5px 0 0;
+    font-size: 12px;
+    color: #aaa;
+    font-style: italic;
 }
 
 .sidebar-content {
@@ -30,12 +43,21 @@ body {
 }
 
 .sidebar-section {
-    margin-bottom: 30px;
+    padding: 15px 0;
+    border-bottom: 1px solid #333;
+}
+
+.sidebar-section:last-child {
+    border-bottom: none;
 }
 
 .sidebar-section h3 {
-    margin-top: 0;
-    color: #ccc;
+    padding: 0 20px;
+    margin: 0 0 10px 0;
+    font-size: 14px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
 
 .form-group {
@@ -678,4 +700,157 @@ body:has(.global-status[style*="display: block"]) .main-content {
 
 body:has(.global-status[style*="display: block"]) .sidebar {
     padding-top: 50px;
+}
+
+/* Add or update these sidebar styles */
+
+/* Sidebar Header */
+.sidebar-header {
+    padding: 20px;
+    text-align: center;
+    border-bottom: 1px solid #444;
+}
+
+.sidebar-header h2 {
+    margin: 0;
+    font-size: 28px;
+    color: #6a8a5e;
+}
+
+.sidebar-header .tagline {
+    margin: 5px 0 0;
+    font-size: 12px;
+    color: #aaa;
+    font-style: italic;
+}
+
+/* Sidebar Sections */
+.sidebar-section {
+    padding: 15px 0;
+    border-bottom: 1px solid #333;
+}
+
+.sidebar-section:last-child {
+    border-bottom: none;
+}
+
+.sidebar-section h3 {
+    padding: 0 20px;
+    margin: 0 0 10px 0;
+    font-size: 14px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* Navigation Buttons */
+.nav-buttons {
+    padding: 0 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.nav-button {
+    display: block;
+    padding: 10px 15px;
+    background-color: rgba(106, 138, 94, 0.2);
+    color: #ddd;
+    text-decoration: none;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+    font-size: 15px;
+    text-align: left;
+    border: 1px solid transparent;
+}
+
+.nav-button:hover, .nav-button:focus {
+    background-color: rgba(106, 138, 94, 0.4);
+    color: white;
+}
+
+.nav-button.active {
+    background-color: rgba(106, 138, 94, 0.6);
+    color: white;
+    border-left: 3px solid #6a8a5e;
+}
+
+/* Playlist list styling */
+.playlist-list {
+    padding: 0 15px;
+    margin: 0;
+    list-style: none;
+}
+
+.playlist-list .loading,
+.playlist-list .empty,
+.playlist-list .error {
+    padding: 10px;
+    text-align: center;
+    font-style: italic;
+    color: #888;
+}
+
+.playlist-list .error {
+    color: #e88e86;
+}
+
+.playlist-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 10px;
+    margin-bottom: 5px;
+    background-color: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+    transition: background-color 0.2s ease;
+}
+
+.playlist-item:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+.playlist-name {
+    flex-grow: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 14px;
+}
+
+.playlist-count {
+    font-size: 12px;
+    color: #888;
+    margin-left: 5px;
+}
+
+.playlist-actions {
+    display: flex;
+    gap: 5px;
+}
+
+.playlist-actions button {
+    background-color: rgba(106, 138, 94, 0.2);
+    color: #ccc;
+    border: none;
+    border-radius: 3px;
+    padding: 3px 8px;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+    font-size: 12px;
+}
+
+.playlist-actions button:hover {
+    background-color: rgba(106, 138, 94, 0.5);
+    color: white;
+}
+
+.playlist-actions .delete-playlist {
+    background-color: rgba(184, 67, 54, 0.2);
+    font-size: 14px;
+    font-weight: bold;
+}
+
+.playlist-actions .delete-playlist:hover {
+    background-color: rgba(184, 67, 54, 0.5);
 }

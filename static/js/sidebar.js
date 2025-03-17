@@ -17,7 +17,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         // Show loading indicator
-        playlistList.innerHTML = '<li class="loading">Loading playlists...</li>';
+        playlistList.innerHTML = '<div class="loading">Loading playlists...</div>';
         
         fetch('/playlists')
             .then(response => response.json())
@@ -26,15 +26,15 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 if (!Array.isArray(data)) {
                     if (data.error) {
-                        playlistList.innerHTML = `<li class="error">Error: ${data.error}</li>`;
+                        playlistList.innerHTML = `<div class="error">Error: ${data.error}</div>`;
                     } else {
-                        playlistList.innerHTML = '<li class="error">Invalid response</li>';
+                        playlistList.innerHTML = '<div class="error">Invalid response</div>';
                     }
                     return;
                 }
                 
                 if (data.length === 0) {
-                    playlistList.innerHTML = '<li class="empty">No saved playlists</li>';
+                    playlistList.innerHTML = '<div class="empty">No saved playlists</div>';
                     return;
                 }
                 
@@ -42,9 +42,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 playlistList.innerHTML = '';
                 
                 data.forEach(playlist => {
-                    const li = document.createElement('li');
-                    li.className = 'playlist-item';
-                    li.innerHTML = `
+                    const div = document.createElement('div');
+                    div.className = 'playlist-item';
+                    div.innerHTML = `
                         <div class="playlist-name">${playlist.name}
                             <span class="playlist-count">(${playlist.track_count})</span>
                         </div>
@@ -53,7 +53,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             <button class="delete-playlist" data-id="${playlist.id}">×</button>
                         </div>
                     `;
-                    playlistList.appendChild(li);
+                    playlistList.appendChild(div);
                 });
                 
                 // Add event listeners to buttons
@@ -78,7 +78,7 @@ document.addEventListener('DOMContentLoaded', function() {
             })
             .catch(error => {
                 console.error('Error loading playlists:', error);
-                playlistList.innerHTML = '<li class="error">Failed to load playlists</li>';
+                playlistList.innerHTML = '<div class="error">Failed to load playlists</div>';
             });
     }
     
