@@ -606,7 +606,123 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Expose the inner savePlaylist function to the window for any direct HTML onclick references
     window.savePlaylist = savePlaylist;
+
+    // Check if there's a playlist parameter in the URL and load it
+    const urlParams = new URLSearchParams(window.location.search);
+    const playlistId = urlParams.get('playlist');
+    
+    if (playlistId) {
+        console.log(`Loading playlist ${playlistId} from URL parameter`);
+        // If there's a loadPlaylist function, call it with the ID from the URL
+        if (typeof loadPlaylist === 'function') {
+            loadPlaylist(playlistId);
+        } else {
+            // Load the playlist directly
+            fetch(`/playlists/${playlistId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        console.error(`Error loading playlist: ${data.error}`);
+                        return;
+                    }
+                    
+                    // Display the playlist
+                    displayPlaylistTracks(data.tracks);
+                    
+                    // Update playlist name if available
+                    const playlistNameElement = document.getElementById('playlist-name');
+                    if (playlistNameElement && data.name) {
+                        playlistNameElement.textContent = data.name;
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading playlist:', error);
+                });
+        }
+    }
+    
+    // Rest of your existing initialization code...
 });
 
-// Remove the global savePlaylist function if it exists
-// function savePlaylist() { ... } - DELETE THIS ENTIRE FUNCTION
+// Make sure you have this function defined
+function displayPlaylistTracks(tracks) {
+    const resultsContainer = document.querySelector('.results-container');
+    if (!resultsContainer) return;
+
+    // Clear previous results
+    resultsContainer.innerHTML = '';
+    
+    if (!tracks || tracks.length === 0) {
+        resultsContainer.innerHTML = '<div class="no-results">No tracks found in playlist</div>';
+        return;
+    }
+    
+    // Create grid for track cards
+    const trackGrid = document.createElement('div');
+    trackGrid.className = 'track-grid';
+    
+    // Add each track to the grid
+    tracks.forEach(track => {
+        const card = createTrackCard(track);
+        trackGrid.appendChild(card);
+    });
+    
+    // Add the grid to the results container
+    resultsContainer.appendChild(trackGrid);
+}
+
+// Make sure you have this function for creating track cards (if it doesn't already exist)
+function createTrackCard(track) {
+    const card = document.createElement('div');
+    card.className = 'track-card';
+    card.dataset.id = track.id;
+    
+    // Album art
+    const artDiv = document.createElement('div');
+    artDiv.className = 'track-art';
+    
+    if (track.album_art_url) {
+        const img = document.createElement('img');
+        img.src = `/albumart/${encodeURIComponent(track.album_art_url)}`;
+        img.alt = `${track.album} cover`;
+        img.onerror = function() {
+            this.style.display = 'none';
+            this.parentNode.innerHTML += `
+                <div class="default-art">
+                    <span class="art-placeholder">♪</span>
+                </div>
+            `;
+        };
+        artDiv.appendChild(img);
+    } else {
+        artDiv.innerHTML = `
+            <div class="default-art">
+                <span class="art-placeholder">♪</span>
+            </div>
+        `;
+    }
+    
+    // Track info
+    const infoDiv = document.createElement('div');
+    infoDiv.className = 'track-info';
+    infoDiv.innerHTML = `
+        <div class="track-title">${track.title}</div>
+        <div class="track-artist">${track.artist}</div>
+        <div class="track-album">${track.album || 'Unknown Album'}</div>
+    `;
+    
+    // Track actions
+    const actionsDiv = document.createElement('div');
+    actionsDiv.className = 'track-actions';
+    actionsDiv.innerHTML = `
+        <button class="play-track" data-id="${track.id}">▶ Play</button>
+        <button class="generate-playlist" data-id="${track.id}">Radio</button>
+    `;
+    
+    // Add all elements to the card
+    card.appendChild(artDiv);
+    card.appendChild(infoDiv);
+    card.appendChild(actionsDiv);
+    
+    return card;
+}
