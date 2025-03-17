@@ -43,7 +43,8 @@ class MusicAnalyzer:
             album TEXT,
             album_art_url TEXT,
             metadata_source TEXT,
-            duration REAL
+            duration REAL,
+            date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         ''')
         
