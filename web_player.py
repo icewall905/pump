@@ -122,6 +122,7 @@ if not os.path.exists(CACHE_DIR):
 
 # Create Flask app
 app = Flask(__name__)
+app.config['DATABASE_PATH'] = DB_PATH  # Add this line to set the config
 try:
     analyzer = MusicAnalyzer(DB_PATH)
     logger.info("MusicAnalyzer initialized successfully")
@@ -841,6 +842,68 @@ def get_analysis_status():
     """Return the current status of music library analysis"""
     global ANALYSIS_STATUS
     return jsonify(ANALYSIS_STATUS)
+
+@app.route('/track/<int:track_id>')
+def get_track_info(track_id):
+    """Get track information for playback"""
+    # Use the connection from the active app context
+    conn = sqlite3.connect(DB_PATH)  # Changed to use DB_PATH directly
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    # Get track data from database
+    cursor.execute(
+        '''
+        SELECT t.id, t.title, t.artist, t.album, t.file_path, t.album_art_url
+        FROM audio_files t  /* Changed from "tracks" to "audio_files" */
+        WHERE t.id = ?
+        ''',
+        (track_id,)
+    )
+    
+    track = cursor.fetchone()
+    if not track:
+        conn.close()
+        return jsonify({'error': 'Track not found'}), 404
+        
+    # Convert to dict for JSON response
+    track_data = {
+        'id': track['id'],
+        'title': track['title'],
+        'artist': track['artist'],
+        'album': track['album'],
+        'album_art_url': track['album_art_url']
+    }
+    
+    conn.close()
+    return jsonify(track_data)
+
+@app.route('/stream/<int:track_id>')
+def stream_track(track_id):
+    """Stream audio file for a track"""
+    # Use the connection from the active app context
+    conn = sqlite3.connect(DB_PATH)  # Changed to use DB_PATH directly
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    # Get track file path from database
+    cursor.execute(
+        'SELECT file_path FROM audio_files WHERE id = ?',  # Changed from "tracks" to "audio_files"
+        (track_id,)
+    )
+    
+    track = cursor.fetchone()
+    if not track:
+        conn.close()
+        return jsonify({'error': 'Track not found'}), 404
+    
+    file_path = track['file_path']
+    conn.close()
+    
+    if not os.path.exists(file_path):
+        return jsonify({'error': 'Audio file not found'}), 404
+        
+    return send_file(file_path)
 
 def run_server():
     """Run the Flask server"""

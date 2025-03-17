@@ -138,6 +138,7 @@ body {
     flex: 1;
     background-color: #2a2a2a;
     min-height: 100vh;
+    padding-bottom: 100px;
 }
 
 .search-container {
@@ -853,4 +854,192 @@ body:has(.global-status[style*="display: block"]) .sidebar {
 
 .playlist-actions .delete-playlist:hover {
     background-color: rgba(184, 67, 54, 0.5);
+}
+
+/* Now Playing Bar styles */
+
+.now-playing-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 80px;
+    background: #222;
+    border-top: 1px solid #333;
+    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.4);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    transform: translateY(80px);
+    transition: transform 0.3s ease-in-out;
+}
+
+.now-playing-bar.active {
+    transform: translateY(0);
+}
+
+.now-playing-container {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    max-width: 1400px;
+    margin: 0 auto;
+    gap: 15px;
+}
+
+.now-playing-art {
+    width: 60px;
+    height: 60px;
+    overflow: hidden;
+    border-radius: 4px;
+    background-color: #333;
+    flex-shrink: 0;
+}
+
+.now-playing-art img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.now-playing-info {
+    flex: 1;
+    min-width: 0;
+    margin-right: 15px;
+}
+
+.now-playing-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 4px;
+}
+
+.now-playing-artist {
+    font-size: 14px;
+    color: #aaa;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.player-controls {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    margin: 0 20px;
+}
+
+.control-button {
+    background: none;
+    border: none;
+    color: #ccc;
+    font-size: 20px;
+    cursor: pointer;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.control-button:hover {
+    background-color: rgba(106, 138, 94, 0.3);
+    color: white;
+}
+
+#play-pause {
+    font-size: 24px;
+    width: 45px;
+    height: 45px;
+    background-color: #6a8a5e;
+    color: white;
+}
+
+#play-pause:hover {
+    background-color: #7da56f;
+}
+
+.progress-container {
+    display: flex;
+    align-items: center;
+    flex: 2;
+    gap: 10px;
+}
+
+.progress-container .progress-bar {
+    flex: 1;
+    height: 5px;
+    background-color: #444;
+    border-radius: 2px;
+    cursor: pointer;
+    position: relative;
+}
+
+.progress-container .progress-fill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    background-color: #6a8a5e;
+    border-radius: 2px;
+    width: 0;
+}
+
+.progress-container .time {
+    font-size: 12px;
+    color: #999;
+    width: 40px;
+    text-align: center;
+}
+
+.volume-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: 15px;
+}
+
+.volume-slider-container {
+    width: 80px;
+}
+
+#volume-slider {
+    width: 100%;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: #444;
+    border-radius: 2px;
+    outline: none;
+}
+
+#volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #6a8a5e;
+    cursor: pointer;
+}
+
+#volume-slider::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #6a8a5e;
+    cursor: pointer;
+    border: none;
+}
+
+/* Adjust main content to make room for the player bar */
+.main-content {
+    padding-bottom: 100px;
 }

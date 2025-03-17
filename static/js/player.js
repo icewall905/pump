@@ -319,7 +319,12 @@ document.addEventListener('DOMContentLoaded', function() {
         document.querySelectorAll('.play-track').forEach(button => {
             button.addEventListener('click', function() {
                 console.log('Play track clicked for track ID:', this.dataset.id);
-                // Implement play functionality
+                // Use the global playTrack function
+                if (typeof window.playTrack === 'function') {
+                    window.playTrack(this.dataset.id);
+                } else {
+                    console.error('playTrack function not available');
+                }
             });
         });
     }
@@ -642,6 +647,23 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     // Rest of your existing initialization code...
+
+    // Set up play button event listeners
+    document.querySelectorAll('.play-track').forEach(button => {
+        button.addEventListener('click', function() {
+            const trackId = this.dataset.id;
+            console.log('Play track clicked for track ID:', trackId);
+            
+            // Use the global playTrack function from player-controls.js
+            if (typeof window.playTrack === 'function') {
+                window.playTrack(trackId);
+            } else {
+                console.error('playTrack function not available');
+            }
+        });
+    });
+    
+    // Additional player-specific functions can be added here
 });
 
 // Make sure you have this function defined
