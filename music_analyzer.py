@@ -6,6 +6,9 @@ import sqlite3
 import argparse
 from typing import Dict, List, Tuple, Union, Optional
 from pathlib import Path
+from lastfm_service import LastFMService
+import configparser
+import logging
 
 import librosa.display
 import matplotlib.pyplot as plt
@@ -28,6 +31,29 @@ class MusicAnalyzer:
         self._initialize_db()
         self.metadata_service = MetadataService()
         
+        # Initialize LastFM service with API key from config
+        self.lastfm_service = None
+        self._initialize_lastfm()
+    
+    def _initialize_lastfm(self):
+        """Initialize LastFM service with API key from config"""
+        try:
+            config = configparser.ConfigParser()
+            if os.path.exists('pump.conf'):
+                config.read('pump.conf')
+                
+            api_key = config.get('lastfm', 'api_key', fallback=None)
+            api_secret = config.get('lastfm', 'api_secret', fallback=None)
+            
+            if api_key:
+                self.lastfm_service = LastFMService(api_key, api_secret)
+                logging.info("LastFM service initialized successfully")
+            else:
+                logging.warning("LastFM API key not found in configuration")
+                
+        except Exception as e:
+            logging.error(f"Error initializing LastFM service: {e}")
+        
     def _initialize_db(self):
         """Create database tables if they don't exist."""
         conn = sqlite3.connect(self.db_path)
@@ -47,6 +73,18 @@ class MusicAnalyzer:
             date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         ''')
+        
+        # Add artist_image_url column if it doesn't exist
+        try:
+            cursor.execute("PRAGMA table_info(audio_files)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'artist_image_url' not in columns:
+                cursor.execute('''
+                ALTER TABLE audio_files ADD COLUMN artist_image_url TEXT
+                ''')
+                conn.commit()
+        except Exception as e:
+            logging.error(f"Error adding artist_image_url column: {e}")
         
         # Create table for audio features
         cursor.execute('''
@@ -130,6 +168,14 @@ class MusicAnalyzer:
                 **self._extract_rhythm_features(y, sr),
                 **self._extract_harmonic_features(y, sr)
             }
+            
+            # After extracting basic metadata, fetch artist image if possible
+            artist_image_url = None
+            if features["artist"] and self.lastfm_service:
+                artist_image_url = self.lastfm_service.get_artist_image_url(features["artist"])
+                if artist_image_url:
+                    logging.info(f"Found artist image for {features['artist']}")
+            features["artist_image_url"] = artist_image_url
             
             # Save to database if requested
             if save_to_db:
@@ -257,8 +303,8 @@ class MusicAnalyzer:
         # Insert audio file info
         cursor.execute('''
             INSERT OR REPLACE INTO audio_files 
-            (file_path, title, artist, album, album_art_url, metadata_source, duration) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (file_path, title, artist, album, album_art_url, metadata_source, duration, artist_image_url) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             features["file_path"],
             features.get("title", ""),
@@ -266,7 +312,8 @@ class MusicAnalyzer:
             features.get("album", ""),
             features.get("album_art_url", ""),
             features.get("metadata_source", "unknown"),
-            features.get("duration", 0)
+            features.get("duration", 0),
+            features.get("artist_image_url", "")
         ))
         
         # Get the ID of the audio file

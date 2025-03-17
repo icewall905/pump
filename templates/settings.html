@@ -55,11 +55,17 @@
                 <div class="form-group">
                     <label for="lastfm_api_key">API Key:</label>
                     <input type="text" id="lastfm_api_key" name="lastfm_api_key" value="{{ lastfm_api_key }}">
+                    <p class="help-text">Used for fetching artist images and additional metadata</p>
                 </div>
                 
                 <div class="form-group">
                     <label for="lastfm_api_secret">API Secret:</label>
                     <input type="password" id="lastfm_api_secret" name="lastfm_api_secret" value="{{ lastfm_api_secret }}">
+                </div>
+                
+                <div class="form-group">
+                    <button type="button" id="update-artist-images" class="secondary-button">Update Artist Images</button>
+                    <p class="help-text">Fetch missing artist images from Last.fm</p>
                 </div>
             </div>
         </div>
@@ -323,6 +329,37 @@
             }
             
             analyzeStatus.innerHTML = `<div class="${className}">${message}</div>`;
+        }
+
+        // Artist image update button
+        const updateArtistImagesBtn = document.getElementById('update-artist-images');
+        if (updateArtistImagesBtn) {
+            updateArtistImagesBtn.addEventListener('click', function() {
+                this.disabled = true;
+                this.textContent = 'Updating...';
+                
+                fetch('/api/update-artist-images', {
+                    method: 'POST'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert(`Error: ${data.error}`);
+                    } else {
+                        alert(data.message);
+                        // Refresh the page to see updated settings
+                        window.location.reload();
+                    }
+                })
+                .catch(error => {
+                    console.error('Error updating artist images:', error);
+                    alert('Failed to update artist images. See console for details.');
+                })
+                .finally(() => {
+                    this.disabled = false;
+                    this.textContent = 'Update Artist Images';
+                });
+            });
         }
     });
 </script>

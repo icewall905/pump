@@ -1,0 +1,34 @@
+{% extends "layout.html" %}
+
+{% block title %}PUMP - Music Library{% endblock %}
+
+{% block content %}
+{% set active_page = 'library' %}
+{% include 'partials/sidebar.html' %}
+    
+<div class="main-content">
+    <h1>Music Library</h1>
+    
+    <div class="library-navigation">
+        <div class="tab-buttons">
+            <button id="tab-artists" class="tab-button active">Artists</button>
+            <button id="tab-albums" class="tab-button">Albums</button>
+            <button id="tab-songs" class="tab-button">Songs</button>
+        </div>
+        
+        <div class="library-search">
+            <input type="text" id="library-search-input" placeholder="Filter library...">
+            <button id="library-search-clear">×</button>
+        </div>
+    </div>
+    
+    <div id="library-content">
+        <!-- Content will be loaded here -->
+        <div class="loading-large">Loading library...</div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/library.js') }}"></script>
+{% endblock %}

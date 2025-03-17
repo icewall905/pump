@@ -17,6 +17,9 @@ from metadata_service import MetadataService
 # Add this with your other imports at the top of the file
 from datetime import datetime
 
+# Add these imports at the top with your other Flask imports
+from flask import redirect, url_for
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -495,7 +498,7 @@ def album_art_proxy(url):
         # Fetch the image
         response = requests.get(url, stream=True)
         
-        if response.status_code == 200:
+        if (response.status_code == 200):
             # Get content type from response
             content_type = response.headers.get('Content-Type', 'image/jpeg')
             
@@ -904,6 +907,211 @@ def stream_track(track_id):
         return jsonify({'error': 'Audio file not found'}), 404
         
     return send_file(file_path)
+
+# Add these routes to your web_player.py file
+
+@app.route('/library')
+def library_page():
+    """Render the library page"""
+    return render_template('library.html')
+
+
+@app.route('/api/library/album/<path:album>/tracks')
+def get_album_tracks(album):
+    """Get all tracks from a specific album"""
+    try:
+        artist = request.args.get('artist')
+        
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        if (artist):
+            cursor.execute('''
+                SELECT id, file_path, title, artist, album, album_art_url, duration
+                FROM audio_files 
+                WHERE album = ? AND artist = ?
+                ORDER BY title COLLATE NOCASE
+            ''', (album, artist))
+        else:
+            cursor.execute('''
+                SELECT id, file_path, title, artist, album, album_art_url, duration
+                FROM audio_files 
+                WHERE album = ?
+                ORDER BY title COLLATE NOCASE
+            ''', (album,))
+        
+        tracks = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        return jsonify(tracks)
+    except Exception as e:
+        logger.error(f"Error getting album tracks: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# Add this route with your other route definitions
+
+@app.route('/library')
+def library():
+    """Display the music library page"""
+    return render_template('library.html')
+
+# Add these API routes to fetch library data
+
+@app.route('/api/library/artists')
+def get_artists():
+    """Get all artists in the library"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT DISTINCT artist, COUNT(*) as track_count,
+                   (SELECT file_path FROM audio_files WHERE artist=a.artist LIMIT 1) as sample_track,
+                   (SELECT artist_image_url FROM audio_files 
+                    WHERE artist=a.artist AND artist_image_url IS NOT NULL 
+                    LIMIT 1) as artist_image
+            FROM audio_files a
+            WHERE artist IS NOT NULL AND artist != ''
+            GROUP BY artist
+            ORDER BY artist COLLATE NOCASE
+        ''')
+        
+        artists = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        return jsonify(artists)
+    except Exception as e:
+        logger.error(f"Error getting artists: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/library/albums')
+def get_albums():
+    """Get all albums in the library"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT DISTINCT album, artist, COUNT(*) as track_count,
+                   (SELECT album_art_url FROM audio_files WHERE album=a.album AND artist=a.artist LIMIT 1) as album_art_url,
+                   (SELECT file_path FROM audio_files WHERE album=a.album AND artist=a.artist LIMIT 1) as sample_track
+            FROM audio_files a
+            WHERE album IS NOT NULL AND album != ''
+            GROUP BY album, artist
+            ORDER BY album COLLATE NOCASE
+        ''')
+        
+        albums = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        return jsonify(albums)
+    except Exception as e:
+        logger.error(f"Error getting albums: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/library/songs')
+def get_songs():
+    """Get all songs in the library"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Increase limit to get more songs by default
+        cursor.execute('''
+            SELECT id, file_path, title, artist, album, album_art_url, duration
+            FROM audio_files
+            ORDER BY title COLLATE NOCASE
+            LIMIT 50
+        ''')
+        
+        # Make sure to convert the rows to dictionaries
+        songs = [dict(row) for row in cursor.fetchall()]
+        
+        # Set default title for songs without title
+        for song in songs:
+            if not song['title']:
+                song['title'] = os.path.basename(song['file_path'])
+                
+        conn.close()
+        
+        logger.info(f"Returning {len(songs)} songs for library view")
+        return jsonify(songs)
+    except Exception as e:
+        logger.error(f"Error getting songs: {e}")
+        return jsonify([]), 500  # Return empty array instead of error object
+
+# Add this route to handle updating artist images
+
+@app.route('/api/update-artist-images', methods=['POST'])
+def update_artist_images():
+    """Update artist images using Last.fm"""
+    try:
+        # Get Last.fm API key from config
+        config = configparser.ConfigParser()
+        config.read('pump.conf')
+        api_key = config.get('lastfm', 'api_key', fallback=None)
+        api_secret = config.get('lastfm', 'api_secret', fallback=None)
+        
+        if not api_key:
+            return jsonify({'error': 'Last.fm API key not configured'}), 400
+            
+        # Initialize LastFM service
+        from lastfm_service import LastFMService
+        lastfm = LastFMService(api_key, api_secret)
+        
+        # Get artists without images
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT DISTINCT artist FROM audio_files 
+            WHERE artist IS NOT NULL AND artist != '' 
+            AND artist NOT IN (
+                SELECT DISTINCT artist FROM audio_files 
+                WHERE artist_image_url IS NOT NULL AND artist_image_url != ''
+            )
+            ORDER BY artist
+        ''')
+        
+        artists = [row['artist'] for row in cursor.fetchall()]
+        
+        if not artists:
+            return jsonify({'message': 'No artists without images found'}), 200
+            
+        # Counter for successful updates
+        updated_count = 0
+        
+        # Update artist images
+        for artist in artists:
+            # Get image URL from Last.fm
+            image_url = lastfm.get_artist_image_url(artist)
+            
+            if image_url:
+                # Update all tracks for this artist
+                cursor.execute('''
+                    UPDATE audio_files SET artist_image_url = ? 
+                    WHERE artist = ?
+                ''', (image_url, artist))
+                updated_count += 1
+                
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Updated images for {updated_count} of {len(artists)} artists',
+            'updated': updated_count,
+            'total': len(artists)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error updating artist images: {e}")
+        return jsonify({'error': str(e)}), 500
 
 def run_server():
     """Run the Flask server"""
