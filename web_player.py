@@ -245,10 +245,10 @@ def explore():
         cursor.execute('SELECT COUNT(*) as count FROM audio_files')
         count = cursor.fetchone()['count']
         
-        # Get random tracks
+        # Get random tracks - changed from 10 to 6
         random_tracks = []
         if count > 0:
-            sample_size = min(10, count)
+            sample_size = min(6, count)  # Changed from 10 to 6
             cursor.execute(f'''
                 SELECT af.id, af.file_path, af.title, af.artist, af.album, af.album_art_url, af.duration
                 FROM audio_files af
@@ -882,12 +882,12 @@ def recent_tracks():
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
-        # Get most recently added tracks
+        # Get most recently added tracks - changed from 10 to 6
         cursor.execute('''
             SELECT id, file_path, title, artist, album, album_art_url, duration
             FROM audio_files
             ORDER BY date_added DESC
-            LIMIT 10
+            LIMIT 6
         ''')
         
         recent_tracks = [dict(row) for row in cursor.fetchall()]

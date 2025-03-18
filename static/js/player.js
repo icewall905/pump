@@ -237,7 +237,8 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(data => {
                 console.log('Explore data:', data);
                 if (Array.isArray(data) && data.length > 0) {
-                    displaySearchResults(data);
+                    // Limit to 6 items only
+                    displaySearchResults(data.slice(0, 6));
                 } else if (Array.isArray(data) && data.length === 0) {
                     searchResults.innerHTML = '<p>No tracks found. Try adding some music!</p>';
                 } else if (data.error) {
@@ -271,7 +272,8 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(data => {
                 console.log('Recent data:', data);
                 if (Array.isArray(data) && data.length > 0) {
-                    displaySearchResults(data);
+                    // Limit to 6 items only
+                    displaySearchResults(data.slice(0, 6));
                 } else if (Array.isArray(data) && data.length === 0) {
                     searchResults.innerHTML = '<p>No recent tracks found. Try adding some music!</p>';
                 } else if (data.error) {
