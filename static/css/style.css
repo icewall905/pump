@@ -1455,3 +1455,30 @@ body:has(.global-status[style*="display: block"]) .sidebar {
     margin: 0;
     color: #aaa;
 }
+
+/* Add these styles to the end of your file */
+
+/* Sub-navigation styling */
+.sub-nav-buttons {
+    padding-left: 15px;
+    margin-top: -4px;
+    margin-bottom: -4px;
+}
+
+.sub-nav-button {
+    font-size: 14px !important;
+    padding: 8px 15px !important;
+    background-color: rgba(106, 138, 94, 0.1) !important;
+    margin-top: 2px;
+    margin-bottom: 2px;
+}
+
+/* Make the sub-nav active state less intense than the main nav */
+.sub-nav-button.active {
+    background-color: rgba(106, 138, 94, 0.4) !important;
+}
+
+/* When sub-item is active, also highlight the parent */
+.sub-nav-button.active + a.nav-button {
+    background-color: rgba(106, 138, 94, 0.3);
+}
