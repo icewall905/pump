@@ -16,6 +16,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const resultsContainer = document.querySelector('.results-container');
     const savePlaylistBtn = document.getElementById('save-playlist-btn');
     const analyzeStatus = document.getElementById('analyze-status');
+    const homeLink = document.getElementById('home-link'); // Add this line
+    const libraryLink = document.getElementById('library-link');
+    const settingsLink = document.getElementById('settings-link');
     
     // Check for DOM elements that should exist
     console.log('DOM elements found:', {
@@ -30,6 +33,40 @@ document.addEventListener('DOMContentLoaded', function() {
     const view = urlParams.get('view');
     const playlistId = urlParams.get('playlist');
 
+    // Function to set active navigation link
+    function setActiveNav(view) {
+        // Remove active class from all nav links
+        [homeLink, exploreLink, recentLink, libraryLink, settingsLink].forEach(link => {
+            if (link) link.classList.remove('active');
+        });
+        
+        // Add active class to the current view
+        switch(view) {
+            case 'explore':
+                if (exploreLink) exploreLink.classList.add('active');
+                break;
+            case 'recent':
+                if (recentLink) recentLink.classList.add('active');
+                break;
+            case 'library':
+                if (libraryLink) libraryLink.classList.add('active');
+                break;
+            case 'settings':
+                if (settingsLink) settingsLink.classList.add('active');
+                break;
+            case 'home':
+                if (homeLink) homeLink.classList.add('active');
+                break;
+            default:
+                // If no specific view is set, only highlight home if we're not on another page
+                if (homeLink && view === null) homeLink.classList.add('active');
+                break;
+        }
+    }
+
+    // Set active nav based on URL parameter
+    setActiveNav(view);
+
     // INITIALIZE UI based on URL parameters - THIS IS THE ONLY PLACE WE CHECK URL PARAMS
     if (playlistId) {
         console.log(`Loading playlist ${playlistId} from URL parameter`);
@@ -37,35 +74,41 @@ document.addEventListener('DOMContentLoaded', function() {
     } else if (view === 'explore') {
         console.log('Loading explore view from URL parameter');
         loadExplore();
+        // Make sure explore is active, not home
+        setActiveNav('explore');
     } else if (view === 'recent') {
         console.log('Loading recent view from URL parameter');
         loadRecent();
+        // Make sure recent is active, not home
+        setActiveNav('recent');
+    } else if (view === 'home') {
+        console.log('Loading home view');
+        loadExplore(); // or whatever home should show
+        setActiveNav('home');
     } else {
         // Default view (no parameter)
         console.log('Loading default explore view');
         loadExplore();
+        // Default to home when no view specified
+        setActiveNav('home');
     }
     
-    // Configure click handlers for navigation
+    // COMMENT OUT THESE CLICK HANDLERS - they're handled in navigation.js
+    /*
     if (exploreLink) {
         exploreLink.addEventListener('click', function(e) {
             e.preventDefault();
-            console.log('Explore link clicked directly');
-            // Update URL and browser history
-            history.pushState(null, '', '/?view=explore');
-            loadExplore();
+            // Existing code...
         });
     }
     
     if (recentLink) {
         recentLink.addEventListener('click', function(e) {
             e.preventDefault();
-            console.log('Recent link clicked directly');
-            // Update URL and browser history
-            history.pushState(null, '', '/?view=recent');
-            loadRecent();
+            // Existing code...
         });
     }
+    */
 
     // Load playlists sidebar
     loadPlaylists();
