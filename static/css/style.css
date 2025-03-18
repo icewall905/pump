@@ -1680,3 +1680,25 @@ body:has(.global-status[style*="display: block"]) .sidebar {
     background-color: #444;
     cursor: pointer;
 }
+
+/* Add at the end of your CSS file */
+
+.settings-select {
+    width: 100%;
+    padding: 8px;
+    background-color: #333;
+    color: #e0e0e0;
+    border: 1px solid #444;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.settings-select:focus {
+    outline: none;
+    border-color: #6a8a5e;
+}
+
+.settings-select option {
+    background-color: #333;
+    color: #e0e0e0;
+}

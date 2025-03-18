@@ -412,34 +412,31 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     
-    // Update the createStation function to actually display the playlist
+    // Update the createStation function to show the playlist size 
     function createStation(trackId) {
+        if (!trackId) return;
+        
         if (analyzeStatus) {
-            showAnalyzeStatus('Creating playlist...', 'progress');
+            showAnalyzeStatus('Creating station...', 'progress');
         }
         
-        // Add this line to show loading in the playlist area too
-        const playlistContainer = document.getElementById('playlist');
-        if (playlistContainer) {
-            playlistContainer.innerHTML = '<div class="loading-large">Analyzing music and building playlist based on this track...</div>';
-        }
+        // Reset playlist
+        if (playlist) playlist.innerHTML = '<div class="loading">Creating playlist based on this track...</div>';
         
-        fetch(`/playlist?seed_track_id=${trackId}`)
+        // Create station
+        fetch(`/station/${trackId}`)
             .then(response => response.json())
             .then(data => {
-                console.log('Playlist data:', data);
-                if (Array.isArray(data)) {
-                    // Store current playlist
-                    currentPlaylist = data;
-                    
-                    // Display the playlist
+                if (Array.isArray(data) && data.length > 0) {
+                    // Display track list
                     displayPlaylist(data);
                     
-                    // Update header with seed track info
-                    const seedTrack = data.find(t => t.id == trackId) || {};
-                    const playlistHeader = document.querySelector('.playlist-container h2');
+                    // Set seed track information for header
+                    const seedTrack = data[0];
+                    const playlistHeader = document.querySelector('.playlist-header h2');
+                    
                     if (playlistHeader) {
-                        playlistHeader.textContent = `Station: ${seedTrack.artist || 'Unknown'} - ${seedTrack.title || 'Unknown'}`;
+                        playlistHeader.textContent = `Station: ${seedTrack.artist || 'Unknown'} - ${seedTrack.title || 'Unknown'} (${data.length} tracks)`;
                     }
                     
                     // Enable save button

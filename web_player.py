@@ -404,7 +404,7 @@ def run_analysis(folder_path, recursive):
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
     """Settings page"""
-    global config  # Add this line to access the module-level config variable
+    global config  # Access the module-level config variable
     
     if request.method == 'POST':
         # Handle form submission
@@ -412,6 +412,11 @@ def settings():
         recursive = request.form.get('recursive') == 'on'
         lastfm_api_key = request.form.get('lastfm_api_key', '')
         lastfm_api_secret = request.form.get('lastfm_api_secret', '')
+        spotify_client_id = request.form.get('spotify_client_id', '')
+        spotify_client_secret = request.form.get('spotify_client_secret', '')
+        
+        # Get the default playlist size
+        default_playlist_size = request.form.get('default_playlist_size', '10')
         
         # Update config
         if not config.has_section('music'):
@@ -423,6 +428,17 @@ def settings():
             config.add_section('lastfm')
         config.set('lastfm', 'api_key', lastfm_api_key)
         config.set('lastfm', 'api_secret', lastfm_api_secret)
+        
+        if not config.has_section('spotify'):
+            config.add_section('spotify')
+        config.set('spotify', 'client_id', spotify_client_id)
+        config.set('spotify', 'client_secret', spotify_client_secret)
+        
+        # Add app section if doesn't exist
+        if not config.has_section('app'):
+            config.add_section('app')
+        # Save the default playlist size
+        config.set('app', 'default_playlist_size', default_playlist_size)
         
         # Save config
         with open(config_file, 'w') as f:
@@ -436,6 +452,10 @@ def settings():
     recursive = config.getboolean('music', 'recursive', fallback=True)
     lastfm_api_key = config.get('lastfm', 'api_key', fallback='')
     lastfm_api_secret = config.get('lastfm', 'api_secret', fallback='')
+    spotify_client_id = config.get('spotify', 'client_id', fallback='')
+    spotify_client_secret = config.get('spotify', 'client_secret', fallback='')
+    # Get the default playlist size
+    default_playlist_size = config.get('app', 'default_playlist_size', fallback='10')
     
     return render_template(
         'settings.html',
@@ -443,6 +463,9 @@ def settings():
         recursive=recursive,
         lastfm_api_key=lastfm_api_key,
         lastfm_api_secret=lastfm_api_secret,
+        spotify_client_id=spotify_client_id,
+        spotify_client_secret=spotify_client_secret,
+        default_playlist_size=default_playlist_size,
         message=request.args.get('message'),
         error=request.args.get('error')
     )
@@ -1409,6 +1432,67 @@ def test_spotify(artist_name):
     except Exception as e:
         logger.error(f"Error testing Spotify API: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/station/<track_id>')
+def create_station(track_id):
+    """Create a playlist based on a seed track"""
+    try:
+        # Get the default playlist size from config
+        playlist_size = int(config.get('app', 'default_playlist_size', fallback='10'))
+        logger.info(f"Creating station with {playlist_size} tracks")
+        
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Get the seed track
+        cursor.execute('SELECT * FROM audio_files WHERE id = ?', (track_id,))
+        seed_track = cursor.fetchone()
+        
+        if not seed_track:
+            return jsonify({'error': 'Seed track not found'})
+        
+        # Use the actual audio analyzer for similarity matching
+        station_tracks = []
+        if analyzer:
+            # Get the seed track as the first item
+            station_tracks.append(dict(seed_track))
+            
+            # Create a station based on audio similarity
+            similar_file_paths = analyzer.create_station(seed_track['file_path'], playlist_size)
+            
+            # Get the full details of the similar tracks
+            for file_path in similar_file_paths:
+                cursor.execute('''
+                    SELECT * FROM audio_files WHERE file_path = ?
+                ''', (file_path,))
+                track = cursor.fetchone()
+                if track:
+                    station_tracks.append(dict(track))
+                    
+            logger.info(f"Created station with {len(station_tracks)} tracks using audio similarity")
+        else:
+            # Fallback to random selection if analyzer not available
+            logger.warning("Analyzer not available, using random selection")
+            cursor.execute('''
+                SELECT * FROM audio_files
+                WHERE id != ?
+                ORDER BY RANDOM()
+                LIMIT ?
+            ''', (track_id, playlist_size))
+            
+            similar_tracks = [dict(track) for track in cursor.fetchall()]
+            station_tracks = [dict(seed_track)] + similar_tracks
+            
+        return jsonify(station_tracks)
+        
+    except Exception as e:
+        logger.error(f"Error creating station: {e}")
+        return jsonify({'error': str(e)})
+    
+    finally:
+        if conn:
+            conn.close()
 
 def run_server():
     """Run the Flask server"""

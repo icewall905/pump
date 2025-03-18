@@ -43,6 +43,27 @@
             </div>
         </div>
 
+        <!-- Add this after the "Music Library" settings section -->
+        <div class="settings-section">
+            <h2>Playlist Settings</h2>
+            <p>Configure defaults for playlist generation</p>
+            
+            <div class="settings-group">
+                <div class="form-group">
+                    <label for="default_playlist_size">Default Station Size:</label>
+                    <select id="default_playlist_size" name="default_playlist_size" class="settings-select">
+                        <option value="10" {% if default_playlist_size == '10' %}selected{% endif %}>10 tracks</option>
+                        <option value="20" {% if default_playlist_size == '20' %}selected{% endif %}>20 tracks</option>
+                        <option value="30" {% if default_playlist_size == '30' %}selected{% endif %}>30 tracks</option>
+                        <option value="40" {% if default_playlist_size == '40' %}selected{% endif %}>40 tracks</option>
+                        <option value="50" {% if default_playlist_size == '50' %}selected{% endif %}>50 tracks</option>
+                        <option value="100" {% if default_playlist_size == '100' %}selected{% endif %}>100 tracks</option>
+                    </select>
+                    <p class="help-text">Default number of tracks to include when creating a station</p>
+                </div>
+            </div>
+        </div>
+
         <!-- External API Configuration Section -->
         <div class="settings-section">
             <h2>External API Configuration</h2>
