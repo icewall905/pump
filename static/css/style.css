@@ -1482,3 +1482,35 @@ body:has(.global-status[style*="display: block"]) .sidebar {
 .sub-nav-button.active + a.nav-button {
     background-color: rgba(106, 138, 94, 0.3);
 }
+
+/* Add these at the end of your CSS file */
+
+.playlist-controls {
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.toast-notification {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background-color: rgba(106, 138, 94, 0.9);
+    color: white;
+    padding: 12px 20px;
+    border-radius: 4px;
+    z-index: 2000;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+    animation: slide-in 0.3s ease-out;
+}
+
+@keyframes slide-in {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+}
+
+.toast-notification.fade-out {
+    opacity: 0;
+    transition: opacity 0.5s ease-out;
+}

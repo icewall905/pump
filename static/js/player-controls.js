@@ -278,4 +278,36 @@ document.addEventListener('DOMContentLoaded', function() {
             volumeSlider.value = lastVolume || 0.7;
         }
     }
+
+    // Expose queue management to window
+    window.playEntirePlaylist = playEntirePlaylist;
+
+    function playEntirePlaylist(tracks) {
+        if (!tracks || !Array.isArray(tracks) || tracks.length === 0) {
+            console.error('No tracks to play');
+            return;
+        }
+        
+        console.log(`Playing entire playlist with ${tracks.length} tracks`);
+        
+        // Clear current queue and replace with the playlist
+        queue = [...tracks];
+        currentTrackIndex = 0;
+        
+        // Start playing the first track
+        const firstTrack = queue[0];
+        playTrackById(firstTrack.id);
+        
+        // Show a notification
+        const notification = document.createElement('div');
+        notification.className = 'toast-notification';
+        notification.textContent = `Playing playlist (${tracks.length} tracks)`;
+        document.body.appendChild(notification);
+        
+        // Remove notification after 3 seconds
+        setTimeout(() => {
+            notification.classList.add('fade-out');
+            setTimeout(() => document.body.removeChild(notification), 500);
+        }, 3000);
+    }
 });

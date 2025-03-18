@@ -486,6 +486,24 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
         
+        // Add Play All button at the top
+        const playAllContainer = document.createElement('div');
+        playAllContainer.className = 'playlist-controls';
+        playAllContainer.innerHTML = `
+            <button id="play-all-button" class="primary-button">
+                ▶️ Play All (${tracks.length} tracks)
+            </button>
+        `;
+        playlist.appendChild(playAllContainer);
+        
+        // Add event listener to Play All button
+        const playAllButton = document.getElementById('play-all-button');
+        if (playAllButton) {
+            playAllButton.addEventListener('click', function() {
+                playEntirePlaylist(tracks);
+            });
+        }
+        
         const tracksContainer = document.createElement('div');
         tracksContainer.className = 'track-grid';
         
