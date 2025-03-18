@@ -1,7 +1,80 @@
 
 ![logo copy 2](https://github.com/user-attachments/assets/d531b729-c97b-4de2-92e5-f631f4630227)
 
-PUMP is a web-based music player that analyzes your music collection and creates personalized playlists based on audio features and similarity.
+PUMP is a local music player application with advanced audio analysis features, playlist generation, and music metadata services integration.
+
+## System Requirements
+
+- Python 3.9+
+- Git
+- Anaconda or Miniconda (recommended)
+- Audio libraries dependencies (see installation)
+
+## Installation on Linux
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/yourusername/pump.git
+cd pump
+```
+
+### 2. Install System Dependencies
+
+#### Debian/Ubuntu:
+
+```bash
+sudo apt update
+sudo apt install -y python3-dev python3-pip ffmpeg libasound2-dev portaudio19-dev libportaudio2 libportaudiocpp0 libsndfile1-dev
+```
+
+#### Fedora/RHEL/CentOS:
+
+```bash
+sudo dnf install -y python3-devel ffmpeg portaudio-devel libsndfile-devel
+```
+
+#### Arch Linux:
+
+```bash
+sudo pacman -S python python-pip ffmpeg portaudio libsndfile
+```
+
+### 3. Set Up a Python Environment
+
+#### Using Conda (recommended):
+
+```bash
+# Install Miniconda if you don't have it
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+bash Miniconda3-latest-Linux-x86_64.sh
+source ~/.bashrc
+
+# Create and activate environment
+conda create -n pump_env python=3.9
+conda activate pump_env
+```
+
+#### Using venv (alternative):
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 4. Install Python Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+If you encounter issues with librosa or other audio analysis libraries, try:
+
+```bash
+pip install --upgrade pip setuptools wheel
+pip install --only-binary=:all: numpy
+pip install -r requirements.txt
+```
 
 ## Running PUMP
 
