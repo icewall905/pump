@@ -15,7 +15,7 @@ PUMP is a local music player application with advanced audio analysis features, 
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/pump.git
+git clone https://github.com/icewall905/pump.git
 cd pump
 ```
 
