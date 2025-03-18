@@ -25,19 +25,19 @@ cd pump
 
 ```bash
 sudo apt update
-sudo apt install -y python3-dev python3-pip ffmpeg libasound2-dev portaudio19-dev libportaudio2 libportaudiocpp0 libsndfile1-dev
+sudo apt install -y python3-dev python3-pip ffmpeg libasound2-dev portaudio19-dev libportaudio2 libportaudiocpp0 libsndfile1-dev git
 ```
 
 #### Fedora/RHEL/CentOS:
 
 ```bash
-sudo dnf install -y python3-devel ffmpeg portaudio-devel libsndfile-devel
+sudo dnf install -y python3-devel ffmpeg portaudio-devel libsndfile-devel git
 ```
 
 #### Arch Linux:
 
 ```bash
-sudo pacman -S python python-pip ffmpeg portaudio libsndfile
+sudo pacman -S python python-pip ffmpeg portaudio libsndfile git
 ```
 
 ### 3. Set Up a Python Environment
