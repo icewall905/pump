@@ -17,6 +17,58 @@ document.addEventListener('DOMContentLoaded', function() {
     const volumeSlider = document.getElementById('volume-slider');
     const muteButton = document.getElementById('mute-button');
     
+    // Add queue button to the now playing bar - place after the volume controls
+    const nowPlayingContainer = document.querySelector('.now-playing-container');
+    if (nowPlayingContainer) {
+        // Check if queue button doesn't already exist
+        if (!document.getElementById('queue-button')) {
+            const queueButtonContainer = document.createElement('div');
+            queueButtonContainer.className = 'queue-button-container';
+            queueButtonContainer.innerHTML = `
+                <button id="queue-button" class="control-button" title="Show Queue">
+                    ≡  <!-- Simple text-based queue icon -->
+                </button>
+            `;
+            nowPlayingContainer.appendChild(queueButtonContainer);
+            
+            // Add click handler
+            document.getElementById('queue-button').addEventListener('click', toggleQueuePanel);
+        }
+    }
+    
+    // Add this code after the queue button creation
+
+    // Create queue panel if it doesn't exist
+    if (!document.getElementById('queue-panel')) {
+        const queuePanel = document.createElement('div');
+        queuePanel.id = 'queue-panel';
+        queuePanel.className = 'queue-panel';
+        queuePanel.innerHTML = `
+            <div class="queue-panel-header">
+                <h3>Current Queue</h3>
+                <button id="close-queue-panel" class="queue-close-button">&times;</button>
+            </div>
+            <div class="queue-panel-content">
+                <div id="now-playing-track" class="queue-section">
+                    <h4>Now Playing</h4>
+                    <div id="current-queue-track" class="queue-track">
+                        <!-- Current track will be displayed here -->
+                    </div>
+                </div>
+                <div class="queue-section">
+                    <h4>Coming Up Next</h4>
+                    <div id="upcoming-tracks" class="queue-tracks-list">
+                        <!-- Upcoming tracks will be displayed here -->
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(queuePanel);
+        
+        // Add close button event listener
+        document.getElementById('close-queue-panel').addEventListener('click', closeQueuePanel);
+    }
+    
     // Queue and current track state
     let queue = [];
     let currentTrackIndex = -1;
@@ -122,6 +174,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     // Find track in queue
                     currentTrackIndex = queue.findIndex(t => t.id === track.id);
                 }
+                document.dispatchEvent(new Event('queue-updated'));
             })
             .catch(error => {
                 console.error('Error fetching track data:', error);
@@ -208,6 +261,7 @@ document.addEventListener('DOMContentLoaded', function() {
             isPlaying = false;
             updatePlayPauseButton();
         }
+        document.dispatchEvent(new Event('queue-updated'));
     }
     
     function updateProgress() {
@@ -309,5 +363,108 @@ document.addEventListener('DOMContentLoaded', function() {
             notification.classList.add('fade-out');
             setTimeout(() => document.body.removeChild(notification), 500);
         }, 3000);
+        document.dispatchEvent(new Event('queue-updated'));
     }
+
+    // Add these functions to handle the queue panel
+
+    function toggleQueuePanel() {
+        const queuePanel = document.getElementById('queue-panel');
+        if (queuePanel) {
+            queuePanel.classList.toggle('active');
+            
+            if (queuePanel.classList.contains('active')) {
+                updateQueueDisplay();
+            }
+        }
+    }
+
+    function closeQueuePanel() {
+        const queuePanel = document.getElementById('queue-panel');
+        if (queuePanel) {
+            queuePanel.classList.remove('active');
+        }
+    }
+
+    function updateQueueDisplay() {
+        // Update current track display
+        const currentTrackElement = document.getElementById('current-queue-track');
+        const upcomingTracksElement = document.getElementById('upcoming-tracks');
+        
+        if (!currentTrackElement || !upcomingTracksElement) return;
+        
+        if (queue.length > 0 && currentTrackIndex >= 0 && currentTrackIndex < queue.length) {
+            const currentTrack = queue[currentTrackIndex];
+            
+            // Display current track
+            currentTrackElement.innerHTML = `
+                <div class="queue-track now-playing">
+                    <div class="queue-track-art">
+                        <img src="${currentTrack.album_art_url || '/static/images/default-album-art.png'}" 
+                             alt="Album Art">
+                    </div>
+                    <div class="queue-track-info">
+                        <div class="queue-track-title">${currentTrack.title || 'Unknown Title'}</div>
+                        <div class="queue-track-artist">${currentTrack.artist || 'Unknown Artist'}</div>
+                    </div>
+                </div>
+            `;
+            
+            // Display upcoming tracks
+            let upcomingTracksHTML = '';
+            for (let i = currentTrackIndex + 1; i < queue.length; i++) {
+                const track = queue[i];
+                upcomingTracksHTML += `
+                    <div class="queue-track" data-index="${i}">
+                        <div class="queue-track-art">
+                            <img src="${track.album_art_url || '/static/images/default-album-art.png'}" 
+                                 alt="Album Art">
+                        </div>
+                        <div class="queue-track-info">
+                            <div class="queue-track-title">${track.title || 'Unknown Title'}</div>
+                            <div class="queue-track-artist">${track.artist || 'Unknown Artist'}</div>
+                        </div>
+                        <div class="queue-track-controls">
+                            <button class="queue-track-remove" data-index="${i}" title="Remove from queue">&times;</button>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            upcomingTracksElement.innerHTML = upcomingTracksHTML || '<p>No more tracks in queue</p>';
+            
+            // Add event listeners to track elements
+            document.querySelectorAll('.queue-track').forEach(trackElem => {
+                if (!trackElem.classList.contains('now-playing')) {
+                    trackElem.addEventListener('click', function() {
+                        const index = parseInt(this.dataset.index);
+                        if (!isNaN(index)) {
+                            currentTrackIndex = index;
+                            playTrackById(queue[index].id);
+                            updateQueueDisplay();
+                        }
+                    });
+                }
+            });
+            
+            // Add event listeners to remove buttons
+            document.querySelectorAll('.queue-track-remove').forEach(button => {
+                button.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    const index = parseInt(this.dataset.index);
+                    if (!isNaN(index) && index < queue.length) {
+                        queue.splice(index, 1);
+                        updateQueueDisplay();
+                    }
+                });
+            });
+        } else {
+            currentTrackElement.innerHTML = '<p>No track currently playing</p>';
+            upcomingTracksElement.innerHTML = '<p>Queue is empty</p>';
+        }
+    }
+
+    // Call updateQueueDisplay whenever the queue changes or a track ends/starts
+    // Add this to your existing code where you update the player
+    document.addEventListener('queue-updated', updateQueueDisplay);
 });

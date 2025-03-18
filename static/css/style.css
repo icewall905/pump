@@ -1514,3 +1514,169 @@ body:has(.global-status[style*="display: block"]) .sidebar {
     opacity: 0;
     transition: opacity 0.5s ease-out;
 }
+
+/* Add these styles at the end of your CSS file */
+
+/* Queue Button */
+.queue-button-container {
+    margin-left: 15px;
+}
+
+/* Queue Panel Styles */
+.queue-panel {
+    position: fixed;
+    top: 0;
+    right: -350px;
+    width: 350px;
+    height: 100%;
+    background-color: #252525;
+    box-shadow: -2px 0 10px rgba(0, 0, 0, 0.5);
+    z-index: 2000;
+    transition: right 0.3s ease-in-out;
+    display: flex;
+    flex-direction: column;
+    color: #e0e0e0;
+}
+
+.queue-panel.active {
+    right: 0;
+}
+
+.queue-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    border-bottom: 1px solid #333;
+}
+
+.queue-panel-header h3 {
+    margin: 0;
+    font-size: 18px;
+    color: #e0e0e0;
+}
+
+.queue-close-button {
+    background: none;
+    border: none;
+    color: #999;
+    font-size: 24px;
+    cursor: pointer;
+}
+
+.queue-close-button:hover {
+    color: #e0e0e0;
+}
+
+.queue-panel-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px;
+}
+
+.queue-section {
+    margin-bottom: 20px;
+}
+
+.queue-section h4 {
+    font-size: 14px;
+    color: #999;
+    margin-bottom: 10px;
+    padding-left: 10px;
+}
+
+.queue-track {
+    padding: 10px;
+    border-radius: 4px;
+    background-color: #333;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+}
+
+.queue-track.now-playing {
+    border-left: 3px solid #6a8a5e;
+    background-color: #3a3a3a;
+}
+
+.queue-track-art {
+    width: 50px;
+    height: 50px;
+    margin-right: 10px;
+    border-radius: 3px;
+    overflow: hidden;
+    background-color: #222;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.queue-track-art img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.queue-track-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.queue-track-title {
+    font-size: 14px;
+    font-weight: bold;
+    margin-bottom: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.queue-track-artist {
+    font-size: 12px;
+    color: #999;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.queue-track-controls {
+    margin-left: 10px;
+}
+
+.queue-track-remove {
+    background: none;
+    border: none;
+    color: #999;
+    cursor: pointer;
+    padding: 5px;
+}
+
+.queue-track-remove:hover {
+    color: #e0e0e0;
+}
+
+/* Add these styles at the end of your CSS file */
+
+/* Style the queue button */
+#queue-button {
+    font-size: 20px;
+    line-height: 1;
+    padding: 5px 10px;
+    background: transparent;
+    border: 1px solid #666;
+    border-radius: 3px;
+    color: #ddd;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+#queue-button:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    border-color: #999;
+}
+
+/* Add a hover effect to queue tracks */
+.queue-track:not(.now-playing):hover {
+    background-color: #444;
+    cursor: pointer;
+}
