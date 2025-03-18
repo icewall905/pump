@@ -430,6 +430,9 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(response => response.json())
             .then(data => {
                 if (Array.isArray(data) && data.length > 0) {
+                    // ✅ ADD THIS LINE - Store tracks in currentPlaylist
+                    currentPlaylist = data;
+                    
                     // Display track list
                     displayPlaylist(data);
                     

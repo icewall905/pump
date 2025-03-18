@@ -1,22 +1,71 @@
 # Configuration files with sensitive data
-pump.conf
+*.conf
+config.ini
+.env
+secrets.json
+*.cfg
 
 # Python cache files
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Virtual environments
 env/
 venv/
 ENV/
+.env/
+.venv/
 
 # Database files
 *.db
+*.db-journal
+*.sqlite
+*.sqlite3
 
-# OS specific files
+# Audio and media files
+*.mp3
+*.flac
+*.wav
+*.aac
+*.m4a
+*.ogg
+*.wma
+music/
+audio/
+media/
+
+# Cache directories
+album_art_cache/
+lastfm_cache/
+spotify_cache/
+cache/
+.cache/
+__cache__/
+thumbnails/
+
+# Generated analysis files
+analysis_results/
+audio_features/
+
+# System and IDE files
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
 
-#Cache
-album_art_cache/
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
