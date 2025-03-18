@@ -7,6 +7,7 @@ import argparse
 from typing import Dict, List, Tuple, Union, Optional
 from pathlib import Path
 from lastfm_service import LastFMService
+from spotify_service import SpotifyService  # Add this import
 import configparser
 import logging
 
@@ -31,28 +32,46 @@ class MusicAnalyzer:
         self._initialize_db()
         self.metadata_service = MetadataService()
         
-        # Initialize LastFM service with API key from config
+        # Initialize services with API keys from config
         self.lastfm_service = None
-        self._initialize_lastfm()
+        self.spotify_service = None
+        self._initialize_services()
     
-    def _initialize_lastfm(self):
-        """Initialize LastFM service with API key from config"""
+    def _initialize_services(self):
+        """Initialize LastFM and Spotify services with API keys from config"""
         try:
             config = configparser.ConfigParser()
             if os.path.exists('pump.conf'):
                 config.read('pump.conf')
                 
+            # Initialize LastFM - first try user's key, then fallback key
             api_key = config.get('lastfm', 'api_key', fallback=None)
             api_secret = config.get('lastfm', 'api_secret', fallback=None)
             
-            if api_key:
-                self.lastfm_service = LastFMService(api_key, api_secret)
-                logging.info("LastFM service initialized successfully")
-            else:
-                logging.warning("LastFM API key not found in configuration")
+            # If user's key is missing, try fallback key
+            if not api_key:
+                api_key = 'b21e44890bc788b52879506873d5ac33'  # Fallback key
+                api_secret = 'bc5e07063a9e09401386a78bfd1350f9'  # Fallback secret
+                logging.info("Using fallback LastFM API key")
+            
+            self.lastfm_service = LastFMService(api_key, api_secret)
+            logging.info("LastFM service initialized successfully")
+                
+            # Initialize Spotify - first try user's credentials, then fallback
+            client_id = config.get('spotify', 'client_id', fallback=None)
+            client_secret = config.get('spotify', 'client_secret', fallback=None)
+            
+            # If user's credentials are missing, try fallback
+            if not client_id or not client_secret:
+                client_id = '5de01599b1ec493ea7fc3d0c4b1ec977'  # Fallback ID
+                client_secret = 'be8bb04ebb9c447484f62320bfa9b4cc'  # Fallback secret
+                logging.info("Using fallback Spotify API credentials")
+                
+            self.spotify_service = SpotifyService(client_id, client_secret)
+            logging.info("Spotify service initialized successfully")
                 
         except Exception as e:
-            logging.error(f"Error initializing LastFM service: {e}")
+            logging.error(f"Error initializing services: {e}")
         
     def _initialize_db(self):
         """Create database tables if they don't exist."""
@@ -171,10 +190,19 @@ class MusicAnalyzer:
             
             # After extracting basic metadata, fetch artist image if possible
             artist_image_url = None
-            if features["artist"] and self.lastfm_service:
-                artist_image_url = self.lastfm_service.get_artist_image_url(features["artist"])
-                if artist_image_url:
-                    logging.info(f"Found artist image for {features['artist']}")
+            if features["artist"]:
+                # Try LastFM first
+                if self.lastfm_service:
+                    artist_image_url = self.lastfm_service.get_artist_image_url(features["artist"])
+                    if artist_image_url:
+                        logging.info(f"Found LastFM artist image for {features['artist']}")
+                
+                # If LastFM failed, try Spotify as fallback
+                if not artist_image_url and self.spotify_service:
+                    artist_image_url = self.spotify_service.get_artist_image_url(features["artist"])
+                    if artist_image_url:
+                        logging.info(f"Found Spotify artist image for {features['artist']}")
+                        
             features["artist_image_url"] = artist_image_url
             
             # Save to database if requested

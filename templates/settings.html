@@ -64,8 +64,31 @@
                 </div>
                 
                 <div class="form-group">
-                    <button type="button" id="update-artist-images" class="secondary-button">Update Artist Images</button>
+                    <button type="button" id="update-artist-images" class="secondary-button">Update Artist Images (LastFM)</button>
                     <p class="help-text">Fetch missing artist images from Last.fm</p>
+                    <div id="lastfm-update-status"></div>
+                </div>
+            </div>
+
+            <!-- Add Spotify section -->
+            <div class="settings-group">
+                <h3>Spotify API</h3>
+                <p>Get Spotify API credentials from <a href="https://developer.spotify.com/dashboard" target="_blank">Spotify Developer Dashboard</a></p>
+                
+                <div class="form-group">
+                    <label for="spotify_client_id">Client ID:</label>
+                    <input type="text" id="spotify_client_id" name="spotify_client_id" value="{{ spotify_client_id }}">
+                </div>
+                
+                <div class="form-group">
+                    <label for="spotify_client_secret">Client Secret:</label>
+                    <input type="password" id="spotify_client_secret" name="spotify_client_secret" value="{{ spotify_client_secret }}">
+                </div>
+                
+                <div class="form-group">
+                    <button type="button" id="update-artist-images-spotify" class="secondary-button">Update Artist Images (Spotify)</button>
+                    <p class="help-text">Fetch artist images from Spotify (recommended)</p>
+                    <div id="spotify-update-status"></div>
                 </div>
             </div>
         </div>
@@ -357,10 +380,99 @@
                 })
                 .finally(() => {
                     this.disabled = false;
-                    this.textContent = 'Update Artist Images';
+                    this.textContent = 'Update Artist Images (LastFM)';
                 });
             });
         }
+
+        // Spotify artist image update button
+        const updateSpotifyImagesBtn = document.getElementById('update-artist-images-spotify');
+        if (updateSpotifyImagesBtn) {
+            updateSpotifyImagesBtn.addEventListener('click', function() {
+                this.disabled = true;
+                this.textContent = 'Updating...';
+                
+                fetch('/api/update-artist-images/spotify', {
+                    method: 'POST'
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert(`Error: ${data.error}`);
+                    } else {
+                        alert(`Updated ${data.updated} of ${data.total} artist images with Spotify`);
+                        // Refresh the page to see updated settings
+                        window.location.reload();
+                    }
+                })
+                .catch(error => {
+                    console.error('Error updating artist images:', error);
+                    alert('Failed to update artist images. See console for details.');
+                })
+                .finally(() => {
+                    this.disabled = false;
+                    this.textContent = 'Update Artist Images (Spotify)';
+                });
+            });
+        }
+
+        // LastFM artist image update
+        document.getElementById('update-artist-images').addEventListener('click', function() {
+            const button = this;
+            button.disabled = true;
+            button.textContent = 'Updating...';
+            document.getElementById('update-status').textContent = 'Updating artist images...';
+            
+            fetch('/api/update-artist-images', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById('update-status').textContent = `Error: ${data.error}`;
+                } else {
+                    document.getElementById('update-status').textContent = 
+                        `Updated ${data.updated} of ${data.total} artist images with LastFM`;
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                document.getElementById('update-status').textContent = 'Failed to update images';
+            })
+            .finally(() => {
+                button.disabled = false;
+                button.textContent = 'Update Artist Images (LastFM)';
+            });
+        });
+
+        // Spotify artist image update
+        document.getElementById('update-artist-images-spotify').addEventListener('click', function() {
+            const button = this;
+            button.disabled = true;
+            button.textContent = 'Updating...';
+            document.getElementById('update-status').textContent = 'Updating artist images with Spotify...';
+            
+            fetch('/api/update-artist-images/spotify', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    document.getElementById('update-status').textContent = `Error: ${data.error}`;
+                } else {
+                    document.getElementById('update-status').textContent = 
+                        `Updated ${data.updated} of ${data.total} artist images with Spotify`;
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                document.getElementById('update-status').textContent = 'Failed to update images';
+            })
+            .finally(() => {
+                button.disabled = false;
+                button.textContent = 'Update Artist Images (Spotify)';
+            });
+        });
     });
 </script>
 {% endblock %}

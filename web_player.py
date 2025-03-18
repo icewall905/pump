@@ -9,16 +9,13 @@ from music_analyzer import MusicAnalyzer
 from werkzeug.serving import run_simple
 import requests
 from urllib.parse import unquote
-
 import pathlib
-
 from metadata_service import MetadataService
-
-# Add this with your other imports at the top of the file
+from lastfm_service import LastFMService
+from spotify_service import SpotifyService  # Add this import at the top
 from datetime import datetime
-
-# Add these imports at the top with your other Flask imports
 from flask import redirect, url_for
+import time  # For sleep between API calls
 
 # Set up logging
 logging.basicConfig(
@@ -523,6 +520,48 @@ def album_art_proxy(url):
         logger.error(f"Error proxying album art: {e}")
         return '', 500
 
+@app.route('/artistimg/<path:url>')
+def artist_image_proxy(url):
+    """Proxy for artist images with local caching"""
+    try:
+        # Decode URL
+        url = unquote(url)
+        
+        # Generate a cache filename based on URL hash
+        url_hash = hashlib.md5(url.encode()).hexdigest()
+        cache_path = os.path.join(CACHE_DIR, f"artist_{url_hash}.jpg")
+        
+        # Check if the image is already in cache
+        if os.path.exists(cache_path):
+            return send_file(cache_path, mimetype='image/jpeg')
+        
+        # If not in cache, fetch from source
+        logger.info(f"Fetching artist image from: {url}")
+        
+        # Fetch the image
+        response = requests.get(url, stream=True)
+        
+        if (response.status_code == 200):
+            # Get content type from response
+            content_type = response.headers.get('Content-Type', 'image/jpeg')
+            
+            # Read the image data
+            image_data = response.raw.read()
+            
+            # Save to cache
+            with open(cache_path, 'wb') as f:
+                f.write(image_data)
+            
+            # Return the image data
+            return Response(image_data, content_type=content_type)
+        else:
+            logger.error(f"Failed to fetch artist image: HTTP {response.status_code}")
+            return '', 404
+            
+    except Exception as e:
+        logger.error(f"Error proxying artist image: {e}")
+        return '', 500
+
 def cleanup_cache():
     """Cleanup the image cache if it exceeds the maximum size"""
     try:
@@ -960,19 +999,18 @@ def library():
 
 @app.route('/api/library/artists')
 def get_artists():
-    """Get all artists in the library"""
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT DISTINCT artist, COUNT(*) as track_count,
-                   (SELECT file_path FROM audio_files WHERE artist=a.artist LIMIT 1) as sample_track,
-                   (SELECT artist_image_url FROM audio_files 
-                    WHERE artist=a.artist AND artist_image_url IS NOT NULL 
-                    LIMIT 1) as artist_image
-            FROM audio_files a
+            SELECT 
+                artist, 
+                COUNT(*) as track_count,
+                artist_image_url,
+                SUM(duration) as total_duration
+            FROM audio_files
             WHERE artist IS NOT NULL AND artist != ''
             GROUP BY artist
             ORDER BY artist COLLATE NOCASE
@@ -980,6 +1018,10 @@ def get_artists():
         
         artists = [dict(row) for row in cursor.fetchall()]
         conn.close()
+        
+        # Log the first few artists to see if they have images
+        if artists and len(artists) > 0:
+            logger.info(f"Sample artists: {artists[:2]}")
         
         return jsonify(artists)
     except Exception as e:
@@ -1048,69 +1090,323 @@ def get_songs():
 
 @app.route('/api/update-artist-images', methods=['POST'])
 def update_artist_images():
-    """Update artist images using Last.fm"""
+    """Update artist images using LastFM"""
     try:
         # Get Last.fm API key from config
-        config = configparser.ConfigParser()
-        config.read('pump.conf')
         api_key = config.get('lastfm', 'api_key', fallback=None)
         api_secret = config.get('lastfm', 'api_secret', fallback=None)
         
+        # Use fallback keys if needed
         if not api_key:
-            return jsonify({'error': 'Last.fm API key not configured'}), 400
+            api_key = 'b21e44890bc788b52879506873d5ac33'
+            api_secret = 'bc5e07063a9e09401386a78bfd1350f9'
+            logger.info("Using fallback LastFM API key")
             
-        # Initialize LastFM service
-        from lastfm_service import LastFMService
         lastfm = LastFMService(api_key, api_secret)
         
-        # Get artists without images
+        # Get artists WITHOUT images only
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
+        default_image = "https://lastfm.freetls.fastly.net/i/u/300x300/2a96cbd8b46e442fc41c2b86b821562f.png"
+        
         cursor.execute('''
             SELECT DISTINCT artist FROM audio_files 
             WHERE artist IS NOT NULL AND artist != '' 
-            AND artist NOT IN (
-                SELECT DISTINCT artist FROM audio_files 
-                WHERE artist_image_url IS NOT NULL AND artist_image_url != ''
-            )
+            AND (artist_image_url IS NULL OR artist_image_url = '' OR artist_image_url = ?)
             ORDER BY artist
-        ''')
+        ''', (default_image,))
         
         artists = [row['artist'] for row in cursor.fetchall()]
+        conn.close()
         
         if not artists:
             return jsonify({'message': 'No artists without images found'}), 200
-            
-        # Counter for successful updates
-        updated_count = 0
         
-        # Update artist images
+        # Dictionary to collect images before DB updates
+        artist_images = {}
+        
+        # First fetch all images without touching DB
+        total = len(artists)
         for artist in artists:
-            # Get image URL from Last.fm
-            image_url = lastfm.get_artist_image_url(artist)
-            
-            if image_url:
-                # Update all tracks for this artist
-                cursor.execute('''
-                    UPDATE audio_files SET artist_image_url = ? 
-                    WHERE artist = ?
-                ''', (image_url, artist))
-                updated_count += 1
+            try:
+                logger.info(f"Fetching image for artist: {artist}")
+                image_url = lastfm.get_artist_image_url(artist)
+                if image_url:
+                    logger.info(f"Found image for {artist}: {image_url}")
+                    artist_images[artist] = image_url
+                else:
+                    logger.warning(f"No image found for {artist}")
+            except Exception as e:
+                logger.error(f"Error processing artist {artist}: {e}")
+
+        # Now update the database in a single transaction
+        updated_count = 0
+        if artist_images:
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                conn.execute('BEGIN')
                 
-        conn.commit()
-        conn.close()
-        
+                for artist, image_url in artist_images.items():
+                    cursor.execute(
+                        'UPDATE audio_files SET artist_image_url = ? WHERE artist = ?', 
+                        (image_url, artist)
+                    )
+                    updated_count += 1
+                
+                conn.commit()
+                conn.close()
+                logger.info(f"Updated {updated_count} artist images in database")
+            except Exception as e:
+                logger.error(f"Database update error: {e}")
+                if 'conn' in locals():
+                    conn.rollback()
+                    conn.close()
+
         return jsonify({
-            'success': True,
-            'message': f'Updated images for {updated_count} of {len(artists)} artists',
+            'success': True, 
+            'message': f'Updated images for {updated_count} of {total} artists',
             'updated': updated_count,
-            'total': len(artists)
+            'total': total
         })
         
     except Exception as e:
         logger.error(f"Error updating artist images: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/test-lastfm/<artist_name>')
+def test_lastfm(artist_name):
+    """Test lastfm API directly"""
+    try:
+        api_key = config.get('lastfm', 'api_key', fallback=None)
+        api_secret = config.get('lastfm', 'api_secret', fallback=None)
+        
+        if not api_key:
+            return jsonify({'error': 'LastFM API key not configured'}), 400
+        
+        # Make direct API request
+        import requests
+        base_url = "http://ws.audioscrobbler.com/2.0/"
+        params = {
+            'method': 'artist.getinfo',
+            'artist': artist_name,
+            'api_key': api_key,
+            'format': 'json'
+        }
+        
+        response = requests.get(base_url, params=params, timeout=10)
+        data = response.json()
+        
+        # Check for errors
+        if 'error' in data:
+            return jsonify({
+                'success': False,
+                'error': data.get('message', 'Unknown LastFM error'),
+                'code': data.get('error')
+            }), 400
+        
+        # Extract image URLs
+        artist_data = data.get('artist', {})
+        images = artist_data.get('image', [])
+        image_urls = {img.get('size'): img.get('#text') for img in images}
+        
+        return jsonify({
+            'success': True,
+            'artist': artist_name,
+            'images': image_urls,
+            'mbid': artist_data.get('mbid'),
+            'url': artist_data.get('url')
+        })
+        
+    except Exception as e:
+        logger.error(f"Error testing LastFM API: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# filepath: /home/hnyg/git/pump/pump/web_player.py
+@app.route('/api/test-lastfm-key')
+def test_lastfm_key():
+    """Test if the LastFM API key is valid"""
+    try:
+        # Try both API keys
+        main_key = config.get('lastfm', 'api_key', fallback=None)
+        backup_key = config.get('api_keys', 'lastfm_api_key', fallback=None)
+        
+        results = {}
+        
+        # Test first key
+        if main_key:
+            import requests
+            base_url = "http://ws.audioscrobbler.com/2.0/"
+            params = {
+                'method': 'auth.getSession',
+                'api_key': main_key,
+                'format': 'json'
+            }
+            
+            response = requests.get(base_url, params=params, timeout=10)
+            results['main_key'] = {
+                'key': main_key[:5] + '...',
+                'status_code': response.status_code,
+                'response': response.text[:100]
+            }
+        
+        # Test second key
+        if backup_key:
+            import requests
+            base_url = "http://ws.audioscrobbler.com/2.0/"
+            params = {
+                'method': 'auth.getSession',
+                'api_key': backup_key,
+                'format': 'json'
+            }
+            
+            response = requests.get(base_url, params=params, timeout=10)
+            results['backup_key'] = {
+                'key': backup_key[:5] + '...',
+                'status_code': response.status_code,
+                'response': response.text[:100]
+            }
+        
+        return jsonify(results)
+        
+    except Exception as e:
+        logger.error(f"Error testing LastFM API keys: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/update-artist-images/spotify', methods=['POST'])
+def update_artist_images_spotify():
+    """Update artist images using Spotify"""
+    try:
+        # Get Spotify API credentials
+        client_id = config.get('spotify', 'client_id', fallback=None)
+        client_secret = config.get('spotify', 'client_secret', fallback=None)
+        
+        # Use fallback keys if needed
+        if not client_id or not client_secret:
+            client_id = '5de01599b1ec493ea7fc3d0c4b1ec977'
+            client_secret = 'be8bb04ebb9c447484f62320bfa9b4cc'
+            logger.info("Using fallback Spotify API credentials")
+            
+        # Initialize Spotify service
+        spotify = SpotifyService(client_id, client_secret)
+        
+        # Get artists WITHOUT images only
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        default_image = "https://lastfm.freetls.fastly.net/i/u/300x300/2a96cbd8b46e442fc41c2b86b821562f.png"
+        
+        cursor.execute('''
+            SELECT DISTINCT artist FROM audio_files 
+            WHERE artist IS NOT NULL AND artist != '' 
+            AND (artist_image_url IS NULL OR artist_image_url = '' OR artist_image_url = ?)
+            ORDER BY artist
+        ''', (default_image,))
+        
+        artists = [row['artist'] for row in cursor.fetchall()]
+        conn.close()
+        
+        if not artists:
+            return jsonify({'message': 'No artists without images found'}), 200
+
+        # Dictionary to collect images before DB updates
+        artist_images = {}
+        
+        # First fetch all images without touching DB
+        total = len(artists)
+        for artist in artists:
+            try:
+                logger.info(f"Fetching Spotify image for artist: {artist}")
+                image_url = spotify.get_artist_image_url(artist)
+                if image_url:
+                    logger.info(f"Found Spotify image for {artist}: {image_url}")
+                    artist_images[artist] = image_url
+                else:
+                    logger.warning(f"No Spotify image found for {artist}")
+            except Exception as e:
+                logger.error(f"Error processing artist {artist} with Spotify: {e}")
+
+        # Now update the database in a single transaction
+        updated_count = 0
+        if artist_images:
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                conn.execute('BEGIN')
+                
+                for artist, image_url in artist_images.items():
+                    cursor.execute(
+                        'UPDATE audio_files SET artist_image_url = ? WHERE artist = ?', 
+                        (image_url, artist)
+                    )
+                    updated_count += 1
+                
+                conn.commit()
+                conn.close()
+                logger.info(f"Updated {updated_count} artist images in database")
+            except Exception as e:
+                logger.error(f"Database update error: {e}")
+                if 'conn' in locals():
+                    conn.rollback()
+                    conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': f'Updated images for {updated_count} of {total} artists using Spotify',
+            'updated': updated_count,
+            'total': total
+        })
+        
+    except Exception as e:
+        logger.error(f"Error updating artist images with Spotify: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/test-spotify/<artist_name>')
+def test_spotify(artist_name):
+    """Test Spotify API directly"""
+    try:
+        client_id = config.get('spotify', 'client_id', fallback=None)
+        client_secret = config.get('spotify', 'client_secret', fallback=None)
+        
+        if not client_id or not client_secret:
+            return jsonify({'error': 'Spotify API credentials not configured'}), 400
+        
+        # Initialize and test
+        from spotify_service import SpotifyService
+        spotify = SpotifyService(client_id, client_secret)
+        
+        # Get token
+        token = spotify.get_token()
+        if not token:
+            return jsonify({'error': 'Failed to get Spotify access token'}), 500
+            
+        # Search for artist
+        artist = spotify.search_artist(artist_name)
+        
+        if not artist:
+            return jsonify({'error': 'Artist not found on Spotify'}), 404
+            
+        # Extract image URLs
+        images = artist.get('images', [])
+        image_urls = [{'url': img.get('url'), 'width': img.get('width'), 'height': img.get('height')} 
+                      for img in images]
+        
+        return jsonify({
+            'success': True,
+            'artist_name': artist_name,
+            'spotify_name': artist.get('name'),
+            'popularity': artist.get('popularity'),
+            'spotify_id': artist.get('id'),
+            'image_count': len(image_urls),
+            'images': image_urls,
+            'external_url': artist.get('external_urls', {}).get('spotify')
+        })
+        
+    except Exception as e:
+        logger.error(f"Error testing Spotify API: {e}")
         return jsonify({'error': str(e)}), 500
 
 def run_server():

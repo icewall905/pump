@@ -154,7 +154,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         if (currentTab === 'artists') {
-            renderArtists();
+            renderArtists(filteredData);
         } else if (currentTab === 'albums') {
             renderAlbums();
         } else if (currentTab === 'songs') {
@@ -162,38 +162,42 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
     
-    function renderArtists() {
-        let html = '<div class="library-grid">';
+    function renderArtists(artists) {
+        const container = document.getElementById('library-content');
+        container.innerHTML = '<div class="library-grid" id="artists-grid"></div>';
+        const grid = document.getElementById('artists-grid');
         
-        filteredData.forEach(artist => {
-            // Use actual artist image if available
-            const artistImage = artist.artist_image ? 
-                `<img src="${escapeHtml(artist.artist_image)}" alt="${escapeHtml(artist.artist)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                 <div class="art-placeholder" style="display:none;">🎤</div>` : 
-                '<div class="art-placeholder">🎤</div>';
-                
-            html += `
-                <div class="library-item artist-item" data-artist="${escapeHtml(artist.artist)}">
-                    <div class="artist-image">
-                        ${artistImage}
-                    </div>
-                    <div class="artist-info">
-                        <div class="artist-name">${escapeHtml(artist.artist)}</div>
-                        <div class="artist-count">${artist.track_count} tracks</div>
-                    </div>
+        artists.forEach(artist => {
+            // Create artist element
+            const artistEl = document.createElement('div');
+            artistEl.className = 'artist-item';
+            
+            // Handle the artist image URL correctly
+            let imageUrl = '/static/images/default-artist-image.png'; // Default image
+            
+            if (artist.artist_image_url && artist.artist_image_url !== '') {
+                // Use the proxy for the artist image URL (not album art!)
+                imageUrl = '/artistimg/' + encodeURIComponent(artist.artist_image_url);
+            }
+            
+            // Render the artist with proper image
+            artistEl.innerHTML = `
+                <div class="artist-image">
+                    <img src="${imageUrl}" alt="${artist.artist}" onerror="this.src='/static/images/default-artist-image.png';">
+                </div>
+                <div class="artist-details">
+                    <h3>${artist.artist}</h3>
+                    <p>${artist.track_count} track${artist.track_count !== 1 ? 's' : ''}</p>
                 </div>
             `;
-        });
-        
-        html += '</div>';
-        libraryContent.innerHTML = html;
-        
-        // Add event listeners to artist items
-        document.querySelectorAll('.artist-item').forEach(item => {
-            item.addEventListener('click', function() {
-                const artist = this.getAttribute('data-artist');
-                playSample(currentData.find(a => a.artist === artist).sample_track);
+            
+            // Add click handler to show artist's tracks
+            artistEl.addEventListener('click', () => {
+                // Navigate to artist page or filter tracks by artist
+                console.log(`Artist clicked: ${artist.artist}`);
             });
+            
+            grid.appendChild(artistEl);
         });
     }
     
