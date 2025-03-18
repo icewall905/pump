@@ -15,7 +15,60 @@ document.addEventListener('DOMContentLoaded', function() {
     const recentLink = document.getElementById('recent-link');
     const resultsContainer = document.querySelector('.results-container');
     const savePlaylistBtn = document.getElementById('save-playlist-btn');
-    const analyzeStatus = document.getElementById('analyze-status');  // ADD THIS LINE
+    const analyzeStatus = document.getElementById('analyze-status');
+    
+    // Check for DOM elements that should exist
+    console.log('DOM elements found:', {
+        searchResults: !!searchResults,
+        exploreLink: !!exploreLink,
+        recentLink: !!recentLink,
+        resultsContainer: !!resultsContainer
+    });
+    
+    // Add this near the start of your DOMContentLoaded function
+    const urlParams = new URLSearchParams(window.location.search);
+    const view = urlParams.get('view');
+    const playlistId = urlParams.get('playlist');
+
+    // INITIALIZE UI based on URL parameters - THIS IS THE ONLY PLACE WE CHECK URL PARAMS
+    if (playlistId) {
+        console.log(`Loading playlist ${playlistId} from URL parameter`);
+        loadPlaylist(playlistId);
+    } else if (view === 'explore') {
+        console.log('Loading explore view from URL parameter');
+        loadExplore();
+    } else if (view === 'recent') {
+        console.log('Loading recent view from URL parameter');
+        loadRecent();
+    } else {
+        // Default view (no parameter)
+        console.log('Loading default explore view');
+        loadExplore();
+    }
+    
+    // Configure click handlers for navigation
+    if (exploreLink) {
+        exploreLink.addEventListener('click', function(e) {
+            e.preventDefault();
+            console.log('Explore link clicked directly');
+            // Update URL and browser history
+            history.pushState(null, '', '/?view=explore');
+            loadExplore();
+        });
+    }
+    
+    if (recentLink) {
+        recentLink.addEventListener('click', function(e) {
+            e.preventDefault();
+            console.log('Recent link clicked directly');
+            // Update URL and browser history
+            history.pushState(null, '', '/?view=recent');
+            loadRecent();
+        });
+    }
+
+    // Load playlists sidebar
+    loadPlaylists();
     
     // Add this function inside your DOMContentLoaded handler
     function showAnalyzeStatus(message, type) {
@@ -88,10 +141,6 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     
-    // Load explore on page load
-    console.log('Loading explore by default');
-    loadExplore();
-    
     // Add this with your other initialization code
     loadPlaylists();
     
@@ -136,6 +185,11 @@ document.addEventListener('DOMContentLoaded', function() {
     // Functions
     function loadExplore() {
         console.log('loadExplore called');
+        if (!searchResults || !resultsContainer) {
+            console.error('Required DOM elements missing for loadExplore');
+            return;
+        }
+
         if (resultsContainer) {
             const heading = resultsContainer.querySelector('h2');
             if (heading) heading.textContent = 'Discover';
@@ -612,40 +666,6 @@ document.addEventListener('DOMContentLoaded', function() {
     // Expose the inner savePlaylist function to the window for any direct HTML onclick references
     window.savePlaylist = savePlaylist;
 
-    // Check if there's a playlist parameter in the URL and load it
-    const urlParams = new URLSearchParams(window.location.search);
-    const playlistId = urlParams.get('playlist');
-    
-    if (playlistId) {
-        console.log(`Loading playlist ${playlistId} from URL parameter`);
-        // If there's a loadPlaylist function, call it with the ID from the URL
-        if (typeof loadPlaylist === 'function') {
-            loadPlaylist(playlistId);
-        } else {
-            // Load the playlist directly
-            fetch(`/playlists/${playlistId}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        console.error(`Error loading playlist: ${data.error}`);
-                        return;
-                    }
-                    
-                    // Display the playlist
-                    displayPlaylistTracks(data.tracks);
-                    
-                    // Update playlist name if available
-                    const playlistNameElement = document.getElementById('playlist-name');
-                    if (playlistNameElement && data.name) {
-                        playlistNameElement.textContent = data.name;
-                    }
-                })
-                .catch(error => {
-                    console.error('Error loading playlist:', error);
-                });
-        }
-    }
-    
     // Rest of your existing initialization code...
 
     // Set up play button event listeners

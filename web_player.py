@@ -147,7 +147,8 @@ ANALYSIS_STATUS = {
 @app.route('/')
 def index():
     """Home page with search functionality"""
-    return render_template('index.html')
+    view = request.args.get('view', '')
+    return render_template('index.html', view=view)
 
 @app.route('/search')
 def search():
