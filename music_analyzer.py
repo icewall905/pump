@@ -93,6 +93,7 @@ class MusicAnalyzer:
         )
         ''')
         
+        
         # Add artist_image_url column if it doesn't exist
         try:
             cursor.execute("PRAGMA table_info(audio_files)")
@@ -366,14 +367,15 @@ class MusicAnalyzer:
         conn.commit()
         conn.close()
     
-    def analyze_directory(self, directory: str, recursive: bool = True, extensions: List[str] = ['.mp3', '.wav', '.flac', '.ogg']):
+    def analyze_directory(self, directory: str, recursive: bool = True, extensions: List[str] = ['.mp3', '.wav', '.flac', '.ogg'], batch_size: int = 100):
         """
-        Analyze audio files in a directory.
+        Analyze audio files in a directory using batch processing for DB checks.
         
         Args:
             directory: Directory path containing audio files
             recursive: Whether to analyze subdirectories
             extensions: List of file extensions to process
+            batch_size: Number of files to check against DB at once
             
         Returns:
             Dict with statistics about processed files
@@ -381,29 +383,66 @@ class MusicAnalyzer:
         files_processed = 0
         tracks_added = 0
         
-        if recursive:
-            # Analyze all files in directory and subdirectories
-            for root, _, files in os.walk(directory):
-                for file in files:
-                    if any(file.lower().endswith(ext) for ext in extensions):
-                        file_path = os.path.join(root, file)
-                        print(f"Analyzing {file_path}...")
-                        result = self.analyze_file(file_path)
-                        files_processed += 1
-                        if result and 'error' not in result:
-                            tracks_added += 1
-        else:
-            # Analyze only files in the top-level directory
-            for file in os.listdir(directory):
-                file_path = os.path.join(directory, file)
-                if os.path.isfile(file_path) and any(file.lower().endswith(ext) for ext in extensions):
-                    print(f"Analyzing {file_path}...")
-                    result = self.analyze_file(file_path)
-                    files_processed += 1
-                    if result and 'error' not in result:
-                        tracks_added += 1
+        # First, collect all valid audio files
+        audio_files = []
         
-        print(f"Processed {files_processed} files.")
+        if os.path.exists(directory):
+            if recursive:
+                for root, _, files in os.walk(directory):
+                    for file in files:
+                        if any(file.lower().endswith(ext) for ext in extensions):
+                            file_path = os.path.join(root, file)
+                            audio_files.append(file_path)
+            else:
+                for file in os.listdir(directory):
+                    file_path = os.path.join(directory, file)
+                    if os.path.isfile(file_path) and any(file.lower().endswith(ext) for ext in extensions):
+                        audio_files.append(file_path)
+        else:
+            print(f"WARNING: Folder '{directory}' does not exist. Skipping.")
+            return {'files_processed': 0, 'tracks_added': 0}
+        
+        if not audio_files:
+            print(f"No audio files found in '{directory}'. Skipping.")
+            return {'files_processed': 0, 'tracks_added': 0}
+        
+        print(f"Found {len(audio_files)} audio files in '{directory}'")
+        
+        # Process files in batches to avoid too many DB connections
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        for i in range(0, len(audio_files), batch_size):
+            batch = audio_files[i:i+batch_size]
+            
+            # Check which files in this batch already exist in the DB
+            placeholders = ','.join(['?'] * len(batch))
+            cursor.execute(f"SELECT file_path FROM audio_files WHERE file_path IN ({placeholders})", batch)
+            existing_files = {row[0] for row in cursor.fetchall()}
+            
+            # Process only new files
+            for file_path in batch:
+                files_processed += 1
+                
+                if file_path in existing_files:
+                    print(f"Skipping {file_path}, it already exists in the database.")
+                    continue
+                
+                print(f"Analyzing {file_path}...")
+                try:
+                    # Analyze the file using the existing method but with our open connection
+                    features = self._analyze_file_without_db_check(file_path)
+                    if features and 'error' not in features:
+                        self._save_to_db_with_connection(features, conn, cursor)
+                        tracks_added += 1
+                except Exception as e:
+                    print(f"Error analyzing {file_path}: {e}")
+        
+        # Commit all changes and close the connection
+        conn.commit()
+        conn.close()
+        
+        print(f"Processed {files_processed} files, added {tracks_added} new tracks.")
         return {
             'files_processed': files_processed,
             'tracks_added': tracks_added
@@ -496,6 +535,92 @@ class MusicAnalyzer:
                 similarity += weights.get(feature, 0) * feat_sim
         
         return similarity
+
+    def _analyze_file_without_db_check(self, file_path: str) -> Dict:
+        """Analyze a file without checking the DB (used by batch processing)"""
+        try:
+            # Get metadata from the file itself
+            metadata = self.metadata_service.get_metadata_from_file(file_path)
+            
+            # Try to enhance metadata from online services
+            enhanced_metadata = self.metadata_service.enrich_metadata(metadata)
+            
+            # Load the audio file for analysis
+            y, sr = librosa.load(file_path, sr=None)
+            
+            # Basic audio properties
+            duration = librosa.get_duration(y=y, sr=sr)
+            
+            # Extract features
+            features = {
+                "file_path": file_path,
+                "duration": duration,
+                "title": enhanced_metadata.get("title", ""),
+                "artist": enhanced_metadata.get("artist", ""),
+                "album": enhanced_metadata.get("album", ""),
+                "album_art_url": enhanced_metadata.get("album_art_url", ""),
+                "metadata_source": enhanced_metadata.get("metadata_source", "unknown"),
+                **self._extract_time_domain_features(y, sr),
+                **self._extract_frequency_domain_features(y, sr),
+                **self._extract_rhythm_features(y, sr),
+                **self._extract_harmonic_features(y, sr)
+            }
+            
+            # Fetch artist image if available
+            artist_image_url = None
+            if features["artist"]:
+                if self.lastfm_service:
+                    artist_image_url = self.lastfm_service.get_artist_image_url(features["artist"])
+                if not artist_image_url and self.spotify_service:
+                    artist_image_url = self.spotify_service.get_artist_image_url(features["artist"])
+            
+            features["artist_image_url"] = artist_image_url
+            
+            return features
+            
+        except Exception as e:
+            print(f"Error analyzing {file_path}: {e}")
+            return {"error": str(e)}
+
+    def _save_to_db_with_connection(self, features: Dict, conn, cursor):
+        """Save audio features using an existing database connection"""
+        # Insert audio file info
+        cursor.execute('''
+            INSERT OR REPLACE INTO audio_files 
+            (file_path, title, artist, album, album_art_url, metadata_source, duration, artist_image_url) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            features["file_path"],
+            features.get("title", ""),
+            features.get("artist", ""),
+            features.get("album", ""),
+            features.get("album_art_url", ""),
+            features.get("metadata_source", "unknown"),
+            features.get("duration", 0),
+            features.get("artist_image_url", "")
+        ))
+        
+        # Get the ID of the audio file
+        file_id = cursor.lastrowid
+        
+        # Insert audio features
+        cursor.execute('''
+            INSERT OR REPLACE INTO audio_features
+            (file_id, tempo, key, mode, time_signature, energy, danceability, brightness, noisiness)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            file_id,
+            features.get("tempo", 0),
+            features.get("key", 0),
+            features.get("mode", 0),
+            features.get("time_signature", 4),
+            features.get("energy", 0),
+            features.get("danceability", 0),
+            features.get("brightness", 0),
+            features.get("noisiness", 0)
+        ))
+        
+        # Note: We don't commit here as it will be done in batches by the calling function
 
 
 def main():
