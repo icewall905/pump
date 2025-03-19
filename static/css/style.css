@@ -1702,3 +1702,49 @@ body:has(.global-status[style*="display: block"]) .sidebar {
     background-color: #333;
     color: #e0e0e0;
 }
+
+/* Add these styles */
+.toast {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    width: 350px;
+    z-index: 1050;
+    background-color: #f8f9fa;
+    border-left: 4px solid #6c757d;
+}
+
+.toast-success {
+    border-left-color: #28a745;
+}
+
+.toast-error {
+    border-left-color: #dc3545;
+}
+
+.toast-info {
+    border-left-color: #17a2b8;
+}
+
+.toast-warning {
+    border-left-color: #ffc107;
+}
+
+#analysis-status .badge {
+    font-size: 1rem;
+}
+
+#analysis-progress-bar {
+    transition: width 1s;
+}
+
+.toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 1050;
+}
+
+#toast-container {
+    z-index: 1050;
+}

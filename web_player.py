@@ -16,6 +16,8 @@ from spotify_service import SpotifyService  # Add this import at the top
 from datetime import datetime
 from flask import redirect, url_for
 import time  # For sleep between API calls
+import threading  # Add this import
+from flask import jsonify, request  # Add this import
 
 # Import logging configuration
 try:
@@ -187,6 +189,18 @@ ANALYSIS_STATUS = {
     'percent_complete': 0,
     'last_updated': None,
     'error': None
+}
+
+# Global variables to track analysis progress
+analysis_thread = None
+analysis_progress = {
+    'is_running': False,
+    'total_files': 0,
+    'current_file_index': 0,
+    'analyzed_count': 0,
+    'failed_count': 0,
+    'pending_count': 0,
+    'last_run_completed': False
 }
 
 @app.route('/')
@@ -439,7 +453,7 @@ def run_analysis(folder_path, recursive):
         logger.info(f"Background analysis complete: {result['files_processed']} files processed, {result.get('tracks_added', 0)} tracks added")
     
     except Exception as e:
-        logger.error(f"Error in background analysis: {e}")
+        logger.error(f"Background analysis error: {e}")  # Use logger instance
         ANALYSIS_STATUS.update({
             'running': False,
             'error': str(e),
@@ -948,12 +962,6 @@ def recent_tracks():
         logger.error(f"Error getting recent tracks: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/analysis/status')
-def get_analysis_status():
-    """Return the current status of music library analysis"""
-    global ANALYSIS_STATUS
-    return jsonify(ANALYSIS_STATUS)
-
 @app.route('/track/<int:track_id>')
 def get_track_info(track_id):
     """Get track information for playback"""
@@ -1019,10 +1027,9 @@ def stream_track(track_id):
 # Add these routes to your web_player.py file
 
 @app.route('/library')
-def library_page():
-    """Render the library page"""
+def library():
+    """Display the music library page"""
     return render_template('library.html')
-
 
 @app.route('/api/library/album/<path:album>/tracks')
 def get_album_tracks(album):
@@ -1056,15 +1063,6 @@ def get_album_tracks(album):
     except Exception as e:
         logger.error(f"Error getting album tracks: {e}")
         return jsonify({"error": str(e)}), 500
-
-# Add this route with your other route definitions
-
-@app.route('/library')
-def library():
-    """Display the music library page"""
-    return render_template('library.html')
-
-# Add these API routes to fetch library data
 
 @app.route('/api/library/artists')
 def get_artists():
@@ -1581,25 +1579,6 @@ def get_log_level():
         logger.error(f"Error getting log level: {e}")
         return jsonify({"error": str(e)}), 500
 
-def run_server():
-    """Run the Flask server"""
-    logger.info(f"Starting server on {HOST}:{PORT} (debug={DEBUG})")
-    try:
-        # Use Werkzeug's run_simple for better error handling
-        run_simple(
-            hostname=HOST,
-            port=PORT,
-            application=app,
-            use_reloader=DEBUG,
-            use_debugger=DEBUG,
-            threaded=True
-        )
-    except Exception as e:
-        logger.error(f"Error running server: {e}")
-        print(f"Error running server: {e}")
-
-# Add this with your other routes
-
 @app.route('/api/logs/view', methods=['GET'])
 def view_logs():
     try:
@@ -1641,6 +1620,249 @@ def download_logs():
     except Exception as e:
         logger.error(f"Error downloading logs: {e}")
         return jsonify({"error": "Failed to download logs"}), 500
+
+@app.route('/scan_library', methods=['POST'])
+def scan_library():
+    global analyzer
+    
+    data = request.get_json()
+    directory = data.get('directory')
+    recursive = data.get('recursive', True)
+    
+    if not directory:
+        return jsonify({'success': False, 'message': 'No directory specified'})
+    
+    try:
+        result = analyzer.scan_library(directory, recursive=recursive)
+        return jsonify({'success': True, **result})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+@app.route('/start_background_analysis', methods=['POST'])
+def start_background_analysis():
+    global analyzer, analysis_thread, analysis_progress
+    
+    # If analysis is already running, don't start a new one
+    if analysis_progress['is_running']:
+        return jsonify({'status': 'already_running'})
+    
+    data = request.get_json()
+    limit = data.get('limit')
+    batch_size = data.get('batch_size', 10)
+    
+    # Get initial counts
+    conn = sqlite3.connect(analyzer.db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
+    pending_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'analyzed'")
+    analyzed_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'failed'")
+    failed_count = cursor.fetchone()[0]
+    conn.close()
+    
+    # Update progress tracking instead of redefining
+    analysis_progress.update({
+        'is_running': True,
+        'total_files': min(pending_count, limit) if limit else pending_count,
+        'current_file_index': 0,
+        'analyzed_count': analyzed_count,
+        'failed_count': failed_count,
+        'pending_count': pending_count,
+        'last_run_completed': False,
+        'stop_requested': False  # Reset stop flag
+    })
+    
+    # Start analysis in a background thread
+    def background_task():
+        global analysis_progress
+        
+        try:
+            # Hook into analyze_pending_files to update progress
+            def progress_callback(current, status):
+                analysis_progress['current_file_index'] = current
+                if status == 'analyzed':
+                    analysis_progress['analyzed_count'] += 1
+                    analysis_progress['pending_count'] -= 1
+                elif status == 'failed':
+                    analysis_progress['failed_count'] += 1
+                    analysis_progress['pending_count'] -= 1
+            
+            # Call the analyze function with our callback
+            analyzer.analyze_pending_files(
+                limit=limit, 
+                batch_size=batch_size, 
+                progress_callback=progress_callback
+            )
+            analysis_progress['last_run_completed'] = True
+        except Exception as e:
+            logging.error(f"Background analysis error: {e}")
+        finally:
+            analysis_progress['is_running'] = False
+    
+    analysis_thread = threading.Thread(target=background_task)
+    analysis_thread.daemon = True
+    analysis_thread.start()
+    
+    return jsonify({'status': 'started'})
+
+@app.route('/stop_background_analysis', methods=['POST'])
+def stop_background_analysis():
+    global analysis_progress
+    
+    # Set flag to stop the analysis in the next iteration
+    analysis_progress['stop_requested'] = True
+    
+    return jsonify({'status': 'stopped'})
+
+@app.route('/analysis_progress')
+def get_analysis_progress():
+    global analysis_progress
+    
+    # Calculate progress percentage
+    progress = 0
+    if analysis_progress['total_files'] > 0:
+        progress = analysis_progress['current_file_index'] / analysis_progress['total_files']
+    
+    return jsonify({
+        **analysis_progress,
+        'progress': progress
+    })
+
+@app.route('/analysis_status')
+def get_analysis_status():
+    global analyzer
+    
+    conn = sqlite3.connect(analyzer.db_path)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
+    pending = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'analyzed'")
+    analyzed = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'failed'")
+    failed = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    return jsonify({
+        'pending': pending,
+        'analyzed': analyzed,
+        'failed': failed
+    })
+
+def should_stop():
+    global analysis_progress
+    return analysis_progress.get('stop_requested', False)
+
+@app.route('/api/settings/save_music_path', methods=['POST'])
+def save_music_path():
+    """Save music folder path to config file"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'path' not in data:
+            return jsonify({"success": False, "message": "No path provided"}), 400
+            
+        music_path = data['path']
+        recursive = data.get('recursive', True)
+        
+        # Load config
+        config.set('library', 'music_folder', music_path)
+        config.set('library', 'recursive', str(recursive).lower())
+        
+        # Save to config file
+        with open('pump.conf', 'w') as configfile:
+            config.write(configfile)
+            
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error(f"Error saving music path: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route('/api/update-metadata', methods=['POST'])
+def update_metadata():
+    """Update metadata for all tracks from external services"""
+    global analyzer
+    
+    try:
+        conn = sqlite3.connect(analyzer.db_path)
+        cursor = conn.cursor()
+        
+        # Get all tracks without images
+        cursor.execute("SELECT id, artist, title, file_path FROM audio_files")
+        tracks = cursor.fetchall()
+        
+        updated = 0
+        images_updated = 0
+        
+        for track_id, artist, title, file_path in tracks:
+            try:
+                # Try to enhance metadata
+                if analyzer.metadata_service:
+                    metadata = {'artist': artist, 'title': title}
+                    enhanced = analyzer.metadata_service.enrich_metadata(metadata)
+                    
+                    # Update album art URL if available
+                    if 'album_art_url' in enhanced and enhanced['album_art_url']:
+                        cursor.execute(
+                            "UPDATE audio_files SET album_art_url = ? WHERE id = ?", 
+                            (enhanced['album_art_url'], track_id)
+                        )
+                        images_updated += 1
+                    
+                    # Try to get artist image if artist is available
+                    if artist:
+                        artist_image_url = None
+                        
+                        # Try LastFM first
+                        if analyzer.lastfm_service:
+                            artist_image_url = analyzer.lastfm_service.get_artist_image_url(artist)
+                        
+                        # If no image from LastFM, try Spotify
+                        if not artist_image_url and analyzer.spotify_service:
+                            artist_image_url = analyzer.spotify_service.get_artist_image_url(artist)
+                        
+                        if artist_image_url:
+                            cursor.execute(
+                                "UPDATE audio_files SET artist_image_url = ? WHERE id = ?", 
+                                (artist_image_url, track_id)
+                            )
+                            images_updated += 1
+                    
+                    updated += 1
+                    
+            except Exception as e:
+                logger.error(f"Error updating metadata for {file_path}: {e}")
+                continue
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "updated": updated,
+            "images_updated": images_updated,
+            "total": len(tracks)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error updating metadata: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+def run_server():
+    """Run the Flask server"""
+    logger.info(f"Starting server on {HOST}:{PORT} (debug={DEBUG})")
+    try:
+        # Use Werkzeug's run_simple for better error handling
+        run_simple(hostname=HOST, port=PORT, application=app, use_reloader=DEBUG, use_debugger=DEBUG)
+    except Exception as e:
+        logger.error(f"Error running server: {e}")
+        print(f"Error running server: {e}")
 
 if __name__ == '__main__':
     run_server()

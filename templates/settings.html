@@ -25,20 +25,47 @@
             
             <div class="settings-group">
                 <div class="form-group">
-                    <label for="music_folder_path">Music Folder Path:</label>
-                    <input type="text" id="music_folder_path" name="music_folder_path" value="{{ music_folder_path }}" placeholder="/path/to/music">
+                    <label for="music-directory">Music Folder Path:</label>
+                    <input type="text" id="music-directory" class="form-control" value="{{ music_folder_path }}" placeholder="/path/to/music">
                 </div>
                 
                 <div class="form-group">
                     <div class="checkbox-wrapper">
-                        <input type="checkbox" id="recursive" name="recursive" {% if recursive %}checked{% endif %}>
-                        <label for="recursive">Include subfolders when analyzing</label>
+                        <input type="checkbox" id="recursive-scan" {% if recursive %}checked{% endif %}>
+                        <label for="recursive-scan">Include subfolders when analyzing</label>
                     </div>
                 </div>
                 
-                <div class="analyze-controls">
-                    <button type="button" id="analyze-button" class="secondary-button">Analyze Music Library</button>
-                    <div id="analyze-status"></div>
+                <div class="button-group">
+                    <button type="button" id="save-music-path" class="primary-button">Save Path</button>
+                    <button type="button" id="scan-library-btn" class="secondary-button">Quick Scan Library</button>
+                    <button type="button" id="start-analysis-btn" class="secondary-button">Start Background Analysis</button>
+                    <button type="button" id="update-metadata-btn" class="secondary-button">Update Metadata</button>
+                </div>
+                
+                <div id="library-status" class="mt-3">
+                    <div class="status-info">
+                        <span>Pending Analysis:</span>
+                        <span id="pending-count" class="badge bg-warning">0</span>
+                    </div>
+                    <div class="status-info">
+                        <span>Analyzed Files:</span>
+                        <span id="analyzed-count" class="badge bg-success">0</span>
+                    </div>
+                    <div class="status-info">
+                        <span>Failed Analysis:</span>
+                        <span id="failed-count" class="badge bg-danger">0</span>
+                    </div>
+                </div>
+                
+                <div id="analysis-progress" class="mt-3 hidden">
+                    <div class="progress-bar-container">
+                        <div id="analysis-progress-bar" class="progress-bar-fill" style="width: 0%">0%</div>
+                    </div>
+                    <div class="progress-controls">
+                        <span id="analysis-status-text">Analyzing files...</span>
+                        <button id="stop-analysis-btn" class="btn-danger">Stop</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -152,365 +179,6 @@
 {% endblock %}
 
 {% block scripts %}
-<script>
-    // Cache and analysis management
-    document.addEventListener('DOMContentLoaded', function() {
-        // DOM elements
-        const cacheStatsContainer = document.querySelector('.cache-stats');
-        const clearCacheBtn = document.getElementById('clear-cache-btn');
-        const refreshStatsBtn = document.getElementById('refresh-stats-btn');
-        const analyzeBtn = document.getElementById('analyze-button');
-        const analyzeStatus = document.getElementById('analyze-status');
-        const musicFolderInput = document.getElementById('music_folder_path');
-        const recursiveCheckbox = document.getElementById('recursive');
-        
-        // Status polling
-        let statusInterval = null;
-        
-        // Load initial stats
-        loadCacheStats();
-        
-        // Check if analysis is already running when page loads
-        checkAnalysisStatus();
-        
-        // Event listeners
-        if (clearCacheBtn) {
-            clearCacheBtn.addEventListener('click', clearCache);
-        }
-        
-        if (refreshStatsBtn) {
-            refreshStatsBtn.addEventListener('click', loadCacheStats);
-        }
-        
-        if (analyzeBtn) {
-            // IMPORTANT: Use only one event listener for the analyze button
-            analyzeBtn.addEventListener('click', startAnalysis);
-        }
-        
-        function loadCacheStats() {
-            cacheStatsContainer.innerHTML = '<div class="stats-loading">Loading cache statistics...</div>';
-            
-            fetch('/cache/stats')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        cacheStatsContainer.innerHTML = `<div class="error">Error: ${data.error}</div>`;
-                        return;
-                    }
-                    
-                    const statsHtml = `
-                        <div class="stats-grid">
-                            <div class="stat-box">
-                                <div class="stat-value">${data.file_count}</div>
-                                <div class="stat-label">Cached Files</div>
-                            </div>
-                            <div class="stat-box">
-                                <div class="stat-value">${data.total_size_mb} MB</div>
-                                <div class="stat-label">Cache Size</div>
-                            </div>
-                            <div class="stat-box">
-                                <div class="stat-value">${data.usage_percent}%</div>
-                                <div class="stat-label">Usage</div>
-                            </div>
-                            <div class="stat-box">
-                                <div class="stat-value">${data.max_size_mb} MB</div>
-                                <div class="stat-label">Maximum Size</div>
-                            </div>
-                        </div>
-                        <div class="usage-bar">
-                            <div class="usage-fill" style="width: ${Math.min(data.usage_percent, 100)}%"></div>
-                        </div>
-                    `;
-                    
-                    cacheStatsContainer.innerHTML = statsHtml;
-                })
-                .catch(error => {
-                    console.error('Error fetching cache stats:', error);
-                    cacheStatsContainer.innerHTML = '<div class="error">Failed to load cache statistics</div>';
-                });
-        }
-        
-        function clearCache() {
-            if (confirm('Are you sure you want to clear the album art cache? This will delete all cached images.')) {
-                clearCacheBtn.disabled = true;
-                clearCacheBtn.textContent = 'Clearing...';
-                
-                fetch('/cache/clear', {
-                    method: 'POST'
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        alert(`Error: ${data.error}`);
-                    } else {
-                        alert(`${data.message}`);
-                        loadCacheStats();
-                    }
-                })
-                .catch(error => {
-                    console.error('Error clearing cache:', error);
-                    alert('Failed to clear cache. See console for details.');
-                })
-                .finally(() => {
-                    clearCacheBtn.disabled = false;
-                    clearCacheBtn.textContent = 'Clear Cache';
-                });
-            }
-        }
-        
-        function startAnalysis() {
-            console.log("Starting analysis...");
-            const folderPath = musicFolderInput.value.trim();
-            if (!folderPath) {
-                showStatus('Please enter a music folder path', 'error');
-                return;
-            }
-            
-            // Disable button during analysis
-            if (analyzeBtn) analyzeBtn.disabled = true;
-            
-            // Show initial status
-            showStatus('Starting analysis...', 'progress');
-            
-            // Prepare form data
-            const formData = new FormData();
-            formData.append('folder_path', folderPath);
-            formData.append('recursive', recursiveCheckbox.checked ? 'true' : 'false');
-            
-            console.log("Sending analyze request...");
-            
-            // Send request to start analysis
-            fetch('/analyze', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.json())
-            .then(data => {
-                console.log('Analysis start response:', data);
-                
-                if (data.success) {
-                    // Start polling for status updates
-                    startStatusPolling();
-                    
-                    // IMPORTANT NEW CODE: Force global status bar update immediately
-                    // This directly updates the global status bar without waiting for its interval
-                    if (window.globalStatusBar && typeof window.checkGlobalAnalysisStatus === 'function') {
-                        console.log("Triggering global status update");
-                        window.checkGlobalAnalysisStatus();
-                    } else {
-                        console.log("Global status bar or function not available");
-                    }
-                } else if (data.error) {
-                    showStatus(`Error: ${data.error}`, 'error');
-                    if (analyzeBtn) analyzeBtn.disabled = false;
-                }
-            })
-            .catch(error => {
-                console.error('Error starting analysis:', error);
-                showStatus('Failed to start analysis', 'error');
-                if (analyzeBtn) analyzeBtn.disabled = false;
-            });
-        }
-        
-        function startStatusPolling() {
-            console.log("Starting status polling...");
-            // Clear any existing interval
-            if (statusInterval) {
-                clearInterval(statusInterval);
-            }
-            
-            // Poll every 2 seconds
-            statusInterval = setInterval(checkAnalysisStatus, 2000);
-            
-            // Immediate first check
-            checkAnalysisStatus();
-        }
-        
-        function checkAnalysisStatus() {
-            fetch('/api/analysis/status')
-                .then(response => response.json())
-                .then(data => {
-                    console.log('Analysis status:', data);
-                    
-                    if (data.running) {
-                        // Show progress
-                        const filesProcessed = data.files_processed || 0;
-                        const totalFiles = data.total_files || 0;
-                        const percent = data.percent_complete || 0;
-                        
-                        let statusMessage = `Processing files: ${filesProcessed} of ${totalFiles} (${percent}%)`;
-                        if (data.current_file) {
-                            statusMessage += `<br>Current file: ${data.current_file}`;
-                        }
-                        
-                        showStatus(statusMessage, 'progress');
-                    } else {
-                        // Analysis complete or failed
-                        clearInterval(statusInterval);
-                        statusInterval = null;
-                        
-                        if (analyzeBtn) analyzeBtn.disabled = false;
-                        
-                        if (data.error) {
-                            showStatus(`Error: ${data.error}`, 'error');
-                        } else if (data.files_processed > 0) {
-                            showStatus(`Successfully processed ${data.files_processed} files.<br>Added ${data.tracks_added || 0} tracks to the library.`, 'success');
-                        } else {
-                            showStatus('Analysis completed, but no files were processed.', 'info');
-                        }
-                    }
-                })
-                .catch(error => {
-                    console.error('Error checking analysis status:', error);
-                    clearInterval(statusInterval);
-                    statusInterval = null;
-                    if (analyzeBtn) analyzeBtn.disabled = false;
-                    showStatus('Failed to get analysis status', 'error');
-                });
-        }
-        
-        function showStatus(message, type) {
-            if (!analyzeStatus) return;
-            console.log(`Status update: ${message} (${type})`);
-            
-            let className = '';
-            switch (type) {
-                case 'progress':
-                    className = 'status-progress';
-                    break;
-                case 'error':
-                    className = 'status-error';
-                    break;
-                case 'success':
-                    className = 'status-success';
-                    break;
-                case 'info':
-                    className = 'status-info';
-                    break;
-            }
-            
-            analyzeStatus.innerHTML = `<div class="${className}">${message}</div>`;
-        }
-
-        // Artist image update button
-        const updateArtistImagesBtn = document.getElementById('update-artist-images');
-        if (updateArtistImagesBtn) {
-            updateArtistImagesBtn.addEventListener('click', function() {
-                this.disabled = true;
-                this.textContent = 'Updating...';
-                
-                fetch('/api/update-artist-images', {
-                    method: 'POST'
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        alert(`Error: ${data.error}`);
-                    } else {
-                        alert(data.message);
-                        // Refresh the page to see updated settings
-                        window.location.reload();
-                    }
-                })
-                .catch(error => {
-                    console.error('Error updating artist images:', error);
-                    alert('Failed to update artist images. See console for details.');
-                })
-                .finally(() => {
-                    this.disabled = false;
-                    this.textContent = 'Update Artist Images (LastFM)';
-                });
-            });
-        }
-
-        // Spotify artist image update button
-        const updateSpotifyImagesBtn = document.getElementById('update-artist-images-spotify');
-        if (updateSpotifyImagesBtn) {
-            updateSpotifyImagesBtn.addEventListener('click', function() {
-                this.disabled = true;
-                this.textContent = 'Updating...';
-                
-                fetch('/api/update-artist-images/spotify', {
-                    method: 'POST'
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        alert(`Error: ${data.error}`);
-                    } else {
-                        alert(`Updated ${data.updated} of ${data.total} artist images with Spotify`);
-                        // Refresh the page to see updated settings
-                        window.location.reload();
-                    }
-                })
-                .catch(error => {
-                    console.error('Error updating artist images:', error);
-                    alert('Failed to update artist images. See console for details.');
-                })
-                .finally(() => {
-                    this.disabled = false;
-                    this.textContent = 'Update Artist Images (Spotify)';
-                });
-            });
-        }
-
-        // LastFM artist image update
-        document.getElementById('update-artist-images').addEventListener('click', function() {
-            const button = this;
-            button.disabled = true;
-            button.textContent = 'Updating...';
-            document.getElementById('update-status').textContent = 'Updating artist images...';
-            
-            fetch('/api/update-artist-images', {
-                method: 'POST'
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    document.getElementById('update-status').textContent = `Error: ${data.error}`;
-                } else {
-                    document.getElementById('update-status').textContent = 
-                        `Updated ${data.updated} of ${data.total} artist images with LastFM`;
-                }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                document.getElementById('update-status').textContent = 'Failed to update images';
-            })
-            .finally(() => {
-                button.disabled = false;
-                button.textContent = 'Update Artist Images (LastFM)';
-            });
-        });
-
-        // Spotify artist image update
-        document.getElementById('update-artist-images-spotify').addEventListener('click', function() {
-            const button = this;
-            button.disabled = true;
-            button.textContent = 'Updating...';
-            document.getElementById('update-status').textContent = 'Updating artist images with Spotify...';
-            
-            fetch('/api/update-artist-images/spotify', {
-                method: 'POST'
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) {
-                    document.getElementById('update-status').textContent = `Error: ${data.error}`;
-                } else {
-                    document.getElementById('update-status').textContent = 
-                        `Updated ${data.updated} of ${data.total} artist images with Spotify`;
-                }
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                document.getElementById('update-status').textContent = 'Failed to update images';
-            })
-            .finally(() => {
-                button.disabled = false;
-                button.textContent = 'Update Artist Images (Spotify)';
-            });
-        });
-    });
-</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="{{ url_for('static', filename='js/settings.js') }}"></script>
 {% endblock %}

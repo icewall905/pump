@@ -7,13 +7,27 @@ import argparse
 from typing import Dict, List, Tuple, Union, Optional
 from pathlib import Path
 from lastfm_service import LastFMService
-from spotify_service import SpotifyService  # Add this import
+from spotify_service import SpotifyService
 import configparser
 import logging
+import threading
 
 import librosa.display
 import matplotlib.pyplot as plt
 from metadata_service import MetadataService
+
+# Global variables to track analysis progress
+analysis_thread = None
+analysis_progress = {
+    'is_running': False,
+    'total_files': 0,
+    'current_file_index': 0,
+    'analyzed_count': 0,
+    'failed_count': 0,
+    'pending_count': 0,
+    'last_run_completed': False,
+    'stop_requested': False
+}
 
 
 class MusicAnalyzer:
@@ -94,7 +108,7 @@ class MusicAnalyzer:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Create table for audio files
+        # Create table for audio files with analysis_status field
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS audio_files (
             id INTEGER PRIMARY KEY,
@@ -105,10 +119,20 @@ class MusicAnalyzer:
             album_art_url TEXT,
             metadata_source TEXT,
             duration REAL,
-            date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            analysis_status TEXT DEFAULT 'pending'
         )
         ''')
         
+        # Add analysis_status column if it doesn't exist
+        try:
+            cursor.execute("PRAGMA table_info(audio_files)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'analysis_status' not in columns:
+                cursor.execute('ALTER TABLE audio_files ADD COLUMN analysis_status TEXT DEFAULT "pending"')
+                conn.commit()
+        except Exception as e:
+            logging.error(f"Error adding analysis_status column: {e}")
         
         # Add artist_image_url column if it doesn't exist
         try:
@@ -637,6 +661,276 @@ class MusicAnalyzer:
         ))
         
         # Note: We don't commit here as it will be done in batches by the calling function
+
+    def scan_library(self, directory: str, recursive: bool = True, 
+                     extensions: List[str] = ['.mp3', '.wav', '.flac', '.ogg'], 
+                     batch_size: int = 100):
+        """
+        Quickly scan a directory and add files to the library without full audio analysis.
+        Only reads basic metadata from files.
+        
+        Args:
+            directory: Directory path containing audio files
+            recursive: Whether to scan subdirectories
+            extensions: List of file extensions to process
+            batch_size: Number of files to check against DB at once
+                
+        Returns:
+            Dict with statistics about processed files
+        """
+        files_processed = 0
+        tracks_added = 0
+        
+        # First, collect all valid audio files (same as your analyze_directory method)
+        audio_files = []
+        
+        if os.path.exists(directory):
+            if recursive:
+                for root, _, files in os.walk(directory):
+                    for file in files:
+                        if any(file.lower().endswith(ext) for ext in extensions):
+                            file_path = os.path.join(root, file)
+                            audio_files.append(file_path)
+            else:
+                for file in os.listdir(directory):
+                    file_path = os.path.join(directory, file)
+                    if os.path.isfile(file_path) and any(file.lower().endswith(ext) for ext in extensions):
+                        audio_files.append(file_path)
+        else:
+            print(f"WARNING: Folder '{directory}' does not exist. Skipping.")
+            return {'files_processed': 0, 'tracks_added': 0}
+        
+        if not audio_files:
+            print(f"No audio files found in '{directory}'. Skipping.")
+            return {'files_processed': 0, 'tracks_added': 0}
+        
+        print(f"Found {len(audio_files)} audio files in '{directory}'")
+        
+        # Process files in batches to avoid too many DB connections
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        for i in range(0, len(audio_files), batch_size):
+            batch = audio_files[i:i+batch_size]
+            
+            # Check which files in this batch already exist in the DB
+            placeholders = ','.join(['?'] * len(batch))
+            cursor.execute(f"SELECT file_path FROM audio_files WHERE file_path IN ({placeholders})", batch)
+            existing_files = {row[0] for row in cursor.fetchall()}
+            
+            # Process only new files
+            for file_path in batch:
+                files_processed += 1
+                
+                if file_path in existing_files:
+                    print(f"Skipping {file_path}, it already exists in the database.")
+                    continue
+                
+                print(f"Indexing {file_path}...")
+                try:
+                    # Only extract metadata from the file (lightweight operation)
+                    metadata = self.metadata_service.get_metadata_from_file(file_path)
+                    
+                    # Save basic metadata to DB with 'pending' analysis status
+                    cursor.execute('''
+                        INSERT OR IGNORE INTO audio_files 
+                        (file_path, title, artist, album, metadata_source, analysis_status) 
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (
+                        file_path,
+                        metadata.get("title", ""),
+                        metadata.get("artist", ""),
+                        metadata.get("album", ""),
+                        "file",  # Source is just the file metadata
+                        "pending"  # Mark as pending full analysis
+                    ))
+                    
+                    if cursor.rowcount > 0:
+                        tracks_added += 1
+                        
+                except Exception as e:
+                    print(f"Error scanning {file_path}: {e}")
+        
+        # Commit all changes and close the connection
+        conn.commit()
+        conn.close()
+        
+        print(f"Processed {files_processed} files, added {tracks_added} new tracks.")
+        return {
+            'files_processed': files_processed,
+            'tracks_added': tracks_added
+        }
+
+    def analyze_pending_files(self, limit: Optional[int] = None, 
+                              batch_size: int = 10, 
+                              max_errors: int = 3,
+                              progress_callback = None):
+        """
+        Analyze files that have been indexed but not yet analyzed.
+        Can be run as a background task.
+        
+        Args:
+            limit: Maximum number of files to analyze (None for all)
+            batch_size: Number of files to process in each batch
+            max_errors: Maximum consecutive errors before stopping
+            progress_callback: Function to call to report progress (optional)
+                
+        Returns:
+            Dict with statistics about processed files
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Get count of pending files
+        cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
+        total_pending = cursor.fetchone()[0]
+        
+        if limit:
+            total_pending = min(total_pending, limit)
+        
+        if total_pending == 0:
+            print("No pending files to analyze.")
+            conn.close()
+            return {'analyzed': 0, 'failed': 0, 'remaining': 0}
+        
+        print(f"Found {total_pending} files pending analysis")
+        
+        # Process in batches
+        query = "SELECT file_path FROM audio_files WHERE analysis_status = 'pending'"
+        if limit:
+            query += f" LIMIT {limit}"
+        
+        cursor.execute(query)
+        pending_files = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        
+        analyzed_count = 0
+        failed_count = 0
+        consecutive_errors = 0
+        
+        # Check for stop flag in the global state
+        def should_stop():
+            global analysis_progress
+            return analysis_progress.get('stop_requested', False) if 'analysis_progress' in globals() else False
+        
+        for i, file_path in enumerate(pending_files):
+            # Check if we should stop
+            if should_stop():
+                print("Analysis stopped by user request")
+                break
+                
+            try:
+                print(f"Analyzing {i+1}/{len(pending_files)}: {file_path}")
+                
+                # Report progress if callback provided
+                if progress_callback:
+                    progress_callback(i+1, 'processing')
+                
+                # Use the full analysis method
+                features = self._analyze_file_for_features(file_path)
+                
+                # Update the database with analysis results and status
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                
+                # Update analysis status
+                cursor.execute(
+                    "UPDATE audio_files SET analysis_status = ? WHERE file_path = ?", 
+                    ("analyzed", file_path)
+                )
+                
+                # Get the ID of the audio file
+                cursor.execute("SELECT id FROM audio_files WHERE file_path = ?", (file_path,))
+                file_id = cursor.fetchone()[0]
+                
+                # Insert audio features
+                cursor.execute('''
+                    INSERT OR REPLACE INTO audio_features
+                    (file_id, tempo, key, mode, time_signature, energy, danceability, brightness, noisiness)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    file_id,
+                    features.get("tempo", 0),
+                    features.get("key", 0),
+                    features.get("mode", 0),
+                    features.get("time_signature", 4),
+                    features.get("energy", 0),
+                    features.get("danceability", 0),
+                    features.get("brightness", 0),
+                    features.get("noisiness", 0)
+                ))
+                
+                conn.commit()
+                conn.close()
+                
+                analyzed_count += 1
+                consecutive_errors = 0  # Reset error counter on success
+                
+                # Report success if callback provided
+                if progress_callback:
+                    progress_callback(i+1, 'analyzed')
+                
+            except Exception as e:
+                print(f"Error analyzing {file_path}: {e}")
+                
+                # Mark as failed in DB
+                try:
+                    conn = sqlite3.connect(self.db_path)
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "UPDATE audio_files SET analysis_status = ? WHERE file_path = ?", 
+                        ("failed", file_path)
+                    )
+                    conn.commit()
+                    conn.close()
+                except:
+                    pass
+                    
+                failed_count += 1
+                consecutive_errors += 1
+                
+                # Report failure if callback provided
+                if progress_callback:
+                    progress_callback(i+1, 'failed')
+                
+                # Stop if too many consecutive errors
+                if consecutive_errors >= max_errors:
+                    print(f"Too many consecutive errors ({max_errors}). Stopping analysis.")
+                    break
+        
+        # Get count of remaining pending files
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
+        remaining = cursor.fetchone()[0]
+        conn.close()
+        
+        print(f"Analysis complete: {analyzed_count} analyzed, {failed_count} failed, {remaining} remaining")
+        return {
+            'analyzed': analyzed_count,
+            'failed': failed_count,
+            'remaining': remaining
+        }
+
+    def _analyze_file_for_features(self, file_path: str) -> Dict:
+        """Internal method that performs the actual audio analysis"""
+        # Load the audio file for analysis
+        y, sr = librosa.load(file_path, sr=None)
+        
+        # Basic audio properties
+        duration = librosa.get_duration(y=y, sr=sr)
+        
+        # Extract features
+        features = {
+            "file_path": file_path,
+            "duration": duration,
+            **self._extract_time_domain_features(y, sr),
+            **self._extract_frequency_domain_features(y, sr),
+            **self._extract_rhythm_features(y, sr),
+            **self._extract_harmonic_features(y, sr)
+        }
+        
+        return features
 
 
 def main():
