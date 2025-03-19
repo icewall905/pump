@@ -336,28 +336,40 @@ def analyze_folder():
     # Don't start another analysis if one is already running
     if ANALYSIS_STATUS['running']:
         return jsonify({
-            'error': 'Analysis already in progress',
-            'status': ANALYSIS_STATUS
-        }), 409
-    
-    folder_path = request.form.get('folder_path')
-    recursive = request.form.get('recursive') == 'true'
-    
-    # If no folder path provided, try to use the configured path
-    if not folder_path:
-        folder_path = config.get('music', 'folder_path', fallback='')
-    
-    logger.info(f"Analyzing music folder: {folder_path} (recursive={recursive})")
-    
-    if not folder_path or not os.path.isdir(folder_path):
-        logger.error(f"Invalid folder path: {folder_path}")
-        return jsonify({'error': 'Invalid folder path'}), 400
+            'success': False,
+            'message': 'Analysis is already running'
+        })
     
     try:
+        # Get data from request - support both form data and JSON
+        if request.is_json:
+            data = request.get_json()
+            folder_path = data.get('folder_path')
+            recursive = data.get('recursive', True)
+        else:
+            folder_path = request.form.get('folder_path')
+            recursive = request.form.get('recursive') == 'true'
+        
+        # If no folder path provided, try to use the configured path
+        if not folder_path:
+            folder_path = config.get('music', 'folder_path', fallback='')
+        
+        logger.info(f"Analyzing music folder: {folder_path} (recursive={recursive})")
+        
+        if not folder_path or not os.path.isdir(folder_path):
+            logger.error(f"Invalid folder path: {folder_path}")
+            return jsonify({
+                'success': False,
+                'error': f"Invalid folder path: {folder_path}"
+            })
+        
         # Ensure analyzer is initialized
         if not analyzer:
-            logger.error("MusicAnalyzer not initialized")
-            return jsonify({'error': 'Analyzer not available'}), 500
+            logger.error("Analyzer not initialized")
+            return jsonify({
+                'success': False,
+                'error': "Music analyzer not initialized"
+            })
         
         # Reset analysis status
         ANALYSIS_STATUS.update({
@@ -372,7 +384,6 @@ def analyze_folder():
         })
         
         # Start analysis in background thread
-        import threading
         analysis_thread = threading.Thread(
             target=run_analysis,
             args=(folder_path, recursive)
@@ -393,7 +404,10 @@ def analyze_folder():
             'error': str(e),
             'last_updated': datetime.now().isoformat()
         })
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
 
 # Add this function to run analysis in background
 def run_analysis(folder_path, recursive):
@@ -1871,6 +1885,20 @@ def update_metadata():
         return jsonify({
             "error": str(e)
         }), 500
+
+@app.route('/api/analyze/status')
+def get_analyze_status():
+    """Get the current status of the analysis"""
+    global ANALYSIS_STATUS
+    
+    return jsonify(ANALYSIS_STATUS)
+
+@app.route('/api/analysis/status')
+def get_global_analysis_status():
+    """Get the current status of the analysis for the global status bar"""
+    global ANALYSIS_STATUS
+    
+    return jsonify(ANALYSIS_STATUS)
 
 def run_server():
     """Run the Flask server"""

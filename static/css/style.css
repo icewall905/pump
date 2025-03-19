@@ -1882,3 +1882,29 @@ p, span, div, label {
 .text-muted, .help-text, small {
     color: #aaa !important;
 }
+
+/* Analysis status display */
+.status-container {
+    margin-top: 10px;
+    display: none;
+}
+
+.progress-bar {
+    height: 10px;
+    background-color: #333;
+    border-radius: 5px;
+    overflow: hidden;
+    margin-bottom: 5px;
+}
+
+.progress-fill {
+    height: 100%;
+    background-color: #6a8a5e;
+    width: 0%;
+    transition: width 0.5s ease;
+}
+
+.status-text {
+    font-size: 14px;
+    color: #e0e0e0;
+}

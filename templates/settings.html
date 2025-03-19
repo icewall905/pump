@@ -17,7 +17,7 @@
     <div class="message error">{{ error }}</div>
     {% endif %}
     
-    <form action="/settings" method="post" class="settings-form">
+    <form method="post" class="settings-form">
         <!-- Music Library Configuration Section -->
         <div class="settings-section">
             <h2>Music Library</h2>
@@ -26,139 +26,99 @@
             <div class="settings-group">
                 <div class="form-group">
                     <label for="music-directory">Music Folder Path:</label>
-                    <input type="text" id="music-directory" class="form-control" value="{{ music_folder_path }}" placeholder="/path/to/music">
+                    <input type="text" id="music-directory" name="music_folder_path" class="form-control" value="{{ music_folder_path }}" placeholder="/path/to/music">
                 </div>
                 
                 <div class="form-group">
                     <div class="checkbox-wrapper">
-                        <input type="checkbox" id="recursive-scan" {% if recursive %}checked{% endif %}>
+                        <input type="checkbox" id="recursive-scan" name="recursive" {% if recursive %}checked{% endif %}>
                         <label for="recursive-scan">Include subfolders when analyzing</label>
                     </div>
                 </div>
                 
-                <div class="button-group">
-                    <button type="button" id="save-music-path" class="primary-button">Save Path</button>
-                    <button type="button" id="scan-library-btn" class="secondary-button">Quick Scan Library</button>
-                    <button type="button" id="start-analysis-btn" class="secondary-button">Start Background Analysis</button>
-                    <button type="button" id="update-metadata-btn" class="secondary-button">Update Metadata</button>
+                <div class="form-group button-group">
+                    <button type="button" id="save-music-path" class="btn">Save Path</button>
+                    <button type="button" id="quick-scan-btn" class="btn secondary-button">Quick Scan</button>
+                    <button type="button" id="analyze-button" class="btn primary-button">Full Analysis</button>
                 </div>
                 
-                <div id="library-status" class="mt-3">
-                    <div class="status-info">
-                        <span>Pending Analysis:</span>
-                        <span id="pending-count" class="badge bg-warning">0</span>
+                <div id="analysis-status" class="status-container">
+                    <div id="analysis-progress-bar" class="progress-bar">
+                        <div id="analysis-progress-fill" class="progress-fill"></div>
                     </div>
-                    <div class="status-info">
-                        <span>Analyzed Files:</span>
-                        <span id="analyzed-count" class="badge bg-success">0</span>
-                    </div>
-                    <div class="status-info">
-                        <span>Failed Analysis:</span>
-                        <span id="failed-count" class="badge bg-danger">0</span>
-                    </div>
-                </div>
-                
-                <div id="analysis-progress" class="mt-3 hidden">
-                    <div class="progress-bar-container">
-                        <div id="analysis-progress-bar" class="progress-bar-fill" style="width: 0%">0%</div>
-                    </div>
-                    <div class="progress-controls">
-                        <span id="analysis-status-text">Analyzing files...</span>
-                        <button id="stop-analysis-btn" class="btn-danger">Stop</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Add this after the "Music Library" settings section -->
-        <div class="settings-section">
-            <h2>Playlist Settings</h2>
-            <p>Configure defaults for playlist generation</p>
-            
-            <div class="settings-group">
-                <div class="form-group">
-                    <label for="default_playlist_size">Default Station Size:</label>
-                    <select id="default_playlist_size" name="default_playlist_size" class="settings-select">
-                        <option value="10" {% if default_playlist_size == '10' %}selected{% endif %}>10 tracks</option>
-                        <option value="20" {% if default_playlist_size == '20' %}selected{% endif %}>20 tracks</option>
-                        <option value="30" {% if default_playlist_size == '30' %}selected{% endif %}>30 tracks</option>
-                        <option value="40" {% if default_playlist_size == '40' %}selected{% endif %}>40 tracks</option>
-                        <option value="50" {% if default_playlist_size == '50' %}selected{% endif %}>50 tracks</option>
-                        <option value="100" {% if default_playlist_size == '100' %}selected{% endif %}>100 tracks</option>
-                    </select>
-                    <p class="help-text">Default number of tracks to include when creating a station</p>
-                </div>
-            </div>
-        </div>
-
-        <!-- External API Configuration Section -->
-        <div class="settings-section">
-            <h2>External API Configuration</h2>
-            <p>Connect to external services to enhance music metadata</p>
-            
-            <div class="settings-group">
-                <h3>Last.fm API</h3>
-                <p>Get a free API key from <a href="https://www.last.fm/api/account/create" target="_blank">Last.fm</a></p>
-                
-                <div class="form-group">
-                    <label for="lastfm_api_key">API Key:</label>
-                    <input type="text" id="lastfm_api_key" name="lastfm_api_key" value="{{ lastfm_api_key }}">
-                    <p class="help-text">Used for fetching artist images and additional metadata</p>
-                </div>
-                
-                <div class="form-group">
-                    <label for="lastfm_api_secret">API Secret:</label>
-                    <input type="password" id="lastfm_api_secret" name="lastfm_api_secret" value="{{ lastfm_api_secret }}">
-                </div>
-                
-                <div class="form-group">
-                    <button type="button" id="update-artist-images" class="secondary-button">Update Artist Images (LastFM)</button>
-                    <p class="help-text">Fetch missing artist images from Last.fm</p>
-                    <div id="lastfm-update-status"></div>
-                </div>
-            </div>
-
-            <!-- Add Spotify section -->
-            <div class="settings-group">
-                <h3>Spotify API</h3>
-                <p>Get Spotify API credentials from <a href="https://developer.spotify.com/dashboard" target="_blank">Spotify Developer Dashboard</a></p>
-                
-                <div class="form-group">
-                    <label for="spotify_client_id">Client ID:</label>
-                    <input type="text" id="spotify_client_id" name="spotify_client_id" value="{{ spotify_client_id }}">
-                </div>
-                
-                <div class="form-group">
-                    <label for="spotify_client_secret">Client Secret:</label>
-                    <input type="password" id="spotify_client_secret" name="spotify_client_secret" value="{{ spotify_client_secret }}">
-                </div>
-                
-                <div class="form-group">
-                    <button type="button" id="update-artist-images-spotify" class="secondary-button">Update Artist Images (Spotify)</button>
-                    <p class="help-text">Fetch artist images from Spotify (recommended)</p>
-                    <div id="spotify-update-status"></div>
+                    <div id="analysis-status-text" class="status-text"></div>
                 </div>
             </div>
         </div>
         
-        <!-- Add this to your settings form in the appropriate location -->
-
-        <div class="settings-group">
-            <h3>Logging Settings</h3>
-            <div class="form-group">
-                <label for="log-level">Log Level</label>
-                <select id="log-level" class="settings-select">
-                    <option value="debug">Debug</option>
-                    <option value="info">Info</option>
-                    <option value="warning">Warning</option>
-                    <option value="error">Error</option>
-                    <option value="critical">Critical</option>
-                </select>
+        <!-- Metadata Management -->
+        <div class="settings-section">
+            <h2>Metadata Management</h2>
+            <p>Update track metadata from external services</p>
+            
+            <div class="settings-group">
+                <div class="form-group button-group">
+                    <button type="button" id="update-metadata-btn" class="btn secondary-button">Update Metadata</button>
+                    <button type="button" id="update-lastfm-btn" class="btn secondary-button">Update via LastFM</button>
+                    <button type="button" id="update-spotify-btn" class="btn secondary-button">Update via Spotify</button>
+                </div>
+                
+                <div id="metadata-status" class="status-container">
+                    <div id="metadata-status-text" class="status-text"></div>
+                </div>
             </div>
-            <button id="save-log-level" class="primary-button">Save Log Level</button>
         </div>
-
-        <button type="submit" class="primary-button">Save Settings</button>
+        
+        <!-- Playlist Settings Section -->
+        <div class="settings-section">
+            <h2>Playlist Settings</h2>
+            <div class="form-group">
+                <label for="default_playlist_size">Default Station Size:</label>
+                <select id="default_playlist_size" name="default_playlist_size" class="settings-select">
+                    <option value="10" {% if default_playlist_size == '10' %}selected{% endif %}>10 tracks</option>
+                    <option value="20" {% if default_playlist_size == '20' %}selected{% endif %}>20 tracks</option>
+                    <option value="30" {% if default_playlist_size == '30' %}selected{% endif %}>30 tracks</option>
+                    <option value="40" {% if default_playlist_size == '40' %}selected{% endif %}>40 tracks</option>
+                    <option value="50" {% if default_playlist_size == '50' %}selected{% endif %}>50 tracks</option>
+                    <option value="100" {% if default_playlist_size == '100' %}selected{% endif %}>100 tracks</option>
+                </select>
+                <p class="help-text">Number of tracks to include when creating a station</p>
+            </div>
+        </div>
+        
+        <!-- API Settings Section -->
+        <div class="settings-section">
+            <h2>External Services</h2>
+            <p>Configure API keys for external services</p>
+            
+            <div class="settings-group">
+                <h3>Last.fm API</h3>
+                <div class="form-group">
+                    <label for="lastfm_api_key">Last.fm API Key:</label>
+                    <input type="text" id="lastfm_api_key" name="lastfm_api_key" value="{{ lastfm_api_key }}">
+                </div>
+                <div class="form-group">
+                    <label for="lastfm_api_secret">Last.fm API Secret:</label>
+                    <input type="text" id="lastfm_api_secret" name="lastfm_api_secret" value="{{ lastfm_api_secret }}">
+                </div>
+            </div>
+            
+            <div class="settings-group">
+                <h3>Spotify API</h3>
+                <div class="form-group">
+                    <label for="spotify_client_id">Client ID:</label>
+                    <input type="text" id="spotify_client_id" name="spotify_client_id" value="{{ spotify_client_id }}">
+                </div>
+                <div class="form-group">
+                    <label for="spotify_client_secret">Client Secret:</label>
+                    <input type="text" id="spotify_client_secret" name="spotify_client_secret" value="{{ spotify_client_secret }}">
+                </div>
+            </div>
+        </div>
+        
+        <div class="form-group">
+            <button type="submit" class="btn primary-button">Save All Settings</button>
+        </div>
     </form>
 
     <!-- Album Art Cache Section -->
@@ -179,7 +139,5 @@
 {% endblock %}
 
 {% block scripts %}
-<!-- Add settings-specific JavaScript -->
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
 {% endblock %}
