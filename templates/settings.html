@@ -1,6 +1,6 @@
 {% extends "layout.html" %}
 
-{% block title %}PUMP - Music Player Settings{% endblock %}
+{% block title %}Settings - PUMP Music Player{% endblock %}
 
 {% block content %}
 {% set active_page = 'settings' %}
@@ -179,6 +179,7 @@
 {% endblock %}
 
 {% block scripts %}
+<!-- Add settings-specific JavaScript -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
 {% endblock %}

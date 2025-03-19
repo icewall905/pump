@@ -1677,28 +1677,40 @@ def start_background_analysis():
     def background_task():
         global analysis_progress
         
-        try:
-            # Hook into analyze_pending_files to update progress
-            def progress_callback(current, status):
-                analysis_progress['current_file_index'] = current
-                if status == 'analyzed':
-                    analysis_progress['analyzed_count'] += 1
-                    analysis_progress['pending_count'] -= 1
-                elif status == 'failed':
-                    analysis_progress['failed_count'] += 1
-                    analysis_progress['pending_count'] -= 1
+        print(f"Starting background analysis of {analysis_progress['total_files']} files")
+        
+        # Define a callback to update progress
+        def update_progress(index, status):
+            if status == 'analyzed':
+                analysis_progress['analyzed_count'] += 1
+            elif status == 'failed':
+                analysis_progress['failed_count'] += 1
             
-            # Call the analyze function with our callback
-            analyzer.analyze_pending_files(
-                limit=limit, 
-                batch_size=batch_size, 
-                progress_callback=progress_callback
+            analysis_progress['current_file_index'] = index
+        
+        try:
+            # Run the analyzer
+            result = analyzer.analyze_pending_files(
+                limit=limit,
+                batch_size=batch_size,
+                progress_callback=update_progress
             )
-            analysis_progress['last_run_completed'] = True
+            
+            # Update the progress with the final results
+            analysis_progress.update({
+                'is_running': False,
+                'last_run_completed': True,
+                'pending_count': result.get('remaining', 0)
+            })
+            
+            print(f"Background analysis complete: {result}")
+            
         except Exception as e:
-            logging.error(f"Background analysis error: {e}")
-        finally:
-            analysis_progress['is_running'] = False
+            print(f"Error in background analysis: {e}")
+            analysis_progress.update({
+                'is_running': False,
+                'error': str(e)
+            })
     
     analysis_thread = threading.Thread(target=background_task)
     analysis_thread.daemon = True
@@ -1769,15 +1781,21 @@ def save_music_path():
         music_path = data['path']
         recursive = data.get('recursive', True)
         
-        # Load config
-        config.set('library', 'music_folder', music_path)
-        config.set('library', 'recursive', str(recursive).lower())
-        
-        # Save to config file
-        with open('pump.conf', 'w') as configfile:
-            config.write(configfile)
+        # Make sure music section exists
+        if not config.has_section('music'):
+            config.add_section('music')
             
+        # Update configuration
+        config.set('music', 'folder_path', music_path)
+        config.set('music', 'recursive', str(recursive).lower())
+        
+        # Write to config file
+        with open(config_file, 'w') as f:
+            config.write(f)
+            
+        logger.info(f"Saved music folder path: {music_path} (recursive={recursive})")
         return jsonify({"success": True})
+        
     except Exception as e:
         logger.error(f"Error saving music path: {e}")
         return jsonify({"success": False, "message": str(e)}), 500

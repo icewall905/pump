@@ -811,7 +811,7 @@ class MusicAnalyzer:
         # Check for stop flag in the global state
         def should_stop():
             global analysis_progress
-            return analysis_progress.get('stop_requested', False) if 'analysis_progress' in globals() else False
+            return analysis_progress.get('stop_requested', False)
         
         for i, file_path in enumerate(pending_files):
             # Check if we should stop
@@ -821,6 +821,10 @@ class MusicAnalyzer:
                 
             try:
                 print(f"Analyzing {i+1}/{len(pending_files)}: {file_path}")
+                
+                # Skip files that don't exist
+                if not os.path.exists(file_path):
+                    raise FileNotFoundError(f"[Errno 2] No such file or directory: '{file_path}'")
                 
                 # Report progress if callback provided
                 if progress_callback:
@@ -883,8 +887,8 @@ class MusicAnalyzer:
                     )
                     conn.commit()
                     conn.close()
-                except:
-                    pass
+                except Exception as db_error:
+                    print(f"Error updating DB status: {db_error}")
                     
                 failed_count += 1
                 consecutive_errors += 1

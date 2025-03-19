@@ -2,8 +2,8 @@ body {
     font-family: Arial, sans-serif;
     margin: 0;
     padding: 0;
-    background-color: #1a1a1a;
-    color: #e0e0e0;
+    background-color: #1e1e1e; /* Dark background for all pages */
+    color: #e0e0e0; /* Light text color for all pages */
     display: flex;
 }
 
@@ -555,7 +555,7 @@ h1, h2 {
     cursor: pointer;
 }
 
-.close:hover {
+close:hover {
     color: #fff;
 }
 
@@ -1747,4 +1747,138 @@ body:has(.global-status[style*="display: block"]) .sidebar {
 
 #toast-container {
     z-index: 1050;
+}
+
+/* Add this to your style.css file */
+
+/* Ensure consistent text color across all pages */
+body {
+    color: #e0e0e0; /* Light text color for all pages */
+    background-color: #1e1e1e; /* Dark background for all pages */
+}
+
+/* Fix for Library, Settings, and Logs pages */
+.content-container h1,
+.content-container h2,
+.content-container h3,
+.content-container p,
+.content-container label,
+.content-container span,
+.settings-section h2,
+.settings-section p,
+.settings-group label,
+.form-group label,
+.library-section h2,
+.library-section p,
+.logs-container h2,
+.logs-container p {
+    color: #e0e0e0 !important; /* Force light text color */
+}
+
+/* Fix for table text in library views */
+table th,
+table td {
+    color: #e0e0e0;
+}
+
+/* Fix for any inputs that might have dark text */
+input, textarea, select {
+    background-color: #333;
+    color: #e0e0e0;
+    border: 1px solid #444;
+}
+
+/* Consistent form styling */
+.form-group {
+    margin-bottom: 15px;
+}
+
+.help-text {
+    color: #999 !important;
+    font-size: 0.9em;
+    margin-top: 4px;
+}
+
+/* Consistent button styling */
+button, 
+.btn, 
+input[type="submit"], 
+input[type="button"] {
+    background-color: #444;
+    color: #e0e0e0;
+    border: 1px solid #555;
+    padding: 8px 16px;
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+button:hover, 
+.btn:hover, 
+input[type="submit"]:hover, 
+input[type="button"]:hover {
+    background-color: #555;
+}
+
+/* Fix for specific inputs that are likely using Bootstrap styles */
+input, select, textarea, .form-control {
+    background-color: #333 !important;
+    color: #e0e0e0 !important;
+    border-color: #444 !important;
+}
+
+/* Fix for specific text elements that might be inheriting Bootstrap colors */
+.form-group label,
+.settings-section p,
+.settings-section h2,
+.settings-group label,
+.settings-header h2,
+.library-section h2,
+.library-section p,
+.library-container label,
+.library-header h2,
+.library-detail-info h2,
+span.badge {
+    color: #e0e0e0 !important;
+}
+
+/* Fix for buttons that might be styled by Bootstrap */
+.btn, .btn-primary, .btn-secondary, 
+button.btn, input[type="button"].btn {
+    background-color: #444 !important;
+    color: #e0e0e0 !important;
+    border-color: #555 !important;
+}
+
+.btn:hover, .btn-primary:hover, .btn-secondary:hover,
+button.btn:hover, input[type="button"].btn:hover {
+    background-color: #555 !important;
+    color: white !important;
+}
+
+/* Fix for any Bootstrap alerts or badges */
+.alert {
+    color: #e0e0e0 !important;
+    background-color: #333 !important;
+    border-color: #444 !important;
+}
+
+.badge {
+    color: #e0e0e0 !important;
+}
+
+/* Fix for any Bootstrap card elements */
+.card, .card-body, .card-title, .card-text {
+    background-color: #333 !important;
+    color: #e0e0e0 !important;
+}
+
+/* Add !important to existing text color styles */
+h1, h2, h3, h4, h5, h6,
+p, span, div, label {
+    color: #e0e0e0 !important;
+}
+
+/* Exception for muted or secondary text */
+.text-muted, .help-text, small {
+    color: #aaa !important;
 }
