@@ -69,3 +69,6 @@ dist/
 logs/
 *.log
 npm-debug.log*
+
+# Test music
+music/

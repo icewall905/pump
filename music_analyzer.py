@@ -151,28 +151,34 @@ class MusicAnalyzer:
     
     def analyze_file(self, file_path: str, save_to_db: bool = True) -> Dict:
         """
-        Analyze a music file and extract its features.
-        
-        Args:
-            file_path: Path to the audio file
-            save_to_db: Whether to save the results to the database
-            
-        Returns:
-            Dictionary containing the extracted features
+        Analyze a music file and extract its features, but skip if it's already in the database.
         """
+        # 1) Check if file has already been analyzed
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM audio_files WHERE file_path = ?", (file_path,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if row is not None:
+            # The file already exists in the database; skip re-analysis
+            print(f"Skipping {file_path}, it already exists in the database.")
+            return {"status": "skipped"}
+
+        # 2) If not found in DB, proceed with the usual analysis
         try:
             # First, get metadata from the file itself
             metadata = self.metadata_service.get_metadata_from_file(file_path)
-            
+
             # Next, try to enhance metadata from online services
             enhanced_metadata = self.metadata_service.enrich_metadata(metadata)
-            
+
             # Load the audio file for analysis
             y, sr = librosa.load(file_path, sr=None)
-            
+
             # Basic audio properties
             duration = librosa.get_duration(y=y, sr=sr)
-            
+
             # Extract features
             features = {
                 "file_path": file_path,
@@ -187,33 +193,26 @@ class MusicAnalyzer:
                 **self._extract_rhythm_features(y, sr),
                 **self._extract_harmonic_features(y, sr)
             }
-            
-            # After extracting basic metadata, fetch artist image if possible
+
+            # Fetch artist image if available (LastFM > Spotify fallback)
             artist_image_url = None
             if features["artist"]:
-                # Try LastFM first
                 if self.lastfm_service:
                     artist_image_url = self.lastfm_service.get_artist_image_url(features["artist"])
-                    if artist_image_url:
-                        logging.info(f"Found LastFM artist image for {features['artist']}")
-                
-                # If LastFM failed, try Spotify as fallback
                 if not artist_image_url and self.spotify_service:
                     artist_image_url = self.spotify_service.get_artist_image_url(features["artist"])
-                    if artist_image_url:
-                        logging.info(f"Found Spotify artist image for {features['artist']}")
-                        
+
             features["artist_image_url"] = artist_image_url
-            
-            # Save to database if requested
+
             if save_to_db:
                 self._save_to_db(features)
-            
+
             return features
-        
+
         except Exception as e:
             print(f"Error analyzing {file_path}: {e}")
             return {"error": str(e)}
+
     
     def _extract_time_domain_features(self, y: np.ndarray, sr: int) -> Dict:
         """Extract time-domain features."""
