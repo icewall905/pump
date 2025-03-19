@@ -17,12 +17,44 @@ from datetime import datetime
 from flask import redirect, url_for
 import time  # For sleep between API calls
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
+# Import logging configuration
+try:
+    import logging_config
+except ImportError:
+    print("Warning: logging_config module not found. Using basic logging configuration.")
+    # Set up basic logging if the module doesn't exist
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[logging.StreamHandler()]
+    )
+
+# Initialize logging with settings from config.ini if available
+def init_logging(config):
+    try:
+        log_level = config.get('logging', 'level', fallback='info')
+        log_to_file = config.getboolean('logging', 'log_to_file', fallback=True)
+        log_dir = config.get('logging', 'log_dir', fallback='logs')
+        max_size_mb = config.getint('logging', 'max_size_mb', fallback=10)
+        backup_count = config.getint('logging', 'backup_count', fallback=5)
+        
+        # Use the imported module instead of relative import
+        logging_config.configure_logging(
+            level=log_level,
+            log_to_file=log_to_file,
+            log_dir=log_dir,
+            max_size_mb=max_size_mb,
+            backup_count=backup_count
+        )
+        
+        return logging_config.get_logger('web_player')
+    except (AttributeError, KeyError, ImportError) as e:
+        print(f"Error setting up logging: {e}")
+        logger = logging.getLogger('web_player')
+        logger.setLevel(logging.INFO)
+        return logger
+
+# Initialize a placeholder logger that will be properly configured later
 logger = logging.getLogger('web_player')
 
 # Default configuration
@@ -42,6 +74,14 @@ default_config = {
     'music': {
         'folder_path': '',
         'recursive': 'true'
+    },
+    # Add logging configuration defaults
+    'logging': {
+        'level': 'info',
+        'log_to_file': 'true',
+        'log_dir': 'logs',
+        'max_size_mb': '10',
+        'backup_count': '5'
     }
 }
 
@@ -88,6 +128,11 @@ if config_updated or not os.path.exists(config_file):
     logger.info(f"Writing updated configuration to {config_file}")
     with open(config_file, 'w') as f:
         config.write(f)
+
+# Now properly initialize logging with the loaded config
+logger = init_logging(config)
+
+logger.info("Logging system initialized")
 
 # Get configuration values with fallbacks
 try:
@@ -509,7 +554,7 @@ def album_art_proxy(url):
         cache_path = os.path.join(CACHE_DIR, f"{url_hash}.jpg")
         
         # Check if the image is already in cache
-        if os.path.exists(cache_path):
+        if (os.path.exists(cache_path)):
             logger.debug(f"Serving cached album art for: {url}")
             return send_file(cache_path, mimetype='image/jpeg')
         
@@ -1494,6 +1539,48 @@ def create_station(track_id):
         if conn:
             conn.close()
 
+# Add this with your other routes
+
+@app.route('/api/settings/change_log_level', methods=['POST'])
+def change_log_level():
+    try:
+        data = request.get_json()
+        level = data.get('level')
+        
+        if not level:
+            return jsonify({"error": "No log level provided"}), 400
+        
+        # Update config file
+        if not config.has_section('logging'):
+            config.add_section('logging')
+        
+        config.set('logging', 'level', level.lower())
+        
+        # Save to config file
+        with open(config_file, 'w') as f:
+            config.write(f)
+        
+        # Change log level at runtime
+        logging_config.set_log_level(level.lower())
+        
+        logger.info(f"Log level changed to {level}")
+        return jsonify({"message": f"Log level changed to {level}"})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error(f"Error changing log level: {e}")
+        return jsonify({"error": "Failed to change log level"}), 500
+
+@app.route('/api/settings/get_log_level', methods=['GET'])
+def get_log_level():
+    """Get current log level"""
+    try:
+        level = config.get('logging', 'level', fallback='info')
+        return jsonify({"level": level})
+    except Exception as e:
+        logger.error(f"Error getting log level: {e}")
+        return jsonify({"error": str(e)}), 500
+
 def run_server():
     """Run the Flask server"""
     logger.info(f"Starting server on {HOST}:{PORT} (debug={DEBUG})")
@@ -1510,6 +1597,50 @@ def run_server():
     except Exception as e:
         logger.error(f"Error running server: {e}")
         print(f"Error running server: {e}")
+
+# Add this with your other routes
+
+@app.route('/api/logs/view', methods=['GET'])
+def view_logs():
+    try:
+        lines = request.args.get('lines', default=100, type=int)
+        log_dir = config.get('logging', 'log_dir', fallback='logs')
+        log_file = os.path.join(log_dir, 'pump.log')
+        
+        if not os.path.exists(log_file):
+            return jsonify({"error": "Log file not found"}), 404
+        
+        with open(log_file, 'r') as f:
+            # Get the last 'lines' lines
+            log_lines = f.readlines()[-lines:]
+        
+        return jsonify({"logs": log_lines})
+    except Exception as e:
+        logger.error(f"Error viewing logs: {e}")
+        return jsonify({"error": "Failed to view logs"}), 500
+
+# Add this with your other routes
+
+@app.route('/logs')
+def logs_page():
+    return render_template('logs.html', active_page='logs')
+
+@app.route('/api/logs/download')
+def download_logs():
+    try:
+        log_dir = config.get('logging', 'log_dir', fallback='logs')
+        log_file = os.path.join(log_dir, 'pump.log')
+        
+        if not os.path.exists(log_file):
+            return jsonify({"error": "Log file not found"}), 404
+        
+        return send_file(log_file, 
+                         mimetype='text/plain', 
+                         as_attachment=True, 
+                         download_name=f'pump_logs_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+    except Exception as e:
+        logger.error(f"Error downloading logs: {e}")
+        return jsonify({"error": "Failed to download logs"}), 500
 
 if __name__ == '__main__':
     run_server()

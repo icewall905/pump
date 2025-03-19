@@ -114,6 +114,23 @@
             </div>
         </div>
         
+        <!-- Add this to your settings form in the appropriate location -->
+
+        <div class="settings-group">
+            <h3>Logging Settings</h3>
+            <div class="form-group">
+                <label for="log-level">Log Level</label>
+                <select id="log-level" class="settings-select">
+                    <option value="debug">Debug</option>
+                    <option value="info">Info</option>
+                    <option value="warning">Warning</option>
+                    <option value="error">Error</option>
+                    <option value="critical">Critical</option>
+                </select>
+            </div>
+            <button id="save-log-level" class="primary-button">Save Log Level</button>
+        </div>
+
         <button type="submit" class="primary-button">Save Settings</button>
     </form>
 

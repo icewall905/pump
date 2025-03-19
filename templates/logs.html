@@ -1,0 +1,132 @@
+{% extends "layout.html" %}
+
+{% block title %}Log Viewer{% endblock %}
+
+{% block content %}
+{% include 'partials/sidebar.html' %}
+
+<div class="main-content">
+  <h1>Log Viewer</h1>
+
+  <div class="log-controls">
+      <div>
+          <label for="log-lines">Lines to show: </label>
+          <select id="log-lines" class="settings-select">
+              <option value="50">50 lines</option>
+              <option value="100" selected>100 lines</option>
+              <option value="200">200 lines</option>
+              <option value="500">500 lines</option>
+          </select>
+          <button id="refresh-logs" class="secondary-button">Refresh</button>
+      </div>
+      <div>
+          <button id="download-logs" class="primary-button">Download Full Logs</button>
+      </div>
+  </div>
+
+  <div class="log-viewer" id="log-content">
+      <div class="loading">Loading logs...</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block styles %}
+<style>
+    .log-viewer {
+        background-color: #252525;
+        padding: 15px;
+        border-radius: 8px;
+        margin-top: 20px;
+        max-height: 70vh;
+        overflow-y: auto;
+        font-family: monospace;
+        white-space: pre-wrap;
+        color: #ddd;
+    }
+    .log-line {
+        padding: 2px 0;
+        border-bottom: 1px solid #333;
+    }
+    .log-line:hover {
+        background-color: rgba(255,255,255,0.05);
+    }
+    .log-controls {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 15px;
+    }
+    .log-debug { color: #aaaaff; }
+    .log-info { color: #88cc88; }
+    .log-warning { color: #ffcc66; }
+    .log-error { color: #ff8888; }
+    .log-critical { color: #ff55ff; }
+</style>
+<!-- Add this in the head section if needed -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const logContent = document.getElementById('log-content');
+        const logLines = document.getElementById('log-lines');
+        const refreshBtn = document.getElementById('refresh-logs');
+        const downloadBtn = document.getElementById('download-logs');
+        
+        function loadLogs() {
+            const lines = logLines.value;
+            logContent.innerHTML = '<div class="loading">Loading logs...</div>';
+            
+            fetch(`/api/logs/view?lines=${lines}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        logContent.innerHTML = `<div class="error">${data.error}</div>`;
+                        return;
+                    }
+                    
+                    if (!data.logs || data.logs.length === 0) {
+                        logContent.innerHTML = '<div class="empty">No logs found</div>';
+                        return;
+                    }
+                    
+                    logContent.innerHTML = '';
+                    data.logs.forEach(line => {
+                        const logLine = document.createElement('div');
+                        logLine.className = 'log-line';
+                        
+                        // Add color based on log level
+                        if (line.includes(' DEBUG ')) logLine.classList.add('log-debug');
+                        if (line.includes(' INFO ')) logLine.classList.add('log-info');
+                        if (line.includes(' WARNING ')) logLine.classList.add('log-warning');
+                        if (line.includes(' ERROR ')) logLine.classList.add('log-error');
+                        if (line.includes(' CRITICAL ')) logLine.classList.add('log-critical');
+                        
+                        logLine.textContent = line;
+                        logContent.appendChild(logLine);
+                    });
+                    
+                    // Scroll to bottom
+                    logContent.scrollTop = logContent.scrollHeight;
+                })
+                .catch(error => {
+                    logContent.innerHTML = `<div class="error">Error loading logs: ${error}</div>`;
+                });
+        }
+        
+        // Initial load
+        loadLogs();
+        
+        // Refresh button
+        refreshBtn.addEventListener('click', loadLogs);
+        
+        // Lines dropdown
+        logLines.addEventListener('change', loadLogs);
+        
+        // Download logs
+        downloadBtn.addEventListener('click', function() {
+            window.location.href = '/api/logs/download';
+        });
+    });
+</script>
+{% endblock %}
