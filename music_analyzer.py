@@ -43,20 +43,35 @@ class MusicAnalyzer:
             config = configparser.ConfigParser()
             if os.path.exists('pump.conf'):
                 config.read('pump.conf')
+                print(f"Config file found at: {os.path.abspath('pump.conf')}")
+            else:
+                print("Config file 'pump.conf' not found")
                 
             # Initialize LastFM - first try user's key, then fallback key
             api_key = config.get('lastfm', 'api_key', fallback=None)
             api_secret = config.get('lastfm', 'api_secret', fallback=None)
             
+            print(f"LastFM config found: api_key exists: {bool(api_key)}, api_secret exists: {bool(api_secret)}")
+            
             # If user's key is missing, try fallback key
             if not api_key:
                 api_key = 'b21e44890bc788b52879506873d5ac33'  # Fallback key
                 api_secret = 'bc5e07063a9e09401386a78bfd1350f9'  # Fallback secret
-                logging.info("Using fallback LastFM API key")
+                print("Using fallback LastFM API key")
             
-            self.lastfm_service = LastFMService(api_key, api_secret)
-            logging.info("LastFM service initialized successfully")
-                
+            try:
+                print("Attempting to initialize LastFM service...")
+                self.lastfm_service = LastFMService(api_key, api_secret)
+                # Verify the service works with a simple test
+                test_artist = "The Beatles"
+                print(f"Testing LastFM with artist: {test_artist}")
+                test_url = self.lastfm_service.get_artist_image_url(test_artist)
+                print(f"LastFM test result: {'Success' if test_url else 'Failed'}")
+                logging.info("LastFM service initialized successfully")
+            except Exception as e:
+                print(f"LastFM service initialization error: {e}")
+                self.lastfm_service = None
+            
             # Initialize Spotify - first try user's credentials, then fallback
             client_id = config.get('spotify', 'client_id', fallback=None)
             client_secret = config.get('spotify', 'client_secret', fallback=None)
@@ -71,6 +86,7 @@ class MusicAnalyzer:
             logging.info("Spotify service initialized successfully")
                 
         except Exception as e:
+            print(f"Error in _initialize_services: {e}")
             logging.error(f"Error initializing services: {e}")
         
     def _initialize_db(self):
