@@ -139,6 +139,43 @@
             <button type="button" id="refresh-stats-btn" class="secondary-button">Refresh Stats</button>
         </div>
     </div>
+    
+    <!-- Library Statistics Section -->
+    <div class="settings-section">
+        <h2>Library Statistics</h2>
+        <p>Overview of your music library and storage usage</p>
+        
+        <div id="library-stats" class="library-stats-grid">
+            <div class="stats-loading">Loading library statistics...</div>
+        </div>
+        
+        <div class="stats-items-container">
+            <div class="stat-item">
+                <span class="stat-label">Tracks:</span>
+                <span id="total-tracks" class="stat-value">-</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">With Metadata:</span>
+                <span id="tracks-with-metadata" class="stat-value">-</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Analyzed:</span>
+                <span id="analyzed-tracks" class="stat-value">-</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Database Size:</span>
+                <span id="db-size" class="stat-value">-</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Cache Size:</span>
+                <span id="cache-size" class="stat-value">-</span>
+            </div>
+        </div>
+        
+        <div class="button-group">
+            <button type="button" id="refresh-library-stats-btn" class="secondary-button">Refresh Stats</button>
+        </div>
+    </div>
 </div>
 {% endblock %}
 

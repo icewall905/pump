@@ -1983,7 +1983,6 @@ p, span, div, label {
     text-align: center;
 }
 
-/* Add these styles to the end of your style.css file */
 
 .metadata-sidebar-progress, 
 #analysis-sidebar-progress {
@@ -2013,16 +2012,14 @@ p, span, div, label {
 }
 
 .progress-status-text {
-    font-size: 12px;
+    font-size: 8px;
     color: #ddd;
     text-align: center;
 }
 
-/* Add these styles to your existing style.css file */
-
 .music-library-stats {
     font-size: 0.85em;
-    margin-top: 10px;
+    margin-top: 8px;
 }
 
 .stat-item {
@@ -2043,4 +2040,43 @@ p, span, div, label {
 
 .stat-value {
     font-weight: 500;
+}
+
+/* Add these styles to your existing CSS */
+
+.library-stats-grid {
+    margin-top: 15px;
+}
+
+.stats-items-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 15px;
+    margin: 15px 0;
+}
+
+.stat-item {
+    background-color: rgba(0, 0, 0, 0.1);
+    border-radius: 6px;
+    padding: 12px 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.stat-label {
+    font-weight: 500;
+    color: #aaa;
+}
+
+.stat-value {
+    font-weight: bold;
+    color: #fff;
+}
+
+.stats-loading {
+    text-align: center;
+    padding: 15px;
+    color: #aaa;
+    font-style: italic;
 }

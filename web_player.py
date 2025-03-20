@@ -173,13 +173,13 @@ app = Flask(__name__)
 app.config['DATABASE_PATH'] = DB_PATH  # Add this line to set the config
 try:
     analyzer = MusicAnalyzer(DB_PATH)
-    logger.info("MusicAnalyzer initialized successfully")
+    logger.info("Music analyzer initialized successfully")
 except Exception as e:
-    logger.error(f"Error initializing MusicAnalyzer: {e}")
     analyzer = None
+    logger.error(f"Error initializing music analyzer: {e}")
+    logger.error(f"Detailed error: {traceback.format_exc()}")
 
 # Add these global variables near the top of the file
-
 # Analysis status tracking
 ANALYSIS_STATUS = {
     'running': False,
@@ -1539,35 +1539,44 @@ def create_station(track_id):
         
         # Use the actual audio analyzer for similarity matching
         station_tracks = []
-        if analyzer:
-            # Get the seed track as the first item
-            station_tracks.append(dict(seed_track))
-            
-            # Create a station based on audio similarity
-            similar_file_paths = analyzer.create_station(seed_track['file_path'], playlist_size)
-            
-            # Get the full details of the similar tracks
-            for file_path in similar_file_paths:
-                cursor.execute('''
-                    SELECT * FROM audio_files WHERE file_path = ?
-                ''', (file_path,))
-                track = cursor.fetchone()
-                if track:
-                    station_tracks.append(dict(track))
-                    
-            logger.info(f"Created station with {len(station_tracks)} tracks using audio similarity")
-        else:
-            # Fallback to random selection if analyzer not available
-            logger.warning("Analyzer not available, using random selection")
-            cursor.execute('''
-                SELECT * FROM audio_files
-                WHERE id != ?
-                ORDER BY RANDOM()
-                LIMIT ?
-            ''', (track_id, playlist_size))
-            similar_tracks = [dict(track) for track in cursor.fetchall()]
-            station_tracks = [dict(seed_track)] + similar_tracks
         
+        # Check if analyzer is available
+        if analyzer is None:
+            logger.error("Analyzer not available - check logs for initialization errors")
+            return jsonify({'error': 'Audio analyzer is not initialized. Check server logs for details.'})
+        
+        # Check if the track has been analyzed
+        cursor.execute('''
+            SELECT COUNT(*) as count FROM audio_features 
+            WHERE file_id = ?
+        ''', (seed_track['id'],))
+        has_features = cursor.fetchone()['count'] > 0
+        
+        if not has_features:
+            logger.warning(f"Track {seed_track['title']} has not been analyzed yet. Run analysis first.")
+            return jsonify({
+                'error': 'This track has not been analyzed yet. Please run analysis from Settings page first.'
+            })
+            
+        # Get the seed track as the first item
+        station_tracks.append(dict(seed_track))
+        
+        # Create a station based on audio similarity
+        similar_file_paths = analyzer.create_station(seed_track['file_path'], playlist_size)
+        
+        # Get full details for similar tracks
+        for file_path in similar_file_paths:
+            if file_path == seed_track['file_path']:
+                continue  # Skip seed track as it's already added
+                
+            cursor.execute('''
+                SELECT * FROM audio_files WHERE file_path = ?
+            ''', (file_path,))
+            track = cursor.fetchone()
+            if track:
+                station_tracks.append(dict(track))
+        
+        logger.info(f"Created station with {len(station_tracks)} tracks using audio similarity")
         return jsonify(station_tracks)
         
     except Exception as e:

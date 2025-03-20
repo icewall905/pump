@@ -505,25 +505,40 @@ class MusicAnalyzer:
     def create_station(self, seed_track_path: str, num_tracks: int = 10) -> List[str]:
         """
         Create a music station based on a seed track.
-        
-        Args:
-            seed_track_path: Path to the seed track
-            num_tracks: Number of tracks to include in the station
-            
-        Returns:
-            List of file paths for the station playlist
         """
-        # First analyze the seed track if not already in DB
-        seed_features = self.analyze_file(seed_track_path)
-        
-        # Connect to the database
+        # First check if the seed track is in the database
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
-        # Get all tracks from the database
+        # Get the seed track ID
+        cursor.execute("SELECT id FROM audio_files WHERE file_path = ?", (seed_track_path,))
+        seed_track_row = cursor.fetchone()
+        
+        if not seed_track_row:
+            # If not in database, analyze it
+            seed_features = self.analyze_file(seed_track_path)
+            seed_track_id = None
+        else:
+            # Get seed track features directly from database
+            seed_track_id = seed_track_row['id']
+            cursor.execute('''
+                SELECT tempo, key, mode, energy, danceability, brightness, loudness
+                FROM audio_features 
+                WHERE file_id = ?
+            ''', (seed_track_id,))
+            seed_features = dict(cursor.fetchone() or {})
+            
+            # Log what we found
+            print(f"Using seed track features from database: {seed_features}")
+            
+            if not seed_features:
+                print(f"Warning: No audio features found for seed track. Run analysis first.")
+                return [seed_track_path]
+        
+        # Get all other tracks with their features
         cursor.execute('''
-        SELECT af.file_path, ft.*
+        SELECT af.file_path, ft.tempo, ft.key, ft.mode, ft.energy, ft.danceability, ft.brightness, ft.loudness
         FROM audio_files af
         JOIN audio_features ft ON af.id = ft.file_id
         WHERE af.file_path != ?
@@ -544,6 +559,8 @@ class MusicAnalyzer:
         # Sort by similarity (descending) and get top tracks
         similarities.sort(key=lambda x: x[1], reverse=True)
         station_tracks = [seed_track_path] + [t[0] for t in similarities[:num_tracks-1]]
+        
+        logger.info(f"Top track similarities: {similarities[:3]}")
         
         return station_tracks
         
