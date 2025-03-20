@@ -14,6 +14,9 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Check analysis status immediately
     updateAnalysisStatus();
+    
+    // Save current page to session storage
+    sessionStorage.setItem('currentPage', 'settings');
 });
 
 // Initialize library management functions
@@ -83,7 +86,7 @@ function initMetadataControls() {
     
     if (updateMetadataBtn) {
         updateMetadataBtn.addEventListener('click', function() {
-            updateMetadata();
+            startMetadataUpdate();
         });
     }
     
@@ -98,6 +101,31 @@ function initMetadataControls() {
             updateArtistImages('spotify');
         });
     }
+}
+
+function startMetadataUpdate() {
+    fetch('/api/update-metadata', { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                pollMetadataStatus();
+            }
+        })
+        .catch(err => console.error(err));
+}
+
+function pollMetadataStatus() {
+    fetch('/api/metadata-update/status')
+        .then(res => res.json())
+        .then(status => {
+            if (status.running) {
+                // ...existing code or minimal UI update...
+                setTimeout(pollMetadataStatus, 2000);
+            } else {
+                // ...existing code or clear indicator...
+            }
+        })
+        .catch(err => console.error(err));
 }
 
 function initCacheControls() {
@@ -251,7 +279,8 @@ function startQuickScan() {
     });
 }
 
-// Update metadata
+// Modify the updateMetadata function to trigger the global status indicator
+
 function updateMetadata() {
     const updateBtn = document.getElementById('update-metadata-btn');
     const statusElem = document.getElementById('metadata-status-text');
@@ -271,29 +300,106 @@ function updateMetadata() {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            showMessage(`Metadata updated successfully! Updated ${data.updated} tracks.`, 'success');
-            if (statusElem) {
-                statusElem.textContent = `Metadata updated successfully! Updated ${data.updated} of ${data.total} tracks.`;
+            showMessage('Metadata update started in background', 'success');
+            
+            // Start polling with minimal UI updates
+            startPollingMetadataStatus();
+            
+            // Trigger global status check right away
+            if (window.checkBackgroundTasks) {
+                window.checkBackgroundTasks();
             }
         } else {
-            showMessage(`Error: ${data.error || 'Unknown error'}`, 'error');
+            showMessage(`Error: ${data.message || data.error || 'Unknown error'}`, 'error');
             if (statusElem) {
-                statusElem.textContent = `Error: ${data.error || 'Unknown error'}`;
+                statusElem.textContent = `Error: ${data.message || data.error || 'Unknown error'}`;
             }
+            updateBtn.disabled = false;
+            updateBtn.textContent = 'Update Metadata';
         }
     })
     .catch(error => {
         console.error('Error:', error);
-        showMessage('Failed to update metadata', 'error');
+        showMessage('Failed to start metadata update', 'error');
         if (statusElem) {
-            statusElem.textContent = 'Failed to update metadata';
+            statusElem.textContent = 'Failed to start metadata update';
         }
-    })
-    .finally(() => {
-        // Reset button
         updateBtn.disabled = false;
         updateBtn.textContent = 'Update Metadata';
     });
+}
+
+// Modify the startPollingMetadataStatus to work with shorter polling intervals
+// but only while on the settings page
+function startPollingMetadataStatus() {
+    const updateBtn = document.getElementById('update-metadata-btn');
+    const statusElem = document.getElementById('metadata-status-text');
+    
+    // Create a progress bar if it doesn't exist
+    let progressBar = document.getElementById('metadata-progress-bar');
+    let progressFill = document.getElementById('metadata-progress-fill');
+    
+    if (!progressBar) {
+        const statusContainer = statusElem.parentElement;
+        progressBar = document.createElement('div');
+        progressBar.id = 'metadata-progress-bar';
+        progressBar.className = 'progress-bar';
+        progressFill = document.createElement('div');
+        progressFill.id = 'metadata-progress-fill';
+        progressFill.className = 'progress-fill';
+        progressBar.appendChild(progressFill);
+        statusContainer.insertBefore(progressBar, statusElem);
+    }
+    
+    // We'll use a shorter polling interval for the settings page since it's the focused UI
+    const pollInterval = 1000; // 1 second
+    let timer = null;
+    
+    function checkStatus() {
+        fetch('/api/metadata-update/status')
+            .then(response => response.json())
+            .then(data => {
+                // Update progress bar
+                progressFill.style.width = `${data.percent_complete}%`;
+                
+                if (data.running) {
+                    const processed = data.processed_tracks || 0;
+                    const total = data.total_tracks || 0;
+                    const updated = data.updated_tracks || 0;
+                    
+                    statusElem.textContent = `Updating metadata: ${processed}/${total} tracks (${updated} updated)`;
+                    
+                    // Only continue polling if we're still on the settings page
+                    if (document.getElementById('update-metadata-btn')) {
+                        timer = setTimeout(checkStatus, pollInterval);
+                    }
+                } else if (data.error) {
+                    statusElem.textContent = `Error updating metadata: ${data.error}`;
+                    updateBtn.disabled = false;
+                    updateBtn.textContent = 'Update Metadata';
+                } else if (data.processed_tracks > 0) {
+                    // Update completed
+                    progressFill.style.width = '100%';
+                    statusElem.textContent = `Metadata update complete! ${data.updated_tracks} of ${data.total_tracks} tracks updated.`;
+                    updateBtn.disabled = false;
+                    updateBtn.textContent = 'Update Metadata';
+                }
+            })
+            .catch(error => {
+                console.error('Error checking metadata status:', error);
+                statusElem.textContent = 'Error checking update status';
+                updateBtn.disabled = false;
+                updateBtn.textContent = 'Update Metadata';
+            });
+    }
+    
+    // Start checking status with initial frequency
+    checkStatus();
+    
+    // Clean up function to stop polling
+    return function stopPolling() {
+        if (timer) clearTimeout(timer);
+    };
 }
 
 // Update artist images
@@ -458,8 +564,10 @@ function updateAnalysisStatus() {
                         analyzeBtn.textContent = 'Analysis Running...';
                     }
                     
-                    // Continue polling while running
-                    setTimeout(checkStatus, 2000);
+                    // Only continue polling if we're still on the settings page
+                    if (sessionStorage.getItem('currentPage') === 'settings') {
+                        setTimeout(checkStatus, 2000);
+                    }
                 } else if (data.error) {
                     // Analysis finished with error
                     statusText.textContent = `Error: ${data.error}`;
@@ -520,3 +628,31 @@ function showMessage(message, type) {
         }, 3000);
     }
 }
+
+// Add this event listener to clear current page on unload
+window.addEventListener('beforeunload', function() {
+    // Let the server know we're leaving the settings page
+    if (sessionStorage.getItem('currentPage') === 'settings') {
+        sessionStorage.removeItem('currentPage');
+        
+        // Stop any active polls
+        if (window.metadataPoller) {
+            window.metadataPoller();
+        }
+    }
+});
+
+// Add a function to handle the page visibility changes
+document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'hidden') {
+        // Page is hidden, slow down or pause polling
+        if (window.metadataPoller) {
+            window.metadataPoller();
+            window.metadataPoller = null;
+        }
+    } else if (document.visibilityState === 'visible' && 
+              sessionStorage.getItem('currentPage') === 'settings') {
+        // Page is visible again, restart polling if we're on the settings page
+        window.metadataPoller = startPollingMetadataStatus();
+    }
+});

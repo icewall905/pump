@@ -38,4 +38,10 @@ document.addEventListener('DOMContentLoaded', function() {
             window.location.href = '/?view=recent';
         });
     }
+    
+    // Global analysis status checking
+    if (window.checkGlobalAnalysisStatus) {
+        // Start checking for global status updates
+        window.checkGlobalAnalysisStatus();
+    }
 });

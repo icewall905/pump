@@ -1,0 +1,71 @@
+/* Global Status Indicator Styles */
+.global-status-indicator {
+    display: none;
+    padding: 8px 12px;
+    margin: 10px 0;
+    background-color: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+    font-size: 0.9em;
+    flex-direction: column;
+    width: 100%;
+    max-height: 80px;
+    overflow: hidden;
+}
+
+.global-status-indicator.active {
+    display: flex;
+}
+
+.global-status-indicator .status-content {
+    display: flex;
+    align-items: center;
+    margin-bottom: 5px;
+}
+
+.status-icon {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: #4caf50;
+    margin-right: 10px;
+    flex-shrink: 0;
+}
+
+.status-icon.pulse {
+    animation: pulse 1.5s infinite;
+}
+
+.status-text {
+    flex: 1;
+    font-size: 0.85em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.global-status-indicator .progress-bar {
+    height: 4px;
+    background-color: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 4px;
+    width: 100%;
+}
+
+.global-status-indicator .progress-fill {
+    height: 100%;
+    background-color: #4caf50;
+    transition: width 0.5s ease;
+}
+
+@keyframes pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7);
+    }
+    70% {
+        box-shadow: 0 0 0 10px rgba(76, 175, 80, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(76, 175, 80, 0);
+    }
+}

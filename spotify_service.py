@@ -75,16 +75,22 @@ class SpotifyService:
                         return json.load(f)
                 except Exception as e:
                     self.logger.error(f"Error reading artist cache: {e}")
-            
+        
+        # Clean artist name - remove potentially problematic characters or split on common separators
+        clean_artist = artist_name
+        for separator in ["feat.", "ft.", "featuring", "with", "vs", "x", "&"]:
+            if separator in clean_artist.lower():
+                clean_artist = clean_artist.split(separator, 1)[0].strip()
+        
         try:
             headers = {'Authorization': f'Bearer {token}'}
             params = {
-                'q': artist_name,
+                'q': clean_artist,
                 'type': 'artist',
                 'limit': 1
             }
             
-            self.logger.info(f"Searching Spotify for artist: {artist_name}")
+            self.logger.info(f"Searching Spotify for artist: {clean_artist}")
             response = requests.get('https://api.spotify.com/v1/search',
                                    headers=headers,
                                    params=params)
@@ -104,7 +110,7 @@ class SpotifyService:
                         
                     return artist
                     
-                self.logger.warning(f"No artist found on Spotify for: {artist_name}")
+                self.logger.warning(f"No artist found on Spotify for: {clean_artist}")
                 return None
             else:
                 self.logger.error(f"Error searching Spotify: {response.status_code} - {response.text}")

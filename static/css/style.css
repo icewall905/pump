@@ -1908,3 +1908,43 @@ p, span, div, label {
     font-size: 14px;
     color: #e0e0e0;
 }
+
+/* Add these styles to your CSS file */
+.sidebar-section {
+    margin-top: 20px;
+    padding: 10px;
+    border-top: 1px solid rgba(255,255,255,0.1);
+}
+
+.task-status {
+    margin-bottom: 15px;
+}
+
+.task-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 5px;
+}
+
+.task-title {
+    font-weight: bold;
+}
+
+.task-info {
+    font-size: 0.9em;
+    color: rgba(255,255,255,0.7);
+}
+
+.task-progress-bar {
+    height: 8px;
+    background-color: rgba(255,255,255,0.1);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.task-progress-fill {
+    height: 100%;
+    background-color: #4CAF50;
+    width: 0%;
+    transition: width 0.5s;
+}

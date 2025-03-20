@@ -2,7 +2,7 @@
 
 document.addEventListener('DOMContentLoaded', function() {
     // Load playlists for sidebar
-    const playlistList = document.getElementById('playlist-list');
+    const playlistList = document.querySelector('.playlist-list');
     
     if (playlistList) {
         loadPlaylists();
@@ -105,4 +105,33 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Make functions available globally if needed
     window.loadSidebarPlaylists = loadPlaylists;
+
+    loadPlaylists();
 });
+
+function initSidebarMetadataProgress() {
+    function checkStatus() {
+        fetch('/api/metadata-update/status')
+            .then(r => r.json())
+            .then(status => {
+                const container = document.getElementById('metadata-sidebar-progress');
+                if (!container) return;
+                const fill = container.querySelector('.progress-fill');
+                const text = container.querySelector('.progress-status-text');
+                
+                if (status.running) {
+                    container.style.display = 'block';
+                    fill.style.width = `${status.percent_complete}%`;
+                    text.textContent = `Metadata Update: ${status.processed_tracks}/${status.total_tracks} (${status.percent_complete}%)`;
+                } else {
+                    container.style.display = 'none';
+                    fill.style.width = '0%';
+                    text.textContent = 'Metadata update idle';
+                }
+            })
+            .catch(err => console.error('Sidebar metadata status error:', err))
+            .finally(() => setTimeout(checkStatus, 2000));
+    }
+    checkStatus();
+}
+document.addEventListener('DOMContentLoaded', initSidebarMetadataProgress);

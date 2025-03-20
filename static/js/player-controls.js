@@ -39,8 +39,9 @@ document.addEventListener('DOMContentLoaded', function() {
     // Add this code after the queue button creation
 
     // Create queue panel if it doesn't exist
-    if (!document.getElementById('queue-panel')) {
-        const queuePanel = document.createElement('div');
+    let queuePanel = document.getElementById('queue-panel');
+    if (!queuePanel) {
+        queuePanel = document.createElement('div');
         queuePanel.id = 'queue-panel';
         queuePanel.className = 'queue-panel';
         queuePanel.innerHTML = `

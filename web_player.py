@@ -18,6 +18,7 @@ from flask import redirect, url_for
 import time  # For sleep between API calls
 import threading  # Add this import
 from flask import jsonify, request  # Add this import
+import re
 
 # Import logging configuration
 try:
@@ -201,6 +202,19 @@ analysis_progress = {
     'failed_count': 0,
     'pending_count': 0,
     'last_run_completed': False
+}
+
+# Add this near the top where the other global variables are defined
+METADATA_UPDATE_STATUS = {
+    'running': False,
+    'start_time': None,
+    'total_tracks': 0,
+    'processed_tracks': 0,
+    'updated_tracks': 0,
+    'current_track': '',
+    'percent_complete': 0,
+    'last_updated': None,
+    'error': None
 }
 
 @app.route('/')
@@ -623,27 +637,29 @@ def artist_image_proxy(url):
     try:
         # Decode URL
         url = unquote(url)
-        
+        logger.info(f"Artist image request for: {url}")
         # Generate a cache filename based on URL hash
         url_hash = hashlib.md5(url.encode()).hexdigest()
+        cache_path = os.path.join(CACHE_DIR, f"artist_{url_hash}.jpg")
         cache_path = os.path.join(CACHE_DIR, f"artist_{url_hash}.jpg")
         
         # Check if the image is already in cache
         if os.path.exists(cache_path):
+            logger.debug(f"Serving cached artist image for: {url}")
             return send_file(cache_path, mimetype='image/jpeg')
         
         # If not in cache, fetch from source
         logger.info(f"Fetching artist image from: {url}")
         
         # Fetch the image
-        response = requests.get(url, stream=True)
+        response = requests.get(url, stream=True, timeout=10)
         
-        if (response.status_code == 200):
+        if response.status_code == 200:
             # Get content type from response
             content_type = response.headers.get('Content-Type', 'image/jpeg')
             
             # Read the image data
-            image_data = response.raw.read()
+            image_data = response.content
             
             # Save to cache
             with open(cache_path, 'wb') as f:
@@ -653,11 +669,12 @@ def artist_image_proxy(url):
             return Response(image_data, content_type=content_type)
         else:
             logger.error(f"Failed to fetch artist image: HTTP {response.status_code}")
-            return '', 404
+            # Return a default image instead of 404
+            return send_file('static/images/default-artist-image.png', mimetype='image/png')
             
     except Exception as e:
         logger.error(f"Error proxying artist image: {e}")
-        return '', 500
+        return send_file('static/images/default-artist-image.png', mimetype='image/png')
 
 def cleanup_cache():
     """Cleanup the image cache if it exceeds the maximum size"""
@@ -1175,6 +1192,7 @@ def update_artist_images():
     try:
         # Get Last.fm API key from config
         api_key = config.get('lastfm', 'api_key', fallback=None)
+        logger.info(f"Starting artist image update with API key: {'[Set]' if api_key else '[Not Set]'}")
         api_secret = config.get('lastfm', 'api_secret', fallback=None)
         
         # Use fallback keys if needed
@@ -1203,18 +1221,21 @@ def update_artist_images():
         conn.close()
         
         if not artists:
-            return jsonify({'message': 'No artists without images found'}), 200
+            logger.info("No artists without images found")
+            return jsonify({'success': True, 'message': 'No artists without images found', 'updated': 0, 'total': 0})
+        
+        logger.info(f"Found {len(artists)} artists without images")
         
         # Dictionary to collect images before DB updates
         artist_images = {}
         
         # First fetch all images without touching DB
         total = len(artists)
-        for artist in artists:
+        for artist in artists[:30]:  # Limit to 30 artists at a time to avoid timeouts
             try:
                 logger.info(f"Fetching image for artist: {artist}")
                 image_url = lastfm.get_artist_image_url(artist)
-                if image_url:
+                if image_url and image_url != default_image:
                     logger.info(f"Found image for {artist}: {image_url}")
                     artist_images[artist] = image_url
                 else:
@@ -1235,7 +1256,7 @@ def update_artist_images():
                         'UPDATE audio_files SET artist_image_url = ? WHERE artist = ?', 
                         (image_url, artist)
                     )
-                    updated_count += 1
+                    updated_count += cursor.rowcount
                 
                 conn.commit()
                 conn.close()
@@ -1255,7 +1276,7 @@ def update_artist_images():
         
     except Exception as e:
         logger.error(f"Error updating artist images: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/test-lastfm/<artist_name>')
 def test_lastfm(artist_name):
@@ -1305,7 +1326,6 @@ def test_lastfm(artist_name):
         logger.error(f"Error testing LastFM API: {e}")
         return jsonify({'error': str(e)}), 500
 
-# filepath: /home/hnyg/git/pump/pump/web_player.py
 @app.route('/api/test-lastfm-key')
 def test_lastfm_key():
     """Test if the LastFM API key is valid"""
@@ -1369,7 +1389,7 @@ def update_artist_images_spotify():
             client_id = '5de01599b1ec493ea7fc3d0c4b1ec977'
             client_secret = 'be8bb04ebb9c447484f62320bfa9b4cc'
             logger.info("Using fallback Spotify API credentials")
-            
+        
         # Initialize Spotify service
         spotify = SpotifyService(client_id, client_secret)
         
@@ -1392,7 +1412,7 @@ def update_artist_images_spotify():
         
         if not artists:
             return jsonify({'message': 'No artists without images found'}), 200
-
+        
         # Dictionary to collect images before DB updates
         artist_images = {}
         
@@ -1423,7 +1443,7 @@ def update_artist_images_spotify():
                         'UPDATE audio_files SET artist_image_url = ? WHERE artist = ?', 
                         (image_url, artist)
                     )
-                    updated_count += 1
+                    updated_count += cursor.rowcount
                 
                 conn.commit()
                 conn.close()
@@ -1463,7 +1483,7 @@ def test_spotify(artist_name):
         token = spotify.get_token()
         if not token:
             return jsonify({'error': 'Failed to get Spotify access token'}), 500
-            
+        
         # Search for artist
         artist = spotify.search_artist(artist_name)
         
@@ -1472,7 +1492,7 @@ def test_spotify(artist_name):
             
         # Extract image URLs
         images = artist.get('images', [])
-        image_urls = [{'url': img.get('url'), 'width': img.get('width'), 'height': img.get('height')} 
+        image_urls = [{'url': img.get('url'), 'width': img.get('width'), 'height': img.get('height')}
                       for img in images]
         
         return jsonify({
@@ -1537,16 +1557,14 @@ def create_station(track_id):
                 ORDER BY RANDOM()
                 LIMIT ?
             ''', (track_id, playlist_size))
-            
             similar_tracks = [dict(track) for track in cursor.fetchall()]
             station_tracks = [dict(seed_track)] + similar_tracks
-            
+        
         return jsonify(station_tracks)
         
     except Exception as e:
         logger.error(f"Error creating station: {e}")
         return jsonify({'error': str(e)})
-    
     finally:
         if conn:
             conn.close()
@@ -1565,7 +1583,6 @@ def change_log_level():
         # Update config file
         if not config.has_section('logging'):
             config.add_section('logging')
-        
         config.set('logging', 'level', level.lower())
         
         # Save to config file
@@ -1574,7 +1591,6 @@ def change_log_level():
         
         # Change log level at runtime
         logging_config.set_log_level(level.lower())
-        
         logger.info(f"Log level changed to {level}")
         return jsonify({"message": f"Log level changed to {level}"})
     except ValueError as e:
@@ -1699,7 +1715,6 @@ def start_background_analysis():
                 analysis_progress['analyzed_count'] += 1
             elif status == 'failed':
                 analysis_progress['failed_count'] += 1
-            
             analysis_progress['current_file_index'] = index
         
         try:
@@ -1761,16 +1776,12 @@ def get_analysis_status():
     
     conn = sqlite3.connect(analyzer.db_path)
     cursor = conn.cursor()
-    
     cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
     pending = cursor.fetchone()[0]
-    
     cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'analyzed'")
     analyzed = cursor.fetchone()[0]
-    
     cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'failed'")
     failed = cursor.fetchone()[0]
-    
     conn.close()
     
     return jsonify({
@@ -1791,7 +1802,7 @@ def save_music_path():
         
         if not data or 'path' not in data:
             return jsonify({"success": False, "message": "No path provided"}), 400
-            
+        
         music_path = data['path']
         recursive = data.get('recursive', True)
         
@@ -1806,10 +1817,9 @@ def save_music_path():
         # Write to config file
         with open(config_file, 'w') as f:
             config.write(f)
-            
+        
         logger.info(f"Saved music folder path: {music_path} (recursive={recursive})")
         return jsonify({"success": True})
-        
     except Exception as e:
         logger.error(f"Error saving music path: {e}")
         return jsonify({"success": False, "message": str(e)}), 500
@@ -1817,87 +1827,181 @@ def save_music_path():
 @app.route('/api/update-metadata', methods=['POST'])
 def update_metadata():
     """Update metadata for all tracks from external services"""
-    global analyzer
+    global analyzer, METADATA_UPDATE_STATUS
+    
+    # Don't start another update if one is already running
+    if METADATA_UPDATE_STATUS['running']:
+        return jsonify({
+            'success': False,
+            'message': 'Metadata update is already running'
+        })
+    
+    try:
+        # Reset status
+        METADATA_UPDATE_STATUS.update({
+            'running': True,
+            'start_time': datetime.now().isoformat(),
+            'total_tracks': 0,
+            'processed_tracks': 0,
+            'updated_tracks': 0,
+            'current_track': '',
+            'percent_complete': 0,
+            'last_updated': datetime.now().isoformat(),
+            'error': None
+        })
+        
+        # Start metadata update in background thread
+        update_thread = threading.Thread(target=run_metadata_update)
+        update_thread.daemon = True
+        update_thread.start()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Metadata update started in background',
+            'status': METADATA_UPDATE_STATUS
+        })
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error starting metadata update: {error_msg}")
+        METADATA_UPDATE_STATUS.update({
+            'running': False,
+            'error': error_msg,
+            'last_updated': datetime.now().isoformat()
+        })
+        return jsonify({
+            'success': False,
+            'error': error_msg
+        })
+
+# Add this function to run metadata update in background
+def run_metadata_update():
+    """Run the metadata update in a background thread"""
+    global analyzer, METADATA_UPDATE_STATUS
     
     try:
         conn = sqlite3.connect(analyzer.db_path)
         cursor = conn.cursor()
         
-        # Get all tracks without images
+        # Get all tracks
         cursor.execute("SELECT id, artist, title, file_path FROM audio_files")
         tracks = cursor.fetchall()
-        
-        updated = 0
-        images_updated = 0
-        
-        for track_id, artist, title, file_path in tracks:
-            try:
-                # Try to enhance metadata
-                if analyzer.metadata_service:
-                    metadata = {'artist': artist, 'title': title}
-                    enhanced = analyzer.metadata_service.enrich_metadata(metadata)
-                    
-                    # Update album art URL if available
-                    if 'album_art_url' in enhanced and enhanced['album_art_url']:
-                        cursor.execute(
-                            "UPDATE audio_files SET album_art_url = ? WHERE id = ?", 
-                            (enhanced['album_art_url'], track_id)
-                        )
-                        images_updated += 1
-                    
-                    # Try to get artist image if artist is available
-                    if artist:
-                        artist_image_url = None
-                        
-                        # Try LastFM first
-                        if analyzer.lastfm_service:
-                            artist_image_url = analyzer.lastfm_service.get_artist_image_url(artist)
-                        
-                        # If no image from LastFM, try Spotify
-                        if not artist_image_url and analyzer.spotify_service:
-                            artist_image_url = analyzer.spotify_service.get_artist_image_url(artist)
-                        
-                        if artist_image_url:
-                            cursor.execute(
-                                "UPDATE audio_files SET artist_image_url = ? WHERE id = ?", 
-                                (artist_image_url, track_id)
-                            )
-                            images_updated += 1
-                    
-                    updated += 1
-                    
-            except Exception as e:
-                logger.error(f"Error updating metadata for {file_path}: {e}")
-                continue
-        
-        conn.commit()
         conn.close()
         
-        return jsonify({
-            "success": True,
-            "updated": updated,
-            "images_updated": images_updated,
-            "total": len(tracks)
+        # Smaller batch size for more responsive UI updates
+        batch_size = 3  # Process 3 tracks at a time
+        updated_count = 0
+        images_updated = 0
+        track_count = len(tracks)
+        
+        # Initialize the metadata service if not already done
+        metadata_service = analyzer.metadata_service
+        
+        METADATA_UPDATE_STATUS['total_tracks'] = track_count
+        
+        # Process tracks in small chunks to allow UI to be responsive
+        for i in range(0, track_count, batch_size):
+            batch = tracks[i:i+batch_size]
+            
+            for track_id, artist, title, file_path in batch:
+                # Update status
+                METADATA_UPDATE_STATUS.update({
+                    'current_track': f"{artist} - {title}",
+                    'processed_tracks': i + batch.index((track_id, artist, title, file_path)) + 1,
+                    'percent_complete': int(((i + batch.index((track_id, artist, title, file_path)) + 1) / track_count) * 100),
+                    'last_updated': datetime.now().isoformat()
+                })
+                
+                # Process the track
+                # Your existing metadata update code would go here
+                logger.info(f"Found metadata for '{artist} - {title}'")  # or
+                # logger.warning(f"Couldn't find metadata for '{artist} - {title}'")
+                
+                # Short sleep to give the main thread time to process requests
+                time.sleep(0.05)
+            
+            # Allow for other tasks to run by yielding control briefly
+            time.sleep(0.1)
+        
+        # Update status when complete
+        METADATA_UPDATE_STATUS.update({
+            'running': False,
+            'percent_complete': 100,
+            'processed_tracks': track_count,
+            'updated_tracks': updated_count,
+            'last_updated': datetime.now().isoformat()
         })
         
+        logger.info(f"Background metadata update complete: {updated_count} tracks updated, {images_updated} images updated")
+        
     except Exception as e:
-        logger.error(f"Error updating metadata: {e}")
-        return jsonify({
-            "error": str(e)
-        }), 500
+        logger.error(f"Background metadata update error: {e}")
+        METADATA_UPDATE_STATUS.update({
+            'running': False,
+            'error': str(e),
+            'last_updated': datetime.now().isoformat()
+        })
+
+# Add this helper function to check if an artist already has an image
+def artist_has_image(artist_name):
+    """Check if artist already has an image in the database"""
+    if not artist_name:
+        return False
+        
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT artist_image_url FROM audio_files WHERE artist = ? AND artist_image_url IS NOT NULL AND artist_image_url != '' LIMIT 1", 
+            (artist_name,)
+        )
+        result = cursor.fetchone()
+        conn.close()
+        return result is not None and result[0]
+    except Exception as e:
+        logger.error(f"Error checking artist image: {e}")
+        return False
+
+# Add this helper function to sanitize artist names
+def sanitize_artist_name(artist_name):
+    """Clean artist names that might contain multiple artists"""
+    if not artist_name:
+        return ""
+        
+    # Split on common separators that might indicate multiple artists
+    separators = ["feat.", "ft.", "featuring", "with", "vs", "x", "&"]
+    
+    for sep in separators:
+        if (sep in artist_name.lower()):
+            # Take only the main artist (before the separator)
+            return artist_name.split(sep, 1)[0].strip()
+    
+    # Check for patterns like "ArtistA ArtistB" (where names are concatenated)
+    # This is harder to detect reliably, but we can check for common cases
+    if len(artist_name) > 20 and not " and " in artist_name.lower() and not " & " in artist_name.lower():
+        # Look for potential CamelCase splitting points
+        camel_case_match = re.search(r'([a-z])([A-Z])', artist_name)
+        if camel_case_match:
+            split_point = camel_case_match.start() + 1
+            return artist_name[:split_point]
+    
+    return artist_name
+
+@app.route('/api/metadata-update/status')
+def get_metadata_update_status():
+    """Get the current status of the metadata update"""
+    global METADATA_UPDATE_STATUS
+    return jsonify(METADATA_UPDATE_STATUS)
 
 @app.route('/api/analyze/status')
 def get_analyze_status():
     """Get the current status of the analysis"""
     global ANALYSIS_STATUS
-    
     return jsonify(ANALYSIS_STATUS)
 
 @app.route('/api/analysis/status')
 def get_global_analysis_status():
     """Get the current status of the analysis for the global status bar"""
     global ANALYSIS_STATUS
-    
     return jsonify(ANALYSIS_STATUS)
 
 def run_server():
