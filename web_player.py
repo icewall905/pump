@@ -343,9 +343,16 @@ def explore():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/analyze', methods=['POST'])
-def analyze_folder():
-    """Analyze a music folder and add tracks to the database"""
-    global ANALYSIS_STATUS
+def analyze_music():
+    """Analyze music directory - Step 1: Quick scan, Step 2: Feature extraction"""
+    global analyzer, ANALYSIS_STATUS
+    
+    if not analyzer:
+        return jsonify({"success": False, "error": "Analyzer not initialized"})
+    
+    data = request.get_json()
+    folder_path = data.get('folder_path', '')
+    recursive = data.get('recursive', True)
     
     # Don't start another analysis if one is already running
     if ANALYSIS_STATUS['running']:
@@ -355,37 +362,7 @@ def analyze_folder():
         })
     
     try:
-        # Get data from request - support both form data and JSON
-        if request.is_json:
-            data = request.get_json()
-            folder_path = data.get('folder_path')
-            recursive = data.get('recursive', True)
-        else:
-            folder_path = request.form.get('folder_path')
-            recursive = request.form.get('recursive') == 'true'
-        
-        # If no folder path provided, try to use the configured path
-        if not folder_path:
-            folder_path = config.get('music', 'folder_path', fallback='')
-        
-        logger.info(f"Analyzing music folder: {folder_path} (recursive={recursive})")
-        
-        if not folder_path or not os.path.isdir(folder_path):
-            logger.error(f"Invalid folder path: {folder_path}")
-            return jsonify({
-                'success': False,
-                'error': f"Invalid folder path: {folder_path}"
-            })
-        
-        # Ensure analyzer is initialized
-        if not analyzer:
-            logger.error("Analyzer not initialized")
-            return jsonify({
-                'success': False,
-                'error': "Music analyzer not initialized"
-            })
-        
-        # Reset analysis status
+        # Reset status
         ANALYSIS_STATUS.update({
             'running': True,
             'start_time': datetime.now().isoformat(),
@@ -399,7 +376,7 @@ def analyze_folder():
         
         # Start analysis in background thread
         analysis_thread = threading.Thread(
-            target=run_analysis,
+            target=run_analysis, 
             args=(folder_path, recursive)
         )
         analysis_thread.daemon = True
@@ -407,81 +384,124 @@ def analyze_folder():
         
         return jsonify({
             'success': True,
-            'message': 'Analysis started in background',
+            'message': 'Analysis started in background. This is a two-step process: 1) Quick scan to identify files, 2) Analysis of audio features',
             'status': ANALYSIS_STATUS
         })
-    
     except Exception as e:
-        logger.error(f"Error analyzing folder: {e}")
+        error_msg = str(e)
+        logger.error(f"Error starting analysis: {error_msg}")
         ANALYSIS_STATUS.update({
             'running': False,
-            'error': str(e),
+            'error': error_msg,
             'last_updated': datetime.now().isoformat()
         })
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': error_msg
         })
 
-# Add this function to run analysis in background
+# Update the run_analysis function
+
 def run_analysis(folder_path, recursive):
     """Run the analysis in a background thread"""
-    global ANALYSIS_STATUS
+    global analyzer, ANALYSIS_STATUS
     
     try:
-        # First count total files for progress tracking
-        total_files = 0
-        for root, _, files in os.walk(folder_path):
-            if not recursive and root != folder_path:
-                continue
-                
-            for file in files:
-                if file.lower().endswith(('.mp3', '.flac', '.ogg', '.m4a', '.wav')):
-                    total_files += 1
+        logger.info(f"Starting audio analysis for {folder_path} (recursive={recursive})")
         
-        ANALYSIS_STATUS['total_files'] = total_files
-        
-        # Now process the files and update status as we go
-        result = {'files_processed': 0, 'tracks_added': 0}
-        
-        for root, _, files in os.walk(folder_path):
-            if not recursive and root != folder_path:
-                continue
-                
-            for file in files:
-                if file.lower().endswith(('.mp3', '.flac', '.ogg', '.m4a', '.wav')):
-                    file_path = os.path.join(root, file)
-                    
-                    # Update status
-                    ANALYSIS_STATUS.update({
-                        'current_file': file,
-                        'files_processed': ANALYSIS_STATUS['files_processed'] + 1,
-                        'percent_complete': int((ANALYSIS_STATUS['files_processed'] / total_files) * 100),
-                        'last_updated': datetime.now().isoformat()
-                    })
-                    
-                    # Process file
-                    try:
-                        was_added = analyzer.analyze_file(file_path)
-                        result['files_processed'] += 1
-                        if was_added:
-                            result['tracks_added'] += 1
-                    except Exception as e:
-                        logger.error(f"Error analyzing file {file_path}: {e}")
-        
-        # Analysis complete
+        # Initialize status with empty values
         ANALYSIS_STATUS.update({
-            'running': False,
-            'files_processed': result['files_processed'],
-            'tracks_added': result.get('tracks_added', 0),
-            'percent_complete': 100,
+            'running': True,
+            'start_time': datetime.now().isoformat(),
+            'files_processed': 0,
+            'total_files': 0,
+            'current_file': '',
+            'percent_complete': 0,
+            'last_updated': datetime.now().isoformat(),
+            'error': None,
+            'last_run_completed': False
+        })
+        
+        # Step 1: Quick scan to identify files and add to database
+        logger.info("Step 1/2: Quick scanning music files...")
+        result = analyzer.scan_library(folder_path, recursive)
+        
+        # Connect to database to get accurate counts
+        conn = sqlite3.connect(analyzer.db_path)
+        cursor = conn.cursor()
+        
+        # Count total files in database
+        cursor.execute("SELECT COUNT(*) FROM audio_files")
+        total_in_db = cursor.fetchone()[0]
+        
+        # Count already analyzed files (status = 'analyzed')
+        cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'analyzed'")
+        already_analyzed = cursor.fetchone()[0]
+        
+        # Count pending files
+        cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
+        pending_count = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        logger.info(f"Database status: {total_in_db} total files, {already_analyzed} already analyzed, {pending_count} pending analysis")
+        
+        # Update status after scan - CRITICAL: Set files_processed to already_analyzed
+        ANALYSIS_STATUS.update({
+            'files_processed': already_analyzed,  # Start count from already analyzed files
+            'total_files': total_in_db,
+            'current_file': "Finished quick scan",
+            'percent_complete': 50,  # 50% after scan is done
             'last_updated': datetime.now().isoformat()
         })
         
-        logger.info(f"Background analysis complete: {result['files_processed']} files processed, {result.get('tracks_added', 0)} tracks added")
+        # Define a progress callback function that properly tracks files
+        def analysis_progress_callback(file_id, file_path, success):
+            # Instead of incrementing every time, get the current count and add 1
+            # This allows for more accurate tracking
+            processed_count = ANALYSIS_STATUS.get('files_processed', already_analyzed) + 1
+            
+            # Calculate progress percentage - move from 50% to 100%
+            # This should now be based on actual pending files to analyze
+            analysis_percent = (processed_count - already_analyzed) / pending_count * 50 if pending_count > 0 else 0
+            
+            ANALYSIS_STATUS.update({
+                'files_processed': processed_count,
+                'current_file': file_path,
+                'percent_complete': 50 + analysis_percent,  # 50% for scan + progress on analysis
+                'last_updated': datetime.now().isoformat()
+            })
+            
+            logger.debug(f"Analysis progress: {processed_count}/{total_in_db} files ({50 + analysis_percent:.1f}%)")
+        
+        # Step 2: Analyze audio features with progress callback
+        logger.info(f"Step 2/2: Analyzing {pending_count} pending files...")
+        feature_result = analyzer.analyze_pending_files(
+            progress_callback=analysis_progress_callback
+        )
+        
+        # Update final status
+        ANALYSIS_STATUS.update({
+            'running': False,
+            'percent_complete': 100,
+            'last_updated': datetime.now().isoformat(),
+            'last_run_completed': True
+        })
+        
+        # Combine results
+        full_result = {
+            'files_processed': total_in_db,
+            'tracks_added': result.get('files_added', 0),
+            'tracks_updated': result.get('files_updated', 0),
+            'features_analyzed': feature_result.get('analyzed', 0),
+            'errors': feature_result.get('errors', 0),
+            'pending_features': feature_result.get('pending', 0)
+        }
+        
+        logger.info(f"Background analysis complete: {full_result['files_processed']} files processed, {full_result['tracks_added']} tracks added, {full_result['features_analyzed']} features analyzed")
     
     except Exception as e:
-        logger.error(f"Background analysis error: {e}")  # Use logger instance
+        logger.error(f"Background analysis error: {e}")
         ANALYSIS_STATUS.update({
             'running': False,
             'error': str(e),
@@ -606,7 +626,7 @@ def album_art_proxy(url):
     cache_path = os.path.join(CACHE_DIR, cache_filename)
     
     # Check if the image is already in cache
-    if os.path.exists(cache_path):
+    if (os.path.exists(cache_path)):
         logger.debug(f"Serving cached album art for: {url}")
         return redirect(f"/cache/{cache_filename}")
     

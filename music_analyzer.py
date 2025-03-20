@@ -11,10 +11,14 @@ from spotify_service import SpotifyService
 import configparser
 import logging
 import threading
+import mutagen  # Make sure this is imported
 
 import librosa.display
 import matplotlib.pyplot as plt
 from metadata_service import MetadataService
+
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 # Global variables to track analysis progress
 analysis_thread = None
@@ -162,6 +166,16 @@ class MusicAnalyzer:
             FOREIGN KEY (file_id) REFERENCES audio_files (id)
         )
         ''')
+        
+        # Check for required columns and add if missing
+        cursor.execute("PRAGMA table_info(audio_features)")
+        columns = [column[1] for column in cursor.fetchall()]
+        
+        # Add loudness column if it doesn't exist
+        if 'loudness' not in columns:
+            logger.info("Adding 'loudness' column to audio_features table")
+            cursor.execute('ALTER TABLE audio_features ADD COLUMN loudness REAL')
+            conn.commit()
         
         # Create table for playlists
         cursor.execute('''
@@ -796,12 +810,12 @@ class MusicAnalyzer:
         print(f"Found {total_pending} files pending analysis")
         
         # Process in batches
-        query = "SELECT file_path FROM audio_files WHERE analysis_status = 'pending'"
+        query = "SELECT id, file_path FROM audio_files WHERE analysis_status = 'pending'"
         if limit:
             query += f" LIMIT {limit}"
         
         cursor.execute(query)
-        pending_files = [row[0] for row in cursor.fetchall()]
+        pending_files = [(row[0], row[1]) for row in cursor.fetchall()]
         conn.close()
         
         analyzed_count = 0
@@ -813,7 +827,7 @@ class MusicAnalyzer:
             global analysis_progress
             return analysis_progress.get('stop_requested', False)
         
-        for i, file_path in enumerate(pending_files):
+        for i, (file_id, file_path) in enumerate(pending_files):
             # Check if we should stop
             if should_stop():
                 print("Analysis stopped by user request")
@@ -826,10 +840,6 @@ class MusicAnalyzer:
                 if not os.path.exists(file_path):
                     raise FileNotFoundError(f"[Errno 2] No such file or directory: '{file_path}'")
                 
-                # Report progress if callback provided
-                if progress_callback:
-                    progress_callback(i+1, 'processing')
-                
                 # Use the full analysis method
                 features = self._analyze_file_for_features(file_path)
                 
@@ -839,19 +849,15 @@ class MusicAnalyzer:
                 
                 # Update analysis status
                 cursor.execute(
-                    "UPDATE audio_files SET analysis_status = ? WHERE file_path = ?", 
-                    ("analyzed", file_path)
+                    "UPDATE audio_files SET analysis_status = ? WHERE id = ?", 
+                    ("analyzed", file_id)
                 )
-                
-                # Get the ID of the audio file
-                cursor.execute("SELECT id FROM audio_files WHERE file_path = ?", (file_path,))
-                file_id = cursor.fetchone()[0]
                 
                 # Insert audio features
                 cursor.execute('''
                     INSERT OR REPLACE INTO audio_features
-                    (file_id, tempo, key, mode, time_signature, energy, danceability, brightness, noisiness)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (file_id, tempo, key, mode, time_signature, energy, danceability, brightness, noisiness, loudness)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     file_id,
                     features.get("tempo", 0),
@@ -861,7 +867,8 @@ class MusicAnalyzer:
                     features.get("energy", 0),
                     features.get("danceability", 0),
                     features.get("brightness", 0),
-                    features.get("noisiness", 0)
+                    features.get("noisiness", 0),
+                    features.get("loudness", 0)
                 ))
                 
                 conn.commit()
@@ -872,7 +879,7 @@ class MusicAnalyzer:
                 
                 # Report success if callback provided
                 if progress_callback:
-                    progress_callback(i+1, 'analyzed')
+                    progress_callback(file_id, file_path, True)
                 
             except Exception as e:
                 print(f"Error analyzing {file_path}: {e}")
@@ -882,8 +889,8 @@ class MusicAnalyzer:
                     conn = sqlite3.connect(self.db_path)
                     cursor = conn.cursor()
                     cursor.execute(
-                        "UPDATE audio_files SET analysis_status = ? WHERE file_path = ?", 
-                        ("failed", file_path)
+                        "UPDATE audio_files SET analysis_status = ? WHERE id = ?", 
+                        ("failed", file_id)
                     )
                     conn.commit()
                     conn.close()
@@ -895,7 +902,7 @@ class MusicAnalyzer:
                 
                 # Report failure if callback provided
                 if progress_callback:
-                    progress_callback(i+1, 'failed')
+                    progress_callback(file_id, file_path, False)
                 
                 # Stop if too many consecutive errors
                 if consecutive_errors >= max_errors:
@@ -936,6 +943,461 @@ class MusicAnalyzer:
         
         return features
 
+    def scan_library(self, directory: str, recursive: bool = True, 
+                     extensions: List[str] = ['.mp3', '.wav', '.flac', '.ogg'], 
+                     batch_size: int = 100):
+        """Scan a directory for audio files and add them to the database."""
+        global analysis_progress
+        
+        # Get valid audio files
+        all_files = []
+        if recursive:
+            for root, _, files in os.walk(directory):
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in extensions):
+                        all_files.append(os.path.join(root, file))
+        else:
+            all_files = [os.path.join(directory, f) for f in os.listdir(directory)
+                        if os.path.isfile(os.path.join(directory, f)) and
+                        any(f.lower().endswith(ext) for ext in extensions)]
+        
+        # Update progress tracking
+        analysis_progress['total_files'] = len(all_files)
+        analysis_progress['is_running'] = True
+        analysis_progress['stop_requested'] = False
+        analysis_progress['analyzed_count'] = 0
+        analysis_progress['failed_count'] = 0
+        
+        logger.info(f"Found {len(all_files)} audio files to process")
+        
+        # Connect to database
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Create tables if they don't exist
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS audio_files (
+            id INTEGER PRIMARY KEY,
+            file_path TEXT UNIQUE,
+            title TEXT,
+            artist TEXT,
+            album TEXT,
+            duration REAL,
+            date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            metadata_source TEXT DEFAULT 'local_file',
+            album_art_url TEXT,
+            artist_image_url TEXT
+        )''')
+        
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS audio_features (
+            file_id INTEGER PRIMARY KEY,
+            tempo REAL,
+            loudness REAL,
+            key INTEGER,
+            mode INTEGER,
+            time_signature INTEGER,
+            energy REAL,
+            danceability REAL,
+            brightness REAL,
+            noisiness REAL,
+            FOREIGN KEY (file_id) REFERENCES audio_files(id)
+        )''')
+        
+        # Create index on file_path for faster lookups
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_file_path ON audio_files(file_path)')
+        
+        # Batch process files
+        processed_count = 0
+        added_count = 0
+        updated_count = 0
+        skipped_count = 0
+        error_count = 0
+        
+        for i in range(0, len(all_files), batch_size):
+            batch = all_files[i:i+batch_size]
+            
+            for file_path in batch:
+                if analysis_progress['stop_requested']:
+                    logger.info("Analysis stopped by user request")
+                    break
+                    
+                # Update progress
+                analysis_progress['current_file_index'] = i + batch.index(file_path)
+                
+                try:
+                    # Check if file is already in database AND has features
+                    cursor.execute('SELECT id FROM audio_files WHERE file_path = ?', (file_path,))
+                    existing_file = cursor.fetchone()
+
+                    # Here's the important check - look for audio features too
+                    has_features = False
+                    if existing_file:
+                        file_id = existing_file[0]
+                        cursor.execute('SELECT file_id FROM audio_features WHERE file_id = ?', (file_id,))
+                        has_features = cursor.fetchone() is not None
+
+                    if existing_file and has_features:
+                        # Skip if file already exists and has features
+                        logger.debug(f"Skipping {file_path}, it already exists in the database with features.")
+                        skipped_count += 1
+                    else:
+                        # Extract basic metadata
+                        try:
+                            audio = mutagen.File(file_path)
+                            
+                            # Get basic metadata
+                            metadata = self._extract_metadata(audio, file_path)
+                            
+                            if existing_file:
+                                # Update existing entry
+                                file_id = existing_file[0]
+                                cursor.execute('''
+                                    UPDATE audio_files SET 
+                                    title = ?, artist = ?, album = ?, duration = ?
+                                    WHERE id = ?
+                                ''', (
+                                    metadata.get('title', ''),
+                                    metadata.get('artist', ''),
+                                    metadata.get('album', ''),
+                                    metadata.get('duration', 0),
+                                    file_id
+                                ))
+                                updated_count += 1
+                            else:
+                                # Add new entry
+                                cursor.execute('''
+                                    INSERT INTO audio_files (file_path, title, artist, album, duration)
+                                    VALUES (?, ?, ?, ?, ?)
+                                ''', (
+                                    file_path,
+                                    metadata.get('title', ''),
+                                    metadata.get('artist', ''),
+                                    metadata.get('album', ''),
+                                    metadata.get('duration', 0)
+                                ))
+                                file_id = cursor.lastrowid
+                                added_count += 1
+                            
+                            # If this file needs features analysis, add it to the pending queue
+                            if not has_features:
+                                # Extract audio features in a basic way (not full analysis yet)
+                                # This is just to get something in the database now
+                                basic_features = {
+                                    'file_id': file_id,
+                                    'tempo': 0.0,
+                                    'loudness': 0.0,
+                                    'key': 0,
+                                    'mode': 0,
+                                    'time_signature': 4,
+                                    'energy': 0.0,
+                                    'danceability': 0.0,
+                                    'brightness': 0.0,
+                                    'noisiness': 0.0
+                                }
+                                
+                                # Delete any existing features (just in case)
+                                cursor.execute('DELETE FROM audio_features WHERE file_id = ?', (file_id,))
+                                
+                                # Insert placeholder features
+                                cursor.execute('''
+                                    INSERT INTO audio_features 
+                                    (file_id, tempo, loudness, key, mode, time_signature, 
+                                    energy, danceability, brightness, noisiness)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', (
+                                    file_id, 
+                                    basic_features['tempo'],
+                                    basic_features['loudness'],
+                                    basic_features['key'],
+                                    basic_features['mode'],
+                                    basic_features['time_signature'],
+                                    basic_features['energy'],
+                                    basic_features['danceability'],
+                                    basic_features['brightness'],
+                                    basic_features['noisiness']
+                                ))
+                            
+                            analysis_progress['analyzed_count'] += 1
+                            
+                        except Exception as e:
+                            logger.error(f"Error processing file {file_path}: {e}")
+                            error_count += 1
+                            analysis_progress['failed_count'] += 1
+                            continue
+                        
+                    processed_count += 1
+                        
+                    # Commit every 10 files to save progress
+                    if processed_count % 10 == 0:
+                        conn.commit()
+                        
+                except Exception as e:
+                    logger.error(f"Error processing {file_path}: {e}")
+                    error_count += 1
+                    analysis_progress['failed_count'] += 1
+            
+            # Commit after each batch
+            conn.commit()
+            
+            if analysis_progress['stop_requested']:
+                break
+        
+        # Final commit
+        conn.commit()
+        conn.close()
+        
+        # Update progress
+        analysis_progress['is_running'] = False
+        analysis_progress['last_run_completed'] = True
+        
+        logger.info(f"Scan complete: {processed_count} processed, {added_count} added, {updated_count} updated, {skipped_count} skipped, {error_count} errors")
+        
+        return {
+            'files_processed': processed_count,
+            'files_added': added_count,
+            'files_updated': updated_count,
+            'files_skipped': skipped_count,
+            'errors': error_count
+        }
+
+    def analyze_pending_files(self, limit: Optional[int] = None, 
+                              batch_size: int = 10, 
+                              max_errors: int = 3,
+                              progress_callback = None):
+        """Analyze files that have been added to the database but not yet analyzed."""
+        global analysis_progress
+        
+        analysis_progress['is_running'] = True
+        analysis_progress['stop_requested'] = False
+        
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Count already analyzed
+        cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status != 'pending'")
+        already_analyzed = cursor.fetchone()[0]
+        analysis_progress['analyzed_count'] = already_analyzed
+
+        # Fetch pending files
+        cursor.execute('''
+            SELECT af.id, af.file_path
+            FROM audio_files af
+            LEFT JOIN audio_features feat ON af.id = feat.file_id
+            WHERE feat.file_id IS NULL OR 
+                  (feat.tempo = 0 AND feat.energy = 0 AND feat.danceability = 0)
+            ORDER BY af.date_added DESC
+        ''')
+        
+        pending_files = cursor.fetchall()
+        total_pending = len(pending_files)
+        
+        if limit:
+            pending_files = pending_files[:limit]
+        
+        analysis_progress['total_files'] = already_analyzed + total_pending
+        analysis_progress['pending_count'] = total_pending
+        
+        logger.info(f"Found {len(pending_files)} files pending analysis (total pending: {total_pending})")
+        
+        if len(pending_files) == 0:
+            analysis_progress['is_running'] = False
+            analysis_progress['last_run_completed'] = True
+            conn.close()
+            return {
+                'success': True,
+                'message': 'No pending files to analyze',
+                'analyzed': 0,
+                'errors': 0,
+                'pending': 0
+            }
+        
+        analyzed_count = 0
+        error_count = 0
+        consecutive_errors = 0
+        
+        # Process in batches to avoid memory issues and allow pausing
+        for i in range(0, len(pending_files), batch_size):
+            if analysis_progress['stop_requested']:
+                logger.info("Analysis stopped by user request")
+                break
+                
+            batch = pending_files[i:i+batch_size]
+            
+            for file_id, file_path in batch:
+                if analysis_progress['stop_requested']:
+                    break
+                    
+                # Update progress
+                analysis_progress['current_file_index'] = i + batch.index((file_id, file_path))
+                
+                try:
+                    # Check if file exists
+                    if not os.path.exists(file_path):
+                        logger.error(f"File not found: {file_path}")
+                        error_count += 1
+                        analysis_progress['failed_count'] += 1
+                        consecutive_errors += 1
+                        continue
+                    
+                    # Extract audio features
+                    features = self._analyze_file_for_features(file_path)
+                    
+                    if not features:
+                        logger.error(f"Failed to extract features from: {file_path}")
+                        error_count += 1
+                        analysis_progress['failed_count'] += 1
+                        consecutive_errors += 1
+                        continue
+                    
+                    # Update database
+                    try:
+                        # Check if we already have features
+                        cursor.execute('SELECT file_id FROM audio_features WHERE file_id = ?', (file_id,))
+                        has_features = cursor.fetchone() is not None
+                        
+                        if has_features:
+                            # Update existing features
+                            cursor.execute('''
+                                UPDATE audio_features SET
+                                tempo = ?, loudness = ?, key = ?, mode = ?, time_signature = ?,
+                                energy = ?, danceability = ?, brightness = ?, noisiness = ?
+                                WHERE file_id = ?
+                            ''', (
+                                features.get('tempo', 0.0),
+                                features.get('loudness', 0.0),
+                                features.get('key', 0),
+                                features.get('mode', 0),
+                                features.get('time_signature', 4),
+                                features.get('energy', 0.0),
+                                features.get('danceability', 0.0),
+                                features.get('brightness', 0.0),
+                                features.get('noisiness', 0.0),
+                                file_id
+                            ))
+                        else:
+                            # Insert new features
+                            cursor.execute('''
+                                INSERT INTO audio_features 
+                                (file_id, tempo, loudness, key, mode, time_signature, 
+                                energy, danceability, brightness, noisiness)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', (
+                                file_id,
+                                features.get('tempo', 0.0),
+                                features.get('loudness', 0.0),
+                                features.get('key', 0),
+                                features.get('mode', 0),
+                                features.get('time_signature', 4),
+                                features.get('energy', 0.0),
+                                features.get('danceability', 0.0),
+                                features.get('brightness', 0.0),
+                                features.get('noisiness', 0.0)
+                            ))
+                        
+                        # Mark as analyzed on success
+                        cursor.execute("UPDATE audio_files SET analysis_status='analyzed' WHERE id=?", (file_id,))
+                        conn.commit()
+                        analyzed_count += 1
+                        analysis_progress['analyzed_count'] += 1
+                        consecutive_errors = 0
+                        
+                        # Call progress callback if provided
+                        if progress_callback:
+                            progress_callback(file_id, file_path, True)
+                            
+                    except Exception as db_error:
+                        logger.error(f"Database error for file {file_path}: {db_error}")
+                        error_count += 1
+                        analysis_progress['failed_count'] += 1
+                        consecutive_errors += 1
+                        conn.rollback()
+                        
+                        # Call progress callback if provided
+                        if progress_callback:
+                            progress_callback(file_id, file_path, False)
+                            
+                except Exception as e:
+                    logger.error(f"Error analyzing file {file_path}: {e}")
+                    error_count += 1
+                    analysis_progress['failed_count'] += 1
+                    consecutive_errors += 1
+                    
+                    # Call progress callback if provided
+                    if progress_callback:
+                        progress_callback(file_id, file_path, False)
+                
+                # Check for too many consecutive errors
+                if consecutive_errors >= max_errors:
+                    logger.error(f"Too many consecutive errors ({consecutive_errors}), stopping analysis")
+                    break
+            
+            # Commit after each batch
+            conn.commit()
+            
+            if consecutive_errors >= max_errors or analysis_progress['stop_requested']:
+                break
+        
+        # Final commit and cleanup
+        conn.commit()
+        conn.close()
+        
+        # Update progress
+        analysis_progress['is_running'] = False
+        analysis_progress['last_run_completed'] = True
+        
+        logger.info(f"Analysis complete: {analyzed_count} files analyzed, {error_count} errors, {analysis_progress['pending_count']} still pending")
+        
+        return {
+            'success': True,
+            'analyzed': analyzed_count,
+            'errors': error_count,
+            'pending': analysis_progress['pending_count']
+        }
+
+    def _extract_metadata(self, audio, file_path):
+        """Extract basic metadata from an audio file."""
+        metadata = {
+            'title': '',
+            'artist': '',
+            'album': '',
+            'duration': 0
+        }
+        
+        try:
+            if audio is None:
+                return metadata
+                
+            # Extract metadata based on file type
+            if hasattr(audio, 'tags'):  # MP3
+                tags = audio.tags
+                if tags:
+                    if 'TIT2' in tags:
+                        metadata['title'] = str(tags['TIT2'])
+                    if 'TPE1' in tags:
+                        metadata['artist'] = str(tags['TPE1'])
+                    if 'TALB' in tags:
+                        metadata['album'] = str(tags['TALB'])
+            elif hasattr(audio, 'info'):  # FLAC, OGG, etc.
+                if hasattr(audio, 'title') and audio.title:
+                    metadata['title'] = audio.title[0] if isinstance(audio.title, list) else audio.title
+                if hasattr(audio, 'artist') and audio.artist:
+                    metadata['artist'] = audio.artist[0] if isinstance(audio.artist, list) else audio.artist
+                if hasattr(audio, 'album') and audio.album:
+                    metadata['album'] = audio.album[0] if isinstance(audio.album, list) else audio.album
+                    
+            # Extract duration
+            if hasattr(audio, 'info') and hasattr(audio.info, 'length'):
+                metadata['duration'] = float(audio.info.length)
+                
+            # Use filename as title if no title found
+            if not metadata['title']:
+                metadata['title'] = os.path.basename(file_path)
+                
+        except Exception as e:
+            logger.error(f"Error extracting metadata from {file_path}: {e}")
+            
+        return metadata
 
 def main():
     """Main function to demonstrate usage of the MusicAnalyzer."""

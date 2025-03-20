@@ -8,6 +8,10 @@ document.addEventListener('DOMContentLoaded', function() {
         loadPlaylists();
     }
     
+    // Initialize sidebar progress indicators
+    initSidebarAnalysisProgress();
+    initSidebarMetadataProgress();
+    
     function loadPlaylists() {
         console.log('Loading playlists for sidebar...');
         
@@ -108,6 +112,58 @@ document.addEventListener('DOMContentLoaded', function() {
 
     loadPlaylists();
 });
+
+// New function to handle analysis progress in sidebar
+function initSidebarAnalysisProgress() {
+    function checkStatus() {
+        fetch('/api/analysis/status')
+            .then(r => r.json())
+            .then(status => {
+                const container = document.getElementById('analysis-sidebar-progress');
+                if (!container) return;
+                
+                const fill = container.querySelector('.progress-fill');
+                const text = container.querySelector('.progress-status-text');
+                
+                if (status.running) {
+                    container.style.display = 'block';
+                    
+                    // Get accurate data for display
+                    const filesProcessed = status.files_processed || 0;
+                    const totalFiles = status.total_files || 0;
+                    const percent = status.percent_complete || 0;
+                    
+                    // Set width based on percentage
+                    fill.style.width = `${percent}%`;
+                    
+                    // Show what stage we're in
+                    if (percent < 50) {
+                        text.textContent = `Scanning: ${filesProcessed} files found`;
+                    } else if (percent < 100) {
+                        // Make sure we don't show more than the total
+                        const displayProcessed = Math.min(filesProcessed, totalFiles);
+                        text.textContent = `Analyzing: ${displayProcessed} of ${totalFiles} files`;
+                    } else {
+                        text.textContent = `Analysis complete: ${totalFiles} files processed`;
+                    }
+                } else {
+                    // Only hide if we're not currently running
+                    if (status.last_run_completed) {
+                        setTimeout(() => {
+                            container.style.display = 'none';
+                        }, 3000); // Hide after 3 seconds to allow user to see completion
+                    } else {
+                        container.style.display = 'none';
+                    }
+                }
+            })
+            .catch(err => console.error('Sidebar analysis status error:', err))
+            .finally(() => setTimeout(checkStatus, 2000));
+    }
+    
+    // Start checking
+    checkStatus();
+}
 
 function initSidebarMetadataProgress() {
     function checkStatus() {

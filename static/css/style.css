@@ -1948,3 +1948,37 @@ p, span, div, label {
     width: 0%;
     transition: width 0.5s;
 }
+
+/* Add these styles to the end of the file */
+
+.metadata-sidebar-progress, 
+#analysis-sidebar-progress {
+    display: none;
+    margin: 10px 0;
+    padding: 8px;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+}
+
+.metadata-sidebar-progress .progress-bar,
+#analysis-sidebar-progress .progress-bar {
+    height: 8px;
+    background-color: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 5px;
+}
+
+.metadata-sidebar-progress .progress-fill,
+#analysis-sidebar-progress .progress-fill {
+    height: 100%;
+    background-color: #6a8a5e;
+    width: 0%;
+    transition: width 0.5s ease;
+}
+
+.progress-status-text {
+    font-size: 12px;
+    color: #bbb;
+    text-align: center;
+}

@@ -533,80 +533,76 @@ function clearCache() {
 
 // Update the analysis status with polling
 function updateAnalysisStatus() {
-    const statusContainer = document.getElementById('analysis-status');
-    const progressFill = document.getElementById('analysis-progress-fill');
-    const statusText = document.getElementById('analysis-status-text');
-    const analyzeBtn = document.getElementById('analyze-button');
-    
-    if (!statusContainer || !progressFill || !statusText) return;
-    
-    // Function to update UI with status
-    function checkStatus() {
-        fetch('/api/analyze/status')
-            .then(response => response.json())
-            .then(data => {
-                // Show status container
-                statusContainer.style.display = 'block';
+    fetch('/api/analysis/status')
+        .then(response => response.json())
+        .then(status => {
+            const statusContainer = document.getElementById('analysis-status');
+            
+            if (!statusContainer) return;
+            
+            if (status.running) {
+                // Show progress
+                const percent = status.percent_complete || 0;
+                const filesProcessed = status.files_processed || 0;
                 
-                if (data.running) {
-                    // Analysis is running
-                    const percent = data.percent_complete || 0;
-                    progressFill.style.width = `${percent}%`;
-                    
-                    const filesProcessed = data.files_processed || 0;
-                    const totalFiles = data.total_files || 0;
-                    
-                    statusText.textContent = `Analyzing ${filesProcessed}/${totalFiles} files (${percent}%)`;
-                    statusText.innerHTML += `<br>Current file: ${data.current_file || 'Unknown'}`;
-                    
-                    if (analyzeBtn) {
-                        analyzeBtn.disabled = true;
-                        analyzeBtn.textContent = 'Analysis Running...';
-                    }
-                    
-                    // Only continue polling if we're still on the settings page
-                    if (sessionStorage.getItem('currentPage') === 'settings') {
-                        setTimeout(checkStatus, 2000);
-                    }
-                } else if (data.error) {
-                    // Analysis finished with error
-                    statusText.textContent = `Error: ${data.error}`;
-                    progressFill.style.width = '0%';
-                    
-                    if (analyzeBtn) {
-                        analyzeBtn.disabled = false;
-                        analyzeBtn.textContent = 'Full Analysis';
-                    }
+                let statusHtml = '';
+                
+                if (percent < 50) {
+                    // Step 1: Quick scanning
+                    statusHtml = `
+                        <div class="status-progress">
+                            <p>Step 1/2: Quick scanning files...</p>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${percent*2}%"></div>
+                            </div>
+                            <p>${filesProcessed} files processed</p>
+                        </div>
+                    `;
                 } else {
-                    // Analysis completed or not running
-                    if (data.files_processed && data.files_processed > 0) {
-                        // Completed
-                        progressFill.style.width = '100%';
-                        statusText.textContent = `Analysis complete! Processed ${data.files_processed} files, added ${data.tracks_added || 0} tracks.`;
-                    } else {
-                        // Not running and no data
-                        statusContainer.style.display = 'none';
-                    }
-                    
-                    if (analyzeBtn) {
-                        analyzeBtn.disabled = false;
-                        analyzeBtn.textContent = 'Full Analysis';
-                    }
+                    // Step 2: Feature analysis
+                    statusHtml = `
+                        <div class="status-progress">
+                            <p>Step 2/2: Analyzing audio features...</p>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${(percent-50)*2}%"></div>
+                            </div>
+                            <p>${filesProcessed} files processed</p>
+                        </div>
+                    `;
                 }
-            })
-            .catch(error => {
-                console.error('Error getting analysis status:', error);
-                statusText.textContent = 'Error getting status';
                 
+                statusContainer.innerHTML = statusHtml;
+                
+                // Poll again in 1 second
+                setTimeout(updateAnalysisStatus, 1000);
+            } else if (status.error) {
+                // Show error
+                statusContainer.innerHTML = `
+                    <div class="status-error">
+                        Error: ${status.error}
+                    </div>
+                `;
+            } else if (status.files_processed > 0) {
+                // Show success
+                statusContainer.innerHTML = `
+                    <div class="status-success">
+                        Analysis complete! ${status.files_processed} files processed.
+                    </div>
+                `;
+                
+                // Re-enable the analyze button
+                const analyzeBtn = document.getElementById('analyze-button');
                 if (analyzeBtn) {
                     analyzeBtn.disabled = false;
                     analyzeBtn.textContent = 'Full Analysis';
                 }
-            });
-    }
-    
-    // Start checking status
-    checkStatus();
+            }
+        })
+        .catch(error => {
+            console.error('Error checking analysis status:', error);
+            // Poll again in 5 seconds
+            setTimeout(updateAnalysisStatus, 5000);
+        });
 }
 
 // Helper function to show messages
