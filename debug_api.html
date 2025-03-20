@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Test</title>
+    <script>
+        function checkAPI() {
+            fetch('/api/analysis/status')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+                })
+                .catch(error => {
+                    document.getElementById('result').textContent = 'Error: ' + error;
+                });
+        }
+    </script>
+</head>
+<body>
+    <h1>API Test</h1>
+    <button onclick="checkAPI()">Check Analysis Status</button>
+    <pre id="result"></pre>
+</body>
+</html>

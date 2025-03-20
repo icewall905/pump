@@ -419,7 +419,8 @@ def run_analysis(folder_path, recursive):
             'percent_complete': 0,
             'last_updated': datetime.now().isoformat(),
             'error': None,
-            'last_run_completed': False
+            'last_run_completed': False,
+            'scan_complete': False  # Add a flag to track scan completion
         })
         
         # Step 1: Quick scan to identify files and add to database
@@ -446,33 +447,32 @@ def run_analysis(folder_path, recursive):
         
         logger.info(f"Database status: {total_in_db} total files, {already_analyzed} already analyzed, {pending_count} pending analysis")
         
-        # Update status after scan - CRITICAL: Set files_processed to already_analyzed
+        # Update status after scan - IMPORTANT: Set percent_complete to 0 for analysis phase
         ANALYSIS_STATUS.update({
             'files_processed': already_analyzed,  # Start count from already analyzed files
             'total_files': total_in_db,
-            'current_file': "Finished quick scan",
-            'percent_complete': 50,  # 50% after scan is done
-            'last_updated': datetime.now().isoformat()
+            'current_file': "Starting analysis...",
+            'percent_complete': 0,  # Start at 0% for analysis phase
+            'last_updated': datetime.now().isoformat(),
+            'scan_complete': True   # Mark scan as complete
         })
         
         # Define a progress callback function that properly tracks files
         def analysis_progress_callback(file_id, file_path, success):
-            # Instead of incrementing every time, get the current count and add 1
-            # This allows for more accurate tracking
+            # Increment processed count
             processed_count = ANALYSIS_STATUS.get('files_processed', already_analyzed) + 1
             
-            # Calculate progress percentage - move from 50% to 100%
-            # This should now be based on actual pending files to analyze
-            analysis_percent = (processed_count - already_analyzed) / pending_count * 50 if pending_count > 0 else 0
+            # Calculate progress percentage from 0-100% for analysis phase
+            analysis_percent = (processed_count - already_analyzed) / pending_count * 100 if pending_count > 0 else 0
             
             ANALYSIS_STATUS.update({
                 'files_processed': processed_count,
                 'current_file': file_path,
-                'percent_complete': 50 + analysis_percent,  # 50% for scan + progress on analysis
+                'percent_complete': analysis_percent,  # Use full 0-100% range for analysis
                 'last_updated': datetime.now().isoformat()
             })
             
-            logger.debug(f"Analysis progress: {processed_count}/{total_in_db} files ({50 + analysis_percent:.1f}%)")
+            logger.debug(f"Analysis progress: {processed_count}/{total_in_db} files ({analysis_percent:.1f}%)")
         
         # Step 2: Analyze audio features with progress callback
         logger.info(f"Step 2/2: Analyzing {pending_count} pending files...")
@@ -1779,7 +1779,7 @@ def get_analysis_progress():
     })
 
 @app.route('/analysis_status')
-def get_analysis_status():
+def get_analysis_count_status():  # Changed function name
     global analyzer
     
     conn = sqlite3.connect(analyzer.db_path)
@@ -2070,15 +2070,9 @@ def get_metadata_update_status():
     global METADATA_UPDATE_STATUS
     return jsonify(METADATA_UPDATE_STATUS)
 
-@app.route('/api/analyze/status')
-def get_analyze_status():
-    """Get the current status of the analysis"""
-    global ANALYSIS_STATUS
-    return jsonify(ANALYSIS_STATUS)
-
 @app.route('/api/analysis/status')
-def get_global_analysis_status():
-    """Get the current status of the analysis for the global status bar"""
+def get_analysis_status():
+    """Return the current analysis status"""
     global ANALYSIS_STATUS
     return jsonify(ANALYSIS_STATUS)
 

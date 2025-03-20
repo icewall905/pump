@@ -113,19 +113,31 @@ document.addEventListener('DOMContentLoaded', function() {
     loadPlaylists();
 });
 
-// New function to handle analysis progress in sidebar
+// Function to handle analysis progress in sidebar
 function initSidebarAnalysisProgress() {
+    console.log('Initializing sidebar analysis progress checker');
+    
     function checkStatus() {
         fetch('/api/analysis/status')
             .then(r => r.json())
             .then(status => {
+                console.log('Analysis status received:', status);
                 const container = document.getElementById('analysis-sidebar-progress');
-                if (!container) return;
+                if (!container) {
+                    console.error('analysis-sidebar-progress container not found');
+                    return;
+                }
                 
                 const fill = container.querySelector('.progress-fill');
                 const text = container.querySelector('.progress-status-text');
                 
+                if (!fill || !text) {
+                    console.error('Progress fill or text elements not found');
+                    return;
+                }
+                
                 if (status.running) {
+                    console.log('Analysis is running, showing progress');
                     container.style.display = 'block';
                     
                     // Get accurate data for display
@@ -136,29 +148,34 @@ function initSidebarAnalysisProgress() {
                     // Set width based on percentage
                     fill.style.width = `${percent}%`;
                     
-                    // Show what stage we're in
-                    if (percent < 50) {
+                    // Display appropriate text based on scan_complete flag
+                    if (!status.scan_complete) {
                         text.textContent = `Scanning: ${filesProcessed} files found`;
-                    } else if (percent < 100) {
-                        // Make sure we don't show more than the total
+                    } else {
+                        // For analysis phase - percent now goes from 0 to 100
                         const displayProcessed = Math.min(filesProcessed, totalFiles);
                         text.textContent = `Analyzing: ${displayProcessed} of ${totalFiles} files`;
-                    } else {
-                        text.textContent = `Analysis complete: ${totalFiles} files processed`;
                     }
-                } else {
-                    // Only hide if we're not currently running
-                    if (status.last_run_completed) {
-                        setTimeout(() => {
-                            container.style.display = 'none';
-                        }, 3000); // Hide after 3 seconds to allow user to see completion
-                    } else {
+                } else if (status.last_run_completed) {
+                    // Show completion status briefly
+                    fill.style.width = '100%';
+                    text.textContent = `Analysis complete: ${status.files_processed} files processed`;
+                    
+                    // Hide after 3 seconds
+                    setTimeout(() => {
                         container.style.display = 'none';
-                    }
+                    }, 3000);
+                } else {
+                    // Not running and not completed
+                    container.style.display = 'none';
                 }
             })
-            .catch(err => console.error('Sidebar analysis status error:', err))
-            .finally(() => setTimeout(checkStatus, 2000));
+            .catch(err => {
+                console.error('Sidebar analysis status error:', err);
+            })
+            .finally(() => {
+                setTimeout(checkStatus, 2000);
+            });
     }
     
     // Start checking

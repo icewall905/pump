@@ -66,18 +66,16 @@
         const globalStatusBar = document.getElementById('global-status-bar');
         let globalStatusInterval = null;
         
-        // Update the checkGlobalAnalysisStatus function
-
         function checkGlobalAnalysisStatus() {
             fetch('/api/analysis/status')
                 .then(response => response.json())
                 .then(data => {
-                    // We'll now hide this during analysis since it's shown in the sidebar
+                    // Only show this for errors, hide during normal analysis (sidebar will handle that)
                     if (data.running) {
                         // Hide the global status bar during analysis
                         globalStatusBar.style.display = 'none';
                     } else if (data.error) {
-                        // Only show errors in the global bar
+                        // Show errors in the global bar
                         const statusHtml = `
                             <div class="status-content">
                                 <div class="status-icon error"></div>
