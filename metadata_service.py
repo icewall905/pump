@@ -8,6 +8,10 @@ import musicbrainzngs
 import pylast
 import configparser
 from urllib.parse import quote_plus
+import hashlib
+import requests
+from io import BytesIO
+from PIL import Image
 
 logger = logging.getLogger('metadata_service')
 
@@ -15,9 +19,28 @@ class MetadataService:
     """Service for fetching music metadata from various sources"""
     
     def __init__(self, config_file='pump.conf'):
+        """Initialize the metadata service"""
         self.config_file = config_file
         self._load_config()
-        self._setup_services()
+        
+        # Initialize LastFM network if API key is available
+        if self.lastfm_api_key:
+            try:
+                import pylast
+                self.lastfm_network = pylast.LastFMNetwork(
+                    api_key=self.lastfm_api_key,
+                    api_secret=self.lastfm_api_secret
+                )
+                logger.info("LastFM service initialized successfully")
+            except ImportError:
+                logger.warning("pylast module not found. LastFM support will be limited.")
+                self.lastfm_network = None
+            except Exception as e:
+                logger.error(f"Error initializing LastFM service: {e}")
+                self.lastfm_network = None
+        else:
+            logger.warning("Last.fm API not configured")
+            self.lastfm_network = None
     
     def _load_config(self):
         """Load API keys from config file"""
@@ -25,21 +48,31 @@ class MetadataService:
         
         # Check if config exists and create with defaults if not
         if not os.path.exists(self.config_file):
-            config['api_keys'] = {
-                'lastfm_api_key': '',
-                'lastfm_api_secret': '',
-                'musicbrainz_user': 'pump_app',
-                'musicbrainz_app': 'PUMP Music Player'
+            config['lastfm'] = {
+                'api_key': '',
+                'api_secret': ''
+            }
+            config['musicbrainz'] = {
+                'user': 'pump_app',
+                'app': 'PUMP Music Player'
             }
             with open(self.config_file, 'w') as f:
                 config.write(f)
         
         # Load config
         config.read(self.config_file)
-        self.lastfm_api_key = config.get('api_keys', 'lastfm_api_key', fallback='')
-        self.lastfm_api_secret = config.get('api_keys', 'lastfm_api_secret', fallback='')
-        self.musicbrainz_user = config.get('api_keys', 'musicbrainz_user', fallback='pump_app')
-        self.musicbrainz_app = config.get('api_keys', 'musicbrainz_app', fallback='PUMP Music Player')
+        self.lastfm_api_key = config.get('lastfm', 'api_key', fallback='')
+        self.lastfm_api_secret = config.get('lastfm', 'api_secret', fallback='')
+        
+        # Add fallback keys if not configured
+        if not self.lastfm_api_key or not self.lastfm_api_secret:
+            # These are example keys - you should replace with valid ones
+            self.lastfm_api_key = '5ae3c562f8e41f790c8f5503d98f9108'
+            self.lastfm_api_secret = '95a1a83537706b56c0d322361841e8b0'
+            logger.info("Using fallback Last.fm API credentials")
+        
+        self.musicbrainz_user = config.get('musicbrainz', 'user', fallback='pump_app')
+        self.musicbrainz_app = config.get('musicbrainz', 'app', fallback='PUMP Music Player')
     
     def _setup_services(self):
         """Initialize API connections"""
@@ -148,32 +181,20 @@ class MetadataService:
                         if album_obj:
                             result['album'] = album_obj.get_title()
                             
-                            # Get album cover - use this approach
-                            try:
-                                album_info = self.lastfm_network.get_album(track.get_artist().get_name(), album_obj.get_title())
-                                images = album_info.get_cover_image(size=3)  # Get medium-sized image
-                                if images:
-                                    result['album_art_url'] = images
-                                    logger.info(f"Got album art URL: {images}")
-                            except Exception as e:
-                                logger.error(f"Error getting album art: {e}")
-                    
-                    except pylast.WSError:
-                        # If we can't get album from track, try direct album search if name is provided
-                        if album:
-                            try:
-                                album_obj = self.lastfm_network.get_album(artist, album)
-                                images = album_obj.get_cover_image(size=3)
-                                if images:
-                                    result['album_art_url'] = images
-                                    logger.info(f"Got album art URL: {images}")
-                            except:
-                                pass
+                            # Get album cover - more explicit approach
+                            album_info = self.lastfm_network.get_album(track.get_artist().get_name(), album_obj.get_title())
+                            images = album_info.get_cover_image(size=3)  # Get medium-sized image
+                            if images:
+                                result['album_art_url'] = images
+                                logger.info(f"Got album art URL from Last.fm: {images}")
+                    except Exception as album_error:
+                        logger.error(f"Error getting album info: {album_error}")
                     
                     result['metadata_source'] = 'last.fm'
-                except pylast.WSError as e:
-                    logger.error(f"Last.fm error: {e}")
-                    pass
+                    return result
+                except Exception as e:
+                    logger.error(f"Last.fm track search error: {e}")
+                    return {}
             
             # If only title is available, try a track search
             elif title:
@@ -238,21 +259,98 @@ class MetadataService:
             logger.error(f"Error searching MusicBrainz: {e}")
             return {}
     
-    def enrich_metadata(self, basic_metadata):
+    def enrich_metadata(self, basic_metadata, cache_dir=None):
         """Try to enrich basic metadata with additional information from APIs"""
         title = basic_metadata.get('title')
         artist = basic_metadata.get('artist')
         album = basic_metadata.get('album')
         
+        logger.info(f"Attempting to enrich metadata for '{artist} - {title}'")
+        
         # First try Last.fm
+        logger.info(f"Searching Last.fm for '{artist} - {title}'")
         enhanced = self.search_last_fm(title, artist, album)
         if enhanced and ('title' in enhanced and 'artist' in enhanced):
+            logger.info(f"Found enhanced metadata from Last.fm for '{artist} - {title}'")
+            
+            # If we have a cache directory and album art URL, download it
+            if cache_dir and 'album_art_url' in enhanced and enhanced['album_art_url']:
+                cached_path = self.download_and_cache_image(
+                    enhanced['album_art_url'], 
+                    cache_dir, 
+                    prefix='album_'
+                )
+                if cached_path:
+                    # Update to use local path instead of URL
+                    enhanced['album_art_url'] = cached_path
+                    logger.info(f"Cached album art to {cached_path}")
+            
             return enhanced
         
         # If Last.fm doesn't have it, try MusicBrainz
+        logger.info(f"Searching MusicBrainz for '{artist} - {title}'")
         enhanced = self.search_musicbrainz(title, artist, album)
         if enhanced and ('title' in enhanced and 'artist' in enhanced):
+            logger.info(f"Found enhanced metadata from MusicBrainz for '{artist} - {title}'")
+            
+            # If we have a cache directory and album art URL, download it
+            if cache_dir and 'album_art_url' in enhanced and enhanced['album_art_url']:
+                cached_path = self.download_and_cache_image(
+                    enhanced['album_art_url'], 
+                    cache_dir, 
+                    prefix='album_'
+                )
+                if cached_path:
+                    # Update to use local path instead of URL
+                    enhanced['album_art_url'] = cached_path
+                    logger.info(f"Cached album art to {cached_path}")
+            
             return enhanced
         
         # Return original if nothing found
+        logger.info(f"No enhanced metadata found for '{artist} - {title}'")
         return basic_metadata
+
+    def download_and_cache_image(self, image_url, cache_dir, prefix='album_'):
+        """Download an image and save it to the cache directory"""
+        if not image_url:
+            logger.warning("No image URL provided for download")
+            return None
+            
+        try:
+            # Create a hash of the URL for the filename
+            url_hash = hashlib.md5(image_url.encode()).hexdigest()
+            cache_path = os.path.join(cache_dir, f"{prefix}{url_hash}.jpg")
+            
+            # If already cached, return the path
+            if os.path.exists(cache_path):
+                logger.debug(f"Using cached image: {cache_path}")
+                return cache_path
+                
+            # Create cache directory if it doesn't exist
+            if not os.path.exists(cache_dir):
+                logger.info(f"Creating missing cache directory: {cache_dir}")
+                os.makedirs(cache_dir, exist_ok=True)
+                
+            # Only download if it's a URL
+            if image_url.startswith(('http://', 'https://')):
+                # Otherwise download and save it
+                logger.info(f"Downloading image from {image_url}")
+                response = requests.get(image_url, timeout=10)
+                if response.status_code == 200:
+                    with open(cache_path, 'wb') as f:
+                        f.write(response.content)
+                    logger.info(f"Successfully saved image to {cache_path}")
+                    return cache_path
+                else:
+                    logger.error(f"Failed to download image. Status code: {response.status_code}")
+                    return None
+            elif os.path.exists(image_url) and os.path.isfile(image_url):
+                # If it's a local file path, just return it
+                return image_url
+            else:
+                logger.error(f"Image URL is neither a valid URL nor a file path: {image_url}")
+                return None
+        except Exception as e:
+            logger.error(f"Error downloading/saving image from {image_url}: {e}")
+            return None

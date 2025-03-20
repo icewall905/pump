@@ -490,62 +490,69 @@ def run_analysis(folder_path, recursive):
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
-    """Settings page"""
-    global config  # Access the module-level config variable
-    
     if request.method == 'POST':
-        # Handle form submission
-        music_folder_path = request.form.get('music_folder_path', '')
-        recursive = request.form.get('recursive') == 'on'
-        lastfm_api_key = request.form.get('lastfm_api_key', '')
-        lastfm_api_secret = request.form.get('lastfm_api_secret', '')
-        spotify_client_id = request.form.get('spotify_client_id', '')
-        spotify_client_secret = request.form.get('spotify_client_secret', '')
-        
-        # Get the default playlist size
-        default_playlist_size = request.form.get('default_playlist_size', '10')
-        
-        # Update config
-        if not config.has_section('music'):
-            config.add_section('music')
-        config.set('music', 'folder_path', music_folder_path)
-        config.set('music', 'recursive', 'true' if recursive else 'false')
-        
-        if not config.has_section('lastfm'):
-            config.add_section('lastfm')
-        config.set('lastfm', 'api_key', lastfm_api_key)
-        config.set('lastfm', 'api_secret', lastfm_api_secret)
-        
-        if not config.has_section('spotify'):
-            config.add_section('spotify')
-        config.set('spotify', 'client_id', spotify_client_id)
-        config.set('spotify', 'client_secret', spotify_client_secret)
-        
-        # Add app section if doesn't exist
-        if not config.has_section('app'):
-            config.add_section('app')
-        # Save the default playlist size
-        config.set('app', 'default_playlist_size', default_playlist_size)
-        
-        # Save config
-        with open(config_file, 'w') as f:
-            config.write(f)
-        
-        logger.info("Settings updated successfully")
-        return redirect(url_for('settings', message='Settings saved successfully'))
+        try:
+            # Get form data
+            music_folder_path = request.form.get('music_folder_path', '')
+            recursive = request.form.get('recursive') == 'on'
+            
+            # Update Last.fm API keys
+            lastfm_api_key = request.form.get('lastfm_api_key', '')
+            lastfm_api_secret = request.form.get('lastfm_api_secret', '')
+            
+            # Update Spotify API keys
+            spotify_client_id = request.form.get('spotify_client_id', '')
+            spotify_client_secret = request.form.get('spotify_client_secret', '')
+            
+            # Get default playlist size
+            default_playlist_size = request.form.get('default_playlist_size', '10')
+            
+            # Make sure sections exist
+            if not config.has_section('music'):
+                config.add_section('music')
+            if not config.has_section('lastfm'):
+                config.add_section('lastfm')
+            if not config.has_section('spotify'):
+                config.add_section('spotify')
+            if not config.has_section('app'):
+                config.add_section('app')
+            
+            # Update configuration
+            config.set('music', 'folder_path', music_folder_path)
+            config.set('music', 'recursive', 'true' if recursive else 'false')
+            
+            config.set('lastfm', 'api_key', lastfm_api_key)
+            config.set('lastfm', 'api_secret', lastfm_api_secret)
+            
+            config.set('spotify', 'client_id', spotify_client_id)
+            config.set('spotify', 'client_secret', spotify_client_secret)
+            
+            config.set('app', 'default_playlist_size', default_playlist_size)
+            
+            # Save changes
+            with open(config_file, 'w') as f:
+                config.write(f)
+            
+            logger.info("Settings saved successfully")
+            return redirect(url_for('settings', message='Settings saved successfully'))
+            
+        except Exception as e:
+            logger.error(f"Error updating settings: {e}")
+            return redirect(url_for('settings', error=str(e)))
     
-    # Get settings from config
+    # For GET request or after POST, render the template with current settings
     music_folder_path = config.get('music', 'folder_path', fallback='')
     recursive = config.getboolean('music', 'recursive', fallback=True)
+    
     lastfm_api_key = config.get('lastfm', 'api_key', fallback='')
     lastfm_api_secret = config.get('lastfm', 'api_secret', fallback='')
+    
     spotify_client_id = config.get('spotify', 'client_id', fallback='')
     spotify_client_secret = config.get('spotify', 'client_secret', fallback='')
-    # Get the default playlist size
+    
     default_playlist_size = config.get('app', 'default_playlist_size', fallback='10')
     
-    return render_template(
-        'settings.html',
+    return render_template('settings.html',
         music_folder_path=music_folder_path,
         recursive=recursive,
         lastfm_api_key=lastfm_api_key,
@@ -553,8 +560,6 @@ def settings():
         spotify_client_id=spotify_client_id,
         spotify_client_secret=spotify_client_secret,
         default_playlist_size=default_playlist_size,
-        message=request.args.get('message'),
-        error=request.args.get('error')
     )
 
 @app.route('/debug/metadata')
@@ -586,95 +591,91 @@ def debug_metadata():
 
 @app.route('/albumart/<path:url>')
 def album_art_proxy(url):
-    """Proxy for album art with local caching to avoid CORS issues and reduce API calls"""
+    """Proxy for album art images - checks local cache first"""
+    url = unquote(url)
+    
+    # If this is already a local path in our cache, serve it directly
+    if url.startswith(CACHE_DIR):
+        if os.path.exists(url) and os.path.isfile(url):
+            return send_file(url, mimetype='image/jpeg')
+    
+    # Create a hash of the URL for caching
+    url_hash = hashlib.md5(url.encode()).hexdigest()
+    
+    # Generate a cache filename based on URL hash
+    cache_path = os.path.join(CACHE_DIR, f"{url_hash}.jpg")
+    
+    # Check if the image is already in cache
+    if (os.path.exists(cache_path)):
+        logger.debug(f"Serving cached album art for: {url}")
+        return send_file(cache_path, mimetype='image/jpeg')
+    
+    # If not in cache, fetch from source
     try:
-        # Decode URL
-        url = unquote(url)
-        
-        # Generate a cache filename based on URL hash
-        url_hash = hashlib.md5(url.encode()).hexdigest()
-        cache_path = os.path.join(CACHE_DIR, f"{url_hash}.jpg")
-        
-        # Check if the image is already in cache
-        if (os.path.exists(cache_path)):
-            logger.debug(f"Serving cached album art for: {url}")
-            return send_file(cache_path, mimetype='image/jpeg')
-        
-        # If not in cache, fetch from source
-        logger.info(f"Fetching album art from: {url}")
-        
-        # Fetch the image
-        response = requests.get(url, stream=True)
-        
-        if (response.status_code == 200):
-            # Get content type from response
-            content_type = response.headers.get('Content-Type', 'image/jpeg')
-            
-            # Read the image data
-            image_data = response.raw.read()
-            
-            # Save to cache
-            with open(cache_path, 'wb') as f:
-                f.write(image_data)
-            
-            # Check cache size and clean if necessary (periodically)
-            if random.randint(1, 100) <= 5:  # 5% chance to check cache size
-                cleanup_cache()
-            
-            # Return the image data
-            return Response(image_data, content_type=content_type)
+        # Only download if it's a URL
+        if url.startswith(('http://', 'https://')):
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                # Save to cache
+                with open(cache_path, 'wb') as f:
+                    f.write(response.content)
+                
+                # Check cache size and clean if necessary (periodically)
+                if random.randint(1, 100) <= 5:  # 5% chance to check cache size
+                    cleanup_cache()
+                
+                return send_file(cache_path, mimetype='image/jpeg')
+            else:
+                return send_file('static/images/default-album-art.png', mimetype='image/jpeg')
         else:
-            logger.error(f"Failed to fetch album art: HTTP {response.status_code}")
-            return '', 404
-            
+            # If it's not a URL and not in cache, return default image
+            return send_file('static/images/default-album-art.png', mimetype='image/jpeg')
     except Exception as e:
         logger.error(f"Error proxying album art: {e}")
-        return '', 500
+        return send_file('static/images/default-album-art.png', mimetype='image/jpeg')
+
+# Update the artist_image_proxy function
 
 @app.route('/artistimg/<path:url>')
 def artist_image_proxy(url):
-    """Proxy for artist images with local caching"""
+    """Proxy for artist images - checks local cache first"""
+    url = unquote(url)
+    
+    # If this is already a local path in our cache, serve it directly
+    if url.startswith(CACHE_DIR):
+        if os.path.exists(url) and os.path.isfile(url):
+            return send_file(url, mimetype='image/jpeg')
+    
+    # Create a hash of the URL for caching
+    url_hash = hashlib.md5(url.encode()).hexdigest()
+    
+    # Generate a cache filename based on URL hash
+    cache_path = os.path.join(CACHE_DIR, f"artist_{url_hash}.jpg")
+    
+    # Check if the image is already in cache
+    if os.path.exists(cache_path):
+        logger.debug(f"Serving cached artist image for: {url}")
+        return send_file(cache_path, mimetype='image/jpeg')
+    
+    # If not in cache, fetch from source
     try:
-        # Decode URL
-        url = unquote(url)
-        logger.info(f"Artist image request for: {url}")
-        # Generate a cache filename based on URL hash
-        url_hash = hashlib.md5(url.encode()).hexdigest()
-        cache_path = os.path.join(CACHE_DIR, f"artist_{url_hash}.jpg")
-        cache_path = os.path.join(CACHE_DIR, f"artist_{url_hash}.jpg")
-        
-        # Check if the image is already in cache
-        if os.path.exists(cache_path):
-            logger.debug(f"Serving cached artist image for: {url}")
-            return send_file(cache_path, mimetype='image/jpeg')
-        
-        # If not in cache, fetch from source
-        logger.info(f"Fetching artist image from: {url}")
-        
-        # Fetch the image
-        response = requests.get(url, stream=True, timeout=10)
-        
-        if response.status_code == 200:
-            # Get content type from response
-            content_type = response.headers.get('Content-Type', 'image/jpeg')
-            
-            # Read the image data
-            image_data = response.content
-            
-            # Save to cache
-            with open(cache_path, 'wb') as f:
-                f.write(image_data)
-            
-            # Return the image data
-            return Response(image_data, content_type=content_type)
+        # Only download if it's a URL
+        if url.startswith(('http://', 'https://')):
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                # Save to cache
+                with open(cache_path, 'wb') as f:
+                    f.write(response.content)
+                
+                return send_file(cache_path, mimetype='image/jpeg')
+            else:
+                return send_file('static/images/default-artist-image.png', mimetype='image/jpeg')
         else:
-            logger.error(f"Failed to fetch artist image: HTTP {response.status_code}")
-            # Return a default image instead of 404
-            return send_file('static/images/default-artist-image.png', mimetype='image/png')
-            
+            # If it's not a URL and not in cache, return default image
+            return send_file('static/images/default-artist-image.png', mimetype='image/jpeg')
     except Exception as e:
         logger.error(f"Error proxying artist image: {e}")
-        return send_file('static/images/default-artist-image.png', mimetype='image/png')
+        return send_file('static/images/default-artist-image.png', mimetype='image/jpeg')
 
 def cleanup_cache():
     """Cleanup the image cache if it exceeds the maximum size"""
@@ -1189,94 +1190,84 @@ def get_songs():
 @app.route('/api/update-artist-images', methods=['POST'])
 def update_artist_images():
     """Update artist images using LastFM"""
+    global analyzer
+    
+    if not analyzer:
+        return jsonify({"success": False, "error": "Analyzer not initialized"})
+    
     try:
-        # Get Last.fm API key from config
-        api_key = config.get('lastfm', 'api_key', fallback=None)
-        logger.info(f"Starting artist image update with API key: {'[Set]' if api_key else '[Not Set]'}")
-        api_secret = config.get('lastfm', 'api_secret', fallback=None)
+        # Configure LastFM API service
+        lastfm_api_key = config.get('lastfm', 'api_key', fallback='')
+        lastfm_api_secret = config.get('lastfm', 'api_secret', fallback='')
+        lastfm = LastFMService(lastfm_api_key, lastfm_api_secret)
         
-        # Use fallback keys if needed
-        if not api_key:
-            api_key = 'b21e44890bc788b52879506873d5ac33'
-            api_secret = 'bc5e07063a9e09401386a78bfd1350f9'
-            logger.info("Using fallback LastFM API key")
+        if not lastfm_api_key or not lastfm_api_secret:
+            return jsonify({"success": False, "error": "LastFM API keys not configured"})
             
-        lastfm = LastFMService(api_key, api_secret)
-        
-        # Get artists WITHOUT images only
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
+        # Get artists without images
+        conn = sqlite3.connect(analyzer.db_path)
         cursor = conn.cursor()
-        
-        default_image = "https://lastfm.freetls.fastly.net/i/u/300x300/2a96cbd8b46e442fc41c2b86b821562f.png"
         
         cursor.execute('''
             SELECT DISTINCT artist FROM audio_files 
             WHERE artist IS NOT NULL AND artist != '' 
             AND (artist_image_url IS NULL OR artist_image_url = '' OR artist_image_url = ?)
-            ORDER BY artist
-        ''', (default_image,))
+            LIMIT 100
+        ''', ('',))
         
-        artists = [row['artist'] for row in cursor.fetchall()]
-        conn.close()
+        artists = [row[0] for row in cursor.fetchall()]
         
         if not artists:
-            logger.info("No artists without images found")
-            return jsonify({'success': True, 'message': 'No artists without images found', 'updated': 0, 'total': 0})
+            return jsonify({"success": True, "message": "No artists without images found"})
+            
+        logger.info(f"Found {len(artists)} artists without images. Updating...")
         
-        logger.info(f"Found {len(artists)} artists without images")
-        
-        # Dictionary to collect images before DB updates
-        artist_images = {}
-        
-        # First fetch all images without touching DB
-        total = len(artists)
-        for artist in artists[:30]:  # Limit to 30 artists at a time to avoid timeouts
-            try:
-                logger.info(f"Fetching image for artist: {artist}")
-                image_url = lastfm.get_artist_image_url(artist)
-                if image_url and image_url != default_image:
-                    logger.info(f"Found image for {artist}: {image_url}")
-                    artist_images[artist] = image_url
-                else:
-                    logger.warning(f"No image found for {artist}")
-            except Exception as e:
-                logger.error(f"Error processing artist {artist}: {e}")
-
-        # Now update the database in a single transaction
         updated_count = 0
-        if artist_images:
-            try:
-                conn = sqlite3.connect(DB_PATH)
-                cursor = conn.cursor()
-                conn.execute('BEGIN')
+        
+        # Update each artist
+        for artist in artists:
+            # Clean artist name
+            artist = sanitize_artist_name(artist)
+            
+            if not artist:
+                continue
                 
-                for artist, image_url in artist_images.items():
+            # Check if artist already has image
+            if artist_has_image(artist):
+                continue
+                
+            # Get image URL from LastFM
+            image_url = lastfm.get_artist_image_url(artist, CACHE_DIR)  # Pass cache directory
+            
+            if image_url:
+                logger.info(f"Got image for artist: {artist}")
+                
+                # Update database
+                try:
                     cursor.execute(
                         'UPDATE audio_files SET artist_image_url = ? WHERE artist = ?', 
                         (image_url, artist)
                     )
-                    updated_count += cursor.rowcount
-                
-                conn.commit()
-                conn.close()
-                logger.info(f"Updated {updated_count} artist images in database")
-            except Exception as e:
-                logger.error(f"Database update error: {e}")
-                if 'conn' in locals():
-                    conn.rollback()
-                    conn.close()
-
+                    conn.commit()
+                    updated_count += 1
+                except Exception as db_error:
+                    logger.error(f"Database error updating artist image: {db_error}")
+            
+            # Add a small delay to avoid overwhelming the API
+            time.sleep(0.5)
+            
+        conn.close()
+        
         return jsonify({
-            'success': True, 
-            'message': f'Updated images for {updated_count} of {total} artists',
-            'updated': updated_count,
-            'total': total
+            "success": True, 
+            "message": f"Updated {updated_count} artist images via LastFM",
+            "updated_count": updated_count,
+            "total_artists": len(artists)
         })
         
     except Exception as e:
         logger.error(f"Error updating artist images: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({"success": False, "error": str(e)})
 
 @app.route('/api/test-lastfm/<artist_name>')
 def test_lastfm(artist_name):
@@ -1829,13 +1820,28 @@ def update_metadata():
     """Update metadata for all tracks from external services"""
     global analyzer, METADATA_UPDATE_STATUS
     
+    # Debugging
+    logger.info(f"Starting metadata update, checking cache directories...")
+    logger.info(f"CACHE_DIR = {CACHE_DIR}, exists: {os.path.exists(CACHE_DIR)}")
+    
+    if not os.path.exists(CACHE_DIR):
+        try:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            logger.info(f"Created missing cache directory: {CACHE_DIR}")
+        except Exception as e:
+            logger.error(f"Failed to create cache directory: {e}")
+            return jsonify({
+                'success': False,
+                'error': f"Failed to create cache directory: {e}"
+            })
+    
     # Don't start another update if one is already running
     if METADATA_UPDATE_STATUS['running']:
         return jsonify({
             'success': False,
             'message': 'Metadata update is already running'
         })
-    
+        
     try:
         # Reset status
         METADATA_UPDATE_STATUS.update({
@@ -1900,27 +1906,82 @@ def run_metadata_update():
         
         # Process tracks in small chunks to allow UI to be responsive
         for i in range(0, track_count, batch_size):
+            # Get the next batch of tracks
             batch = tracks[i:i+batch_size]
             
-            for track_id, artist, title, file_path in batch:
-                # Update status
-                METADATA_UPDATE_STATUS.update({
-                    'current_track': f"{artist} - {title}",
-                    'processed_tracks': i + batch.index((track_id, artist, title, file_path)) + 1,
-                    'percent_complete': int(((i + batch.index((track_id, artist, title, file_path)) + 1) / track_count) * 100),
-                    'last_updated': datetime.now().isoformat()
-                })
-                
-                # Process the track
-                # Your existing metadata update code would go here
-                logger.info(f"Found metadata for '{artist} - {title}'")  # or
-                # logger.warning(f"Couldn't find metadata for '{artist} - {title}'")
-                
-                # Short sleep to give the main thread time to process requests
-                time.sleep(0.05)
+            # Update status
+            METADATA_UPDATE_STATUS.update({
+                'processed_tracks': i,
+                'percent_complete': int((i / track_count) * 100) if track_count > 0 else 0,
+                'last_updated': datetime.now().isoformat()
+            })
             
-            # Allow for other tasks to run by yielding control briefly
-            time.sleep(0.1)
+            # Process each track in the batch
+            for track_id, artist, title, file_path in batch:
+                track_name = f"{artist} - {title}" if artist and title else file_path
+                METADATA_UPDATE_STATUS['current_track'] = track_name
+                
+                try:
+                    # Get existing metadata
+                    basic_metadata = {
+                        'title': title,
+                        'artist': artist,
+                        'file_path': file_path
+                    }
+                    
+                    # Try to enhance with online services - pass the CACHE_DIR
+                    enhanced_metadata = metadata_service.enrich_metadata(basic_metadata, CACHE_DIR)
+                    
+                    # Check if we got improved metadata - inspect what we actually got
+                    was_enhanced = enhanced_metadata.get('metadata_source') in ['last.fm', 'musicbrainz']
+                    if was_enhanced:
+                        logger.info(f"Found enhanced metadata for '{artist} - {title}' from {enhanced_metadata.get('metadata_source')}")
+                        
+                        # Update database with enhanced metadata
+                        conn = sqlite3.connect(analyzer.db_path)
+                        cursor = conn.cursor()
+                        
+                        try:
+                            # Update track metadata
+                            cursor.execute('''
+                                UPDATE audio_files SET 
+                                title = ?, 
+                                artist = ?, 
+                                album = ?, 
+                                album_art_url = ?,
+                                metadata_source = ?
+                                WHERE id = ?
+                            ''', (
+                                enhanced_metadata.get('title', title),
+                                enhanced_metadata.get('artist', artist),
+                                enhanced_metadata.get('album', ''),
+                                enhanced_metadata.get('album_art_url', ''),
+                                enhanced_metadata.get('metadata_source', 'unknown'),
+                                track_id
+                            ))
+                            
+                            # Check if any rows were actually updated
+                            if cursor.rowcount > 0:
+                                updated_count += 1
+                                logger.info(f"Successfully updated database for '{artist} - {title}'")
+                                
+                                # Check if we got album art
+                                if enhanced_metadata.get('album_art_url'):
+                                    images_updated += 1
+                                    logger.info(f"Added album art for '{artist} - {title}'")
+                            else:
+                                logger.warning(f"No rows updated for '{artist} - {title}' despite finding metadata")
+                                
+                            conn.commit()
+                        except Exception as db_error:
+                            logger.error(f"Database error updating '{artist} - {title}': {db_error}")
+                            conn.rollback()
+                        finally:
+                            conn.close()
+                    else:
+                        logger.info(f"No enhanced metadata found for '{artist} - {title}'")
+                except Exception as e:
+                    logger.error(f"Error updating metadata for {track_name}: {e}")
         
         # Update status when complete
         METADATA_UPDATE_STATUS.update({
@@ -1932,7 +1993,7 @@ def run_metadata_update():
         })
         
         logger.info(f"Background metadata update complete: {updated_count} tracks updated, {images_updated} images updated")
-        
+    
     except Exception as e:
         logger.error(f"Background metadata update error: {e}")
         METADATA_UPDATE_STATUS.update({
@@ -2003,6 +2064,40 @@ def get_global_analysis_status():
     """Get the current status of the analysis for the global status bar"""
     global ANALYSIS_STATUS
     return jsonify(ANALYSIS_STATUS)
+
+@app.route('/api/test-credentials', methods=['GET'])
+def test_credentials():
+    results = {}
+    
+    # Test Last.fm
+    lastfm_key = config.get('lastfm', 'api_key', fallback='')
+    lastfm_secret = config.get('lastfm', 'api_secret', fallback='')
+    
+    results['lastfm'] = {
+        'has_key': bool(lastfm_key),
+        'has_secret': bool(lastfm_secret)
+    }
+    
+    if lastfm_key:
+        try:
+            test_url = f"http://ws.audioscrobbler.com/2.0/?method=artist.getinfo&artist=Metallica&api_key={lastfm_key}&format=json"
+            response = requests.get(test_url, timeout=10)
+            results['lastfm']['connection'] = response.status_code == 200
+            results['lastfm']['status'] = response.status_code
+        except Exception as e:
+            results['lastfm']['connection'] = False
+            results['lastfm']['error'] = str(e)
+    
+    # Similar test for Spotify
+    spotify_id = config.get('spotify', 'client_id', fallback='')
+    spotify_secret = config.get('spotify', 'client_secret', fallback='')
+    
+    results['spotify'] = {
+        'has_key': bool(spotify_id),
+        'has_secret': bool(spotify_secret)
+    }
+    
+    return jsonify(results)
 
 def run_server():
     """Run the Flask server"""

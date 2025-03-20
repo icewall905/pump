@@ -656,3 +656,36 @@ document.addEventListener('visibilitychange', function() {
         window.metadataPoller = startPollingMetadataStatus();
     }
 });
+
+document.getElementById('test-api-connections').addEventListener('click', function() {
+    this.disabled = true;
+    this.textContent = 'Testing...';
+    
+    fetch('/api/test-credentials')
+        .then(response => response.json())
+        .then(data => {
+            let message = '';
+            
+            if (data.lastfm) {
+                message += 'Last.fm: ';
+                if (data.lastfm.connection) {
+                    message += '✅ Connected\n';
+                } else if (!data.lastfm.has_key) {
+                    message += '❌ No API key configured\n';
+                } else {
+                    message += `❌ Connection failed (${data.lastfm.status || data.lastfm.error})\n`;
+                }
+            }
+            
+            // Similar for Spotify
+            
+            alert(message);
+        })
+        .catch(error => {
+            alert('Error testing connections: ' + error);
+        })
+        .finally(() => {
+            this.disabled = false;
+            this.textContent = 'Test API Connections';
+        });
+});

@@ -79,8 +79,8 @@ class LastFMService:
         
         return None
     
-    def get_artist_image_url(self, artist_name):
-        """Extract the best available artist image URL"""
+    def get_artist_image_url(self, artist_name, cache_dir=None):
+        """Extract the best available artist image URL or download to cache"""
         # Try standard artist info first
         artist_info = self.get_artist_info(artist_name)
         default_image = "https://lastfm.freetls.fastly.net/i/u/300x300/2a96cbd8b46e442fc41c2b86b821562f.png"
@@ -90,29 +90,61 @@ class LastFMService:
                 # Get image array
                 images = artist_info['artist'].get('image', [])
                 
-                # Find a non-default image by checking the largest ones first (they're usually ordered by size)
+                # Find a non-default image by checking the largest ones first
                 for img in reversed(images):
                     image_url = img.get('#text', '')
                     if image_url and not image_url.endswith('2a96cbd8b46e442fc41c2b86b821562f.png'):
                         self.logger.info(f"Found good image for {artist_name}: {image_url}")
+                        
+                        # If we have a cache directory, download the image
+                        if cache_dir:
+                            try:
+                                # Create a hash of the URL for the filename
+                                url_hash = hashlib.md5(image_url.encode()).hexdigest()
+                                cache_path = os.path.join(cache_dir, f"artist_{url_hash}.jpg")
+                                
+                                # If already cached, return the path
+                                if os.path.exists(cache_path):
+                                    self.logger.debug(f"Artist image already in cache: {cache_path}")
+                                    return cache_path
+                                
+                                # Create cache directory if it doesn't exist
+                                if not os.path.exists(cache_dir):
+                                    self.logger.info(f"Creating artist image cache directory: {cache_dir}")
+                                    os.makedirs(cache_dir, exist_ok=True)
+                                
+                                # Otherwise download and save it
+                                response = requests.get(image_url, timeout=10)
+                                if response.status_code == 200:
+                                    # Save the image to cache
+                                    with open(cache_path, 'wb') as f:
+                                        f.write(response.content)
+                                    self.logger.info(f"Saved artist image to {cache_path}")
+                                    return cache_path
+                            except Exception as e:
+                                self.logger.error(f"Error caching artist image: {e}")
+                                # Fall back to returning the URL if caching fails
+                        
                         return image_url
                 
-                self.logger.warning(f"Only found default images for {artist_name}, trying top albums")
-            else:
-                self.logger.warning(f"No artist info found for {artist_name}, trying top albums")
-            
-            # Try getting image from artist's albums instead
-            album_image = self.get_artist_image_from_albums(artist_name)
-            if album_image:
-                self.logger.info(f"Found album image for {artist_name}: {album_image}")
-                return album_image
-            
-            self.logger.warning(f"No images found for {artist_name}, using default")
-            return default_image
+                # If we get here, we only found default images, return the largest one
+                if images and images[-1].get('#text'):
+                    return images[-1].get('#text')
                 
+            # If we couldn't find anything good, try the similar artists
+            similar_artists = self.get_similar_artists(artist_name)
+            if similar_artists and len(similar_artists) > 0:
+                # Check the first similar artist's image
+                similar_artist = similar_artists[0].get('name')
+                if similar_artist:
+                    self.logger.info(f"Trying image from similar artist: {similar_artist}")
+                    return self.get_artist_image_url(similar_artist, cache_dir)  # Recursive call
+            
+            return None  # No suitable image found
+        
         except Exception as e:
-            self.logger.error(f"Error parsing artist image URL: {e}")
-            return default_image
+            self.logger.error(f"Error extracting artist image: {e}")
+            return None
 
     def get_artist_image_from_albums(self, artist_name):
         """Get artist image from their top albums as fallback"""

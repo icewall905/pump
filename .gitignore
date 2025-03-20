@@ -72,3 +72,7 @@ npm-debug.log*
 
 # Test music
 music/
+album_art_cache/
+lastfm_cache/
+spotify_cache/
+cache/

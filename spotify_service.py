@@ -120,8 +120,9 @@ class SpotifyService:
             self.logger.error(f"Exception searching Spotify: {e}")
             return None
     
-    def get_artist_image_url(self, artist_name):
-        """Get artist image URL from Spotify"""
+    # Update get_artist_image_url to support caching
+    def get_artist_image_url(self, artist_name, cache_dir=None):
+        """Get artist image URL from Spotify or download to cache"""
         artist = self.search_artist(artist_name)
         if not artist:
             return None
@@ -129,9 +130,35 @@ class SpotifyService:
         # Get images array, sorted by size (largest first)
         images = artist.get('images', [])
         if images:
-            # Return the largest image
-            self.logger.info(f"Found Spotify image for {artist_name}: {images[0].get('url')}")
-            return images[0].get('url')
+            # Get the largest image URL
+            image_url = images[0].get('url')
+            self.logger.info(f"Found Spotify image for {artist_name}: {image_url}")
+            
+            # If we have a cache directory, download the image
+            if cache_dir and image_url:
+                try:
+                    # Create a hash of the URL for the filename
+                    url_hash = hashlib.md5(image_url.encode()).hexdigest()
+                    cache_path = os.path.join(cache_dir, f"artist_{url_hash}.jpg")
+                    
+                    # If already cached, return the path
+                    if os.path.exists(cache_path):
+                        self.logger.debug(f"Artist image already in cache: {cache_path}")
+                        return cache_path
+                    
+                    # Otherwise download and save it
+                    response = requests.get(image_url, timeout=10)
+                    if response.status_code == 200:
+                        # Save the image to cache
+                        with open(cache_path, 'wb') as f:
+                            f.write(response.content)
+                        self.logger.info(f"Saved artist image to {cache_path}")
+                        return cache_path
+                except Exception as e:
+                    self.logger.error(f"Error caching artist image: {e}")
+                    # Fall back to returning the URL if caching fails
+                    
+            return image_url
         
         self.logger.warning(f"No images found for artist {artist_name} on Spotify")    
         return None
