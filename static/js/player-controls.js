@@ -190,7 +190,15 @@ document.addEventListener('DOMContentLoaded', function() {
         // Update album art
         if (nowPlayingArt) {
             if (track.album_art_url) {
-                nowPlayingArt.src = `/albumart/${encodeURIComponent(track.album_art_url)}`;
+                let imgSrc = track.album_art_url;
+                
+                // If it's an external URL, route through proxy
+                if (imgSrc.startsWith('http')) {
+                    imgSrc = `/albumart/${encodeURIComponent(imgSrc)}`;
+                }
+                // If it's a cache path, use directly
+                
+                nowPlayingArt.src = imgSrc;
                 nowPlayingArt.onerror = function() {
                     this.src = '/static/images/default-album-art.png';
                 };

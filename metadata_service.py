@@ -320,12 +320,13 @@ class MetadataService:
         try:
             # Create a hash of the URL for the filename
             url_hash = hashlib.md5(image_url.encode()).hexdigest()
-            cache_path = os.path.join(cache_dir, f"{prefix}{url_hash}.jpg")
+            cache_filename = f"{prefix}{url_hash}.jpg"
+            cache_path = os.path.join(cache_dir, cache_filename)
             
-            # If already cached, return the path
+            # If already cached, return the web-accessible path
             if os.path.exists(cache_path):
                 logger.debug(f"Using cached image: {cache_path}")
-                return cache_path
+                return f"/cache/{cache_filename}"  # Return web-accessible path
                 
             # Create cache directory if it doesn't exist
             if not os.path.exists(cache_dir):
@@ -341,16 +342,21 @@ class MetadataService:
                     with open(cache_path, 'wb') as f:
                         f.write(response.content)
                     logger.info(f"Successfully saved image to {cache_path}")
-                    return cache_path
+                    return f"/cache/{cache_filename}"  # Return web-accessible path
                 else:
                     logger.error(f"Failed to download image. Status code: {response.status_code}")
-                    return None
+                    return image_url  # Fall back to original URL
             elif os.path.exists(image_url) and os.path.isfile(image_url):
-                # If it's a local file path, just return it
-                return image_url
+                # If it's a local file path, copy it to cache
+                try:
+                    shutil.copy(image_url, cache_path)
+                    return f"/cache/{cache_filename}"  # Return web-accessible path
+                except Exception as copy_error:
+                    logger.error(f"Error copying local file to cache: {copy_error}")
+                    return image_url
             else:
                 logger.error(f"Image URL is neither a valid URL nor a file path: {image_url}")
                 return None
         except Exception as e:
             logger.error(f"Error downloading/saving image from {image_url}: {e}")
-            return None
+            return image_url  # Return original URL as fallback

@@ -594,21 +594,21 @@ def album_art_proxy(url):
     """Proxy for album art images - checks local cache first"""
     url = unquote(url)
     
-    # If this is already a local path in our cache, serve it directly
-    if url.startswith(CACHE_DIR):
-        if os.path.exists(url) and os.path.isfile(url):
-            return send_file(url, mimetype='image/jpeg')
+    # If URL starts with /cache/, redirect to the cache route
+    if url.startswith('/cache/'):
+        return redirect(url)
     
     # Create a hash of the URL for caching
     url_hash = hashlib.md5(url.encode()).hexdigest()
     
     # Generate a cache filename based on URL hash
-    cache_path = os.path.join(CACHE_DIR, f"{url_hash}.jpg")
+    cache_filename = f"album_{url_hash}.jpg"
+    cache_path = os.path.join(CACHE_DIR, cache_filename)
     
     # Check if the image is already in cache
-    if (os.path.exists(cache_path)):
+    if os.path.exists(cache_path):
         logger.debug(f"Serving cached album art for: {url}")
-        return send_file(cache_path, mimetype='image/jpeg')
+        return redirect(f"/cache/{cache_filename}")
     
     # If not in cache, fetch from source
     try:
@@ -620,11 +620,8 @@ def album_art_proxy(url):
                 with open(cache_path, 'wb') as f:
                     f.write(response.content)
                 
-                # Check cache size and clean if necessary (periodically)
-                if random.randint(1, 100) <= 5:  # 5% chance to check cache size
-                    cleanup_cache()
-                
-                return send_file(cache_path, mimetype='image/jpeg')
+                logger.info(f"Downloaded and cached album art from {url}")
+                return redirect(f"/cache/{cache_filename}")
             else:
                 return send_file('static/images/default-album-art.png', mimetype='image/jpeg')
         else:
@@ -641,21 +638,21 @@ def artist_image_proxy(url):
     """Proxy for artist images - checks local cache first"""
     url = unquote(url)
     
-    # If this is already a local path in our cache, serve it directly
-    if url.startswith(CACHE_DIR):
-        if os.path.exists(url) and os.path.isfile(url):
-            return send_file(url, mimetype='image/jpeg')
+    # If URL starts with /cache/, redirect to the cache route
+    if url.startswith('/cache/'):
+        return redirect(url)
     
     # Create a hash of the URL for caching
     url_hash = hashlib.md5(url.encode()).hexdigest()
     
     # Generate a cache filename based on URL hash
-    cache_path = os.path.join(CACHE_DIR, f"artist_{url_hash}.jpg")
+    cache_filename = f"artist_{url_hash}.jpg"
+    cache_path = os.path.join(CACHE_DIR, cache_filename)
     
     # Check if the image is already in cache
     if os.path.exists(cache_path):
         logger.debug(f"Serving cached artist image for: {url}")
-        return send_file(cache_path, mimetype='image/jpeg')
+        return redirect(f"/cache/{cache_filename}")
     
     # If not in cache, fetch from source
     try:
@@ -667,7 +664,7 @@ def artist_image_proxy(url):
                 with open(cache_path, 'wb') as f:
                     f.write(response.content)
                 
-                return send_file(cache_path, mimetype='image/jpeg')
+                return redirect(f"/cache/{cache_filename}")
             else:
                 return send_file('static/images/default-artist-image.png', mimetype='image/jpeg')
         else:
@@ -2098,6 +2095,27 @@ def test_credentials():
     }
     
     return jsonify(results)
+
+@app.route('/cache/<path:filename>')
+def serve_cache_file(filename):
+    """Serve a file directly from the cache directory"""
+    try:
+        # Ensure no path traversal vulnerability
+        if ".." in filename:
+            return "Invalid path", 400
+            
+        # Full path to the cached file
+        cache_path = os.path.join(CACHE_DIR, filename)
+        
+        if os.path.exists(cache_path) and os.path.isfile(cache_path):
+            logger.debug(f"Serving cached file: {filename}")
+            return send_file(cache_path, mimetype='image/jpeg')
+        else:
+            logger.warning(f"Cache file not found: {filename}")
+            return send_file('static/images/default-album-art.png', mimetype='image/jpeg')
+    except Exception as e:
+        logger.error(f"Error serving cache file {filename}: {e}")
+        return send_file('static/images/default-album-art.png', mimetype='image/jpeg')
 
 def run_server():
     """Run the Flask server"""

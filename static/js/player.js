@@ -817,3 +817,26 @@ function createTrackCard(track) {
     
     return card;
 }
+
+// Update the image handling logic
+function displayTrack(track) {
+    // ...existing code...
+    if (track.album_art_url) {
+        let imgSrc = track.album_art_url;
+        
+        // If it starts with album_art_cache, convert to web-accessible URL
+        if (imgSrc.includes('album_art_cache/') || imgSrc.includes('album_art_cache\\')) {
+            // Extract the filename only
+            const parts = imgSrc.split(/[\/\\]/);
+            const filename = parts[parts.length - 1];
+            imgSrc = `/cache/${filename}`;
+        }
+        // If it's an external URL, route through proxy
+        else if (imgSrc.startsWith('http')) {
+            imgSrc = `/albumart/${encodeURIComponent(imgSrc)}`;
+        }
+        
+        img.src = imgSrc;
+    }
+    // ...rest of existing code...
+}
