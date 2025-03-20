@@ -12,6 +12,12 @@ document.addEventListener('DOMContentLoaded', function() {
     initSidebarAnalysisProgress();
     initSidebarMetadataProgress();
     
+    // Initialize library stats
+    updateLibraryStats();
+    
+    // Refresh stats periodically (every minute)
+    setInterval(updateLibraryStats, 60000);
+    
     function loadPlaylists() {
         console.log('Loading playlists for sidebar...');
         
@@ -208,3 +214,48 @@ function initSidebarMetadataProgress() {
     checkStatus();
 }
 document.addEventListener('DOMContentLoaded', initSidebarMetadataProgress);
+
+// Add this function to sidebar.js
+
+function updateLibraryStats() {
+    const totalTracks = document.getElementById('total-tracks');
+    const tracksWithMetadata = document.getElementById('tracks-with-metadata');
+    const analyzedTracks = document.getElementById('analyzed-tracks');
+    const dbSize = document.getElementById('db-size');
+    const cacheSize = document.getElementById('cache-size');
+    
+    if (!totalTracks || !tracksWithMetadata || !analyzedTracks || !dbSize || !cacheSize) {
+        console.error('Library stats elements not found in DOM');
+        return;
+    }
+    
+    fetch('/api/library/stats')
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'success') {
+                const stats = data.stats;
+                totalTracks.textContent = stats.total_tracks.toLocaleString();
+                
+                // Show metadata as percentage of total
+                const metadataPercent = stats.total_tracks > 0 
+                    ? Math.round((stats.tracks_with_metadata / stats.total_tracks) * 100) 
+                    : 0;
+                tracksWithMetadata.textContent = `${stats.tracks_with_metadata.toLocaleString()} (${metadataPercent}%)`;
+                
+                // Show analyzed as percentage of total
+                const analyzedPercent = stats.total_tracks > 0 
+                    ? Math.round((stats.analyzed_tracks / stats.total_tracks) * 100) 
+                    : 0;
+                analyzedTracks.textContent = `${stats.analyzed_tracks.toLocaleString()} (${analyzedPercent}%)`;
+                
+                // Show sizes in MB
+                dbSize.textContent = `${stats.db_size_mb} MB`;
+                cacheSize.textContent = `${stats.cache_size_mb} MB`;
+            } else {
+                console.error('Error fetching library stats:', data.message);
+            }
+        })
+        .catch(error => {
+            console.error('Error fetching library stats:', error);
+        });
+}

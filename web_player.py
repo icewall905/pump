@@ -2131,6 +2131,58 @@ def serve_cache_file(filename):
         logger.error(f"Error serving cache file {filename}: {e}")
         return send_file('static/images/default-album-art.png', mimetype='image/jpeg')
 
+@app.route('/api/library/stats')
+def get_library_stats():
+    """Get statistics about the music library"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Get total tracks count
+        cursor.execute("SELECT COUNT(*) FROM audio_files")
+        total_tracks = cursor.fetchone()[0]
+        
+        # Get tracks with metadata count
+        cursor.execute("SELECT COUNT(*) FROM audio_files WHERE metadata_source IS NOT NULL")
+        tracks_with_metadata = cursor.fetchone()[0]
+        
+        # Get analyzed tracks count 
+        cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'analyzed'")
+        analyzed_tracks = cursor.fetchone()[0]
+        
+        # Calculate DB size
+        db_size_bytes = os.path.getsize(DB_PATH)
+        db_size_mb = round(db_size_bytes / (1024 * 1024), 2)  # Convert to MB
+        
+        # Calculate cache size
+        cache_dir = config.get('cache', 'image_cache_dir', fallback='album_art_cache')
+        cache_size_bytes = 0
+        if os.path.exists(cache_dir):
+            for file in os.listdir(cache_dir):
+                file_path = os.path.join(cache_dir, file)
+                if os.path.isfile(file_path):
+                    cache_size_bytes += os.path.getsize(file_path)
+        cache_size_mb = round(cache_size_bytes / (1024 * 1024), 2)  # Convert to MB
+        
+        conn.close()
+        
+        return jsonify({
+            'status': 'success',
+            'stats': {
+                'total_tracks': total_tracks,
+                'tracks_with_metadata': tracks_with_metadata,
+                'analyzed_tracks': analyzed_tracks,
+                'db_size_mb': db_size_mb,
+                'cache_size_mb': cache_size_mb
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error getting library stats: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        })
+
 def run_server():
     """Run the Flask server"""
     logger.info(f"Starting server on {HOST}:{PORT} (debug={DEBUG})")

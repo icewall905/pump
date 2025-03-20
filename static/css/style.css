@@ -2017,3 +2017,30 @@ p, span, div, label {
     color: #ddd;
     text-align: center;
 }
+
+/* Add these styles to your existing style.css file */
+
+.music-library-stats {
+    font-size: 0.85em;
+    margin-top: 10px;
+}
+
+.stat-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 3px 0;
+    color: #ddd;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.stat-item:last-child {
+    border-bottom: none;
+}
+
+.stat-label {
+    color: #999;
+}
+
+.stat-value {
+    font-weight: 500;
+}
