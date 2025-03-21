@@ -104,14 +104,24 @@ function initMetadataControls() {
 }
 
 function startMetadataUpdate() {
-    fetch('/api/update-metadata', { method: 'POST' })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                pollMetadataStatus();
-            }
+    const skipExisting = document.getElementById('skip-existing-metadata').checked;
+    
+    fetch('/api/update-metadata', { 
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            skip_existing: skipExisting
         })
-        .catch(err => console.error(err));
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            pollMetadataStatus();
+        }
+    })
+    .catch(err => console.error(err));
 }
 
 function pollMetadataStatus() {
@@ -294,6 +304,7 @@ function startQuickScan() {
 function updateMetadata() {
     const updateBtn = document.getElementById('update-metadata-btn');
     const statusElem = document.getElementById('metadata-status-text');
+    const skipExisting = document.getElementById('skip-existing-metadata').checked;
     
     // Show loading state
     updateBtn.disabled = true;
@@ -305,7 +316,13 @@ function updateMetadata() {
     }
     
     fetch('/api/update-metadata', {
-        method: 'POST'
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            skip_existing: skipExisting
+        })
     })
     .then(response => response.json())
     .then(data => {

@@ -177,7 +177,14 @@ try:
 except Exception as e:
     analyzer = None
     logger.error(f"Error initializing music analyzer: {e}")
-    logger.error(f"Detailed error: {traceback.format_exc()}")
+
+# Initialize metadata service
+try:
+    metadata_service = MetadataService(config_file=config_file)
+    logger.info("Metadata service initialized successfully")
+except Exception as e:
+    logger.error(f"Error initializing metadata service: {e}")
+    metadata_service = None
 
 # Add these global variables near the top of the file
 # Analysis status tracking
@@ -1843,66 +1850,56 @@ def save_music_path():
 
 @app.route('/api/update-metadata', methods=['POST'])
 def update_metadata():
-    """Update metadata for all tracks from external services"""
-    global analyzer, METADATA_UPDATE_STATUS
-    
-    # Debugging
-    logger.info(f"Starting metadata update, checking cache directories...")
-    logger.info(f"CACHE_DIR = {CACHE_DIR}, exists: {os.path.exists(CACHE_DIR)}")
-    
-    if not os.path.exists(CACHE_DIR):
-        try:
-            os.makedirs(CACHE_DIR, exist_ok=True)
-            logger.info(f"Created missing cache directory: {CACHE_DIR}")
-        except Exception as e:
-            logger.error(f"Failed to create cache directory: {e}")
+    """Start background metadata update process"""
+    try:
+        # Get skip_existing parameter, default to False if not provided
+        data = request.get_json() or {}
+        skip_existing = data.get('skip_existing', False)
+        
+        # Update global tracking variable
+        global METADATA_UPDATE_STATUS
+        
+        # Don't start if already running
+        if METADATA_UPDATE_STATUS['running']:
             return jsonify({
                 'success': False,
-                'error': f"Failed to create cache directory: {e}"
+                'message': 'Metadata update already in progress'
             })
-    
-    # Don't start another update if one is already running
-    if METADATA_UPDATE_STATUS['running']:
-        return jsonify({
-            'success': False,
-            'message': 'Metadata update is already running'
-        })
         
-    try:
         # Reset status
         METADATA_UPDATE_STATUS.update({
             'running': True,
-            'start_time': datetime.now().isoformat(),
+            'start_time': datetime.now(),
             'total_tracks': 0,
             'processed_tracks': 0,
             'updated_tracks': 0,
             'current_track': '',
             'percent_complete': 0,
-            'last_updated': datetime.now().isoformat(),
+            'last_updated': datetime.now(),
             'error': None
         })
         
-        # Start metadata update in background thread
-        update_thread = threading.Thread(target=run_metadata_update)
-        update_thread.daemon = True
-        update_thread.start()
+        # Start in background thread
+        thread = threading.Thread(
+            target=metadata_service.update_all_metadata,
+            kwargs={
+                'status_tracker': METADATA_UPDATE_STATUS,
+                'skip_existing': skip_existing  # Pass the parameter
+            }
+        )
+        thread.daemon = True
+        thread.start()
+        
+        logger.info(f"Started metadata update (skip_existing={skip_existing})")
         
         return jsonify({
-            'success': True,
-            'message': 'Metadata update started in background',
-            'status': METADATA_UPDATE_STATUS
+            'success': True
         })
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error starting metadata update: {error_msg}")
-        METADATA_UPDATE_STATUS.update({
-            'running': False,
-            'error': error_msg,
-            'last_updated': datetime.now().isoformat()
-        })
+        logger.error(f"Error starting metadata update: {e}")
         return jsonify({
             'success': False,
-            'error': error_msg
+            'error': str(e)
         })
 
 # Add this function to run metadata update in background

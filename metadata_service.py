@@ -12,6 +12,8 @@ import hashlib
 import requests
 from io import BytesIO
 from PIL import Image
+import sqlite3  # Add this import
+from datetime import datetime  # Add this import
 
 logger = logging.getLogger('metadata_service')
 
@@ -360,3 +362,137 @@ class MetadataService:
         except Exception as e:
             logger.error(f"Error downloading/saving image from {image_url}: {e}")
             return image_url  # Return original URL as fallback
+
+    def update_all_metadata(self, status_tracker=None, skip_existing=False):
+        """
+        Update metadata for all tracks in the database
+        
+        Args:
+            status_tracker: Dictionary to track update status
+            skip_existing: If True, skip tracks that already have metadata
+        """
+        try:
+            # Connect to database
+            conn = sqlite3.connect(self.config_file.replace('pump.conf', 'pump.db'))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Get all tracks
+            if skip_existing:
+                # Skip tracks that already have metadata
+                cursor.execute('''
+                    SELECT id, file_path, title, artist, album
+                    FROM audio_files 
+                    WHERE metadata_source IS NULL OR metadata_source = ''
+                ''')
+                logger.info("Metadata update: Skipping tracks with existing metadata")
+            else:
+                # Update all tracks
+                cursor.execute('''
+                    SELECT id, file_path, title, artist, album
+                    FROM audio_files
+                ''')
+                logger.info("Metadata update: Processing all tracks")
+            
+            tracks = cursor.fetchall()
+            total_tracks = len(tracks)
+            
+            # Update status
+            if status_tracker:
+                status_tracker['total_tracks'] = total_tracks
+                status_tracker['processed_tracks'] = 0
+                status_tracker['updated_tracks'] = 0
+            
+            # Create cache directory if it doesn't exist
+            cache_dir = os.path.join(os.path.dirname(self.config_file), 'album_art_cache')
+            if not os.path.exists(cache_dir):
+                os.makedirs(cache_dir, exist_ok=True)
+            
+            # Process each track
+            processed = 0
+            updated = 0
+            
+            for track in tracks:
+                track_id = track['id']
+                file_path = track['file_path']
+                
+                try:
+                    if status_tracker:
+                        status_tracker['current_track'] = os.path.basename(file_path)
+                    
+                    logger.debug(f"Processing track: {file_path}")
+                    
+                    # Get basic metadata from file
+                    basic_metadata = self.get_metadata_from_file(file_path)
+                    
+                    # If we don't have title and artist, use what's in the database
+                    if not basic_metadata.get('title'):
+                        basic_metadata['title'] = track['title']
+                    if not basic_metadata.get('artist'):
+                        basic_metadata['artist'] = track['artist']
+                    
+                    # Only proceed if we have at least title or artist
+                    if basic_metadata.get('title') or basic_metadata.get('artist'):
+                        # Enrich metadata from online sources
+                        enriched = self.enrich_metadata(basic_metadata, cache_dir)
+                        
+                        # Update database
+                        cursor.execute('''
+                            UPDATE audio_files SET
+                                title = ?,
+                                artist = ?,
+                                album = ?,
+                                album_art_url = ?,
+                                metadata_source = ?
+                            WHERE id = ?
+                        ''', (
+                            enriched.get('title') or track['title'],
+                            enriched.get('artist') or track['artist'],
+                            enriched.get('album') or track['album'],
+                            enriched.get('album_art_url', ''),
+                            enriched.get('metadata_source', 'local_file'),
+                            track_id
+                        ))
+                        conn.commit()
+                        updated += 1
+                    
+                    processed += 1
+                    
+                    # Update status
+                    if status_tracker:
+                        status_tracker['processed_tracks'] = processed
+                        status_tracker['updated_tracks'] = updated
+                        status_tracker['percent_complete'] = int((processed / total_tracks) * 100)
+                        status_tracker['last_updated'] = datetime.now()
+                    
+                    # Log progress periodically
+                    if processed % 10 == 0:
+                        logger.info(f"Metadata update progress: {processed}/{total_tracks} tracks processed")
+                    
+                except Exception as e:
+                    logger.error(f"Error updating metadata for {file_path}: {e}")
+                    # Continue with next track
+            
+            # Update final status
+            if status_tracker:
+                status_tracker['running'] = False
+                status_tracker['percent_complete'] = 100
+                status_tracker['last_updated'] = datetime.now()
+            
+            logger.info(f"Metadata update complete: {processed}/{total_tracks} tracks processed, {updated} updated")
+            
+            return {
+                'processed': processed,
+                'updated': updated
+            }
+            
+        except Exception as e:
+            logger.error(f"Error during metadata update: {e}")
+            if status_tracker:
+                status_tracker['running'] = False
+                status_tracker['error'] = str(e)
+                status_tracker['last_updated'] = datetime.now()
+        finally:
+            if conn:
+                conn.close()
+
