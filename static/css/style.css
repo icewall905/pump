@@ -2356,3 +2356,61 @@ p, span, div, label {
 #save-playlist-modal .primary-button:hover {
   background-color: #1ed760;
 }
+
+/* Improve progress bar styling for better interaction */
+
+.progress-container {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    margin: 0 20px;
+}
+
+.progress-container .time {
+    font-size: 12px;
+    color: #aaa;
+    width: 40px;
+    text-align: center;
+}
+
+.progress-container .progress-bar {
+    flex: 1;
+    height: 6px;
+    background-color: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+    margin: 0 10px;
+    position: relative;
+    cursor: pointer;
+    overflow: hidden;
+    transition: height 0.1s ease;
+}
+
+.progress-container .progress-bar:hover {
+    height: 8px;
+    background-color: rgba(255, 255, 255, 0.2);
+}
+
+.progress-container .progress-fill {
+    position: absolute;
+    height: 100%;
+    background-color: #1DB954;
+    border-radius: 3px;
+    top: 0;
+    left: 0;
+    width: 0;
+    transition: width 0.1s linear;
+    pointer-events: none;
+}
+
+.progress-container .progress-bar:hover .progress-fill {
+    background-color: #1ED760;
+}
+
+/* Add a dragging class that can be toggled during mouse down */
+.progress-container .progress-bar.dragging {
+    height: 10px;
+}
+
+.progress-container .progress-bar.dragging .progress-fill {
+    background-color: #1ED760;
+}

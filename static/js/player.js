@@ -634,16 +634,16 @@ document.addEventListener('DOMContentLoaded', function() {
     if (exploreLink) {
         exploreLink.addEventListener('click', function(e) {
             e.preventDefault();
-            console.log('Explore link clicked');
             loadExplore();
+            setActiveNav('explore');
         });
     }
     
     if (recentLink) {
         recentLink.addEventListener('click', function(e) {
             e.preventDefault();
-            console.log('Recent link clicked');
             loadRecent();
+            setActiveNav('recent');
         });
     }
     

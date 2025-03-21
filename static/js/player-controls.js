@@ -10,7 +10,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const playPauseButton = document.getElementById('play-pause');
     const prevButton = document.getElementById('prev-track');
     const nextButton = document.getElementById('next-track');
-    const progressBar = document.querySelector('.progress-bar');
+    const progressBar = document.querySelector('.now-playing-bar .progress-bar');
     const progressFill = document.getElementById('progress-fill');
     const currentTimeDisplay = document.getElementById('current-time');
     const totalTimeDisplay = document.getElementById('total-time');
@@ -95,9 +95,74 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     if (progressBar) {
+        // Single click functionality
         progressBar.addEventListener('click', function(e) {
-            const percent = e.offsetX / progressBar.offsetWidth;
+            e.preventDefault(); // Prevent any default behavior
+            const rect = progressBar.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const percent = clickX / progressBar.offsetWidth;
             seekToPercent(percent);
+        });
+        
+        // Add drag functionality for a smoother experience
+        let isDragging = false; // Moved outside to be accessible to all handlers
+        
+        progressBar.addEventListener('mousedown', function(e) {
+            e.preventDefault(); // Prevent any default behavior
+            if (e.button !== 0) return; // Only handle left clicks
+            
+            // Set dragging to true
+            isDragging = true;
+            progressBar.classList.add('dragging'); // Add class for visual feedback
+            
+            // Initial seek based on click position
+            const rect = progressBar.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const percent = clickX / progressBar.offsetWidth;
+            seekToPercent(percent);
+            
+            // Handle mouse move for continuous seeking during drag
+            function handleMouseMove(e) {
+                if (!isDragging) return;
+                
+                const rect = progressBar.getBoundingClientRect();
+                const moveX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+                const percent = moveX / progressBar.offsetWidth;
+                
+                // Update visual progress without seeking on every move
+                if (progressFill) {
+                    progressFill.style.width = `${percent * 100}%`;
+                }
+                
+                // Update time display during drag
+                if (currentTimeDisplay && audioPlayer) {
+                    const newTime = percent * audioPlayer.duration;
+                    currentTimeDisplay.textContent = formatTime(newTime);
+                }
+            }
+            
+            // Handle mouse up to end dragging and perform final seek
+            function handleMouseUp(e) {
+                if (!isDragging) return;
+                
+                // Set dragging to false
+                isDragging = false;
+                progressBar.classList.remove('dragging'); // Remove class
+                
+                // Final seek position
+                const rect = progressBar.getBoundingClientRect();
+                const finalX = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+                const percent = finalX / progressBar.offsetWidth;
+                seekToPercent(percent);
+                
+                // Remove event listeners when done
+                document.removeEventListener('mousemove', handleMouseMove);
+                document.removeEventListener('mouseup', handleMouseUp);
+            }
+            
+            // Add event listeners for drag operations - these were missing
+            document.addEventListener('mousemove', handleMouseMove);
+            document.addEventListener('mouseup', handleMouseUp);
         });
     }
     
@@ -314,7 +379,22 @@ document.addEventListener('DOMContentLoaded', function() {
         
         const duration = audioPlayer.duration || 0;
         if (duration > 0) {
+            // Ensure percent is between 0 and 1
+            percent = Math.max(0, Math.min(1, percent));
             audioPlayer.currentTime = percent * duration;
+            
+            // Update the visual progress immediately
+            if (progressFill) {
+                progressFill.style.width = `${percent * 100}%`;
+            }
+            
+            // Update the current time display
+            if (currentTimeDisplay) {
+                currentTimeDisplay.textContent = formatTime(percent * duration);
+            }
+            
+            // Log the seek operation for debugging
+            console.log(`Seeking to ${percent * 100}% (${formatTime(percent * duration)})`);
         }
     }
     
