@@ -209,6 +209,19 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Update document title
         document.title = `${track.title} - ${track.artist} | PUMP`;
+
+        // Set current track ID for the like button
+        currentTrackId = track.id;
+        
+        // Check like status and update button
+        fetch(`/api/tracks/${track.id}/liked`)
+            .then(response => response.json())
+            .then(data => {
+                updateLikeButton(data.liked);
+            })
+            .catch(error => {
+                console.error('Error checking like status:', error);
+            });
     }
     
     function togglePlayPause() {
@@ -476,4 +489,63 @@ document.addEventListener('DOMContentLoaded', function() {
     // Call updateQueueDisplay whenever the queue changes or a track ends/starts
     // Add this to your existing code where you update the player
     document.addEventListener('queue-updated', updateQueueDisplay);
+
+    // Like button functionality
+    const likeButton = document.getElementById('like-track');
+    let currentTrackId = null;
+
+    if (likeButton) {
+        likeButton.addEventListener('click', function() {
+            if (currentTrackId) {
+                toggleLikeStatus(currentTrackId);
+            }
+        });
+    }
+
+    // Add these functions to handle like status
+
+    function toggleLikeStatus(trackId) {
+        fetch(`/api/tracks/${trackId}/like`, {
+            method: 'POST'
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                console.error('Error toggling like status:', data.error);
+                return;
+            }
+            
+            updateLikeButton(data.liked);
+            
+            // Update any other instances of this track in the UI
+            document.querySelectorAll(`.track-like-button[data-id="${trackId}"]`).forEach(btn => {
+                if (data.liked) {
+                    btn.classList.add('liked');
+                    btn.innerHTML = '♥';
+                    btn.title = 'Unlike';
+                } else {
+                    btn.classList.remove('liked');
+                    btn.innerHTML = '♡';
+                    btn.title = 'Like';
+                }
+            });
+        })
+        .catch(error => {
+            console.error('Error toggling like status:', error);
+        });
+    }
+
+    function updateLikeButton(isLiked) {
+        if (!likeButton) return;
+        
+        if (isLiked) {
+            likeButton.classList.add('liked');
+            likeButton.innerHTML = '♥';
+            likeButton.title = 'Unlike';
+        } else {
+            likeButton.classList.remove('liked');
+            likeButton.innerHTML = '♡';
+            likeButton.title = 'Like';
+        }
+    }
 });

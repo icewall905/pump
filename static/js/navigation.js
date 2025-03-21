@@ -5,6 +5,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const recentLink = document.getElementById('recent-link');
     const libraryLink = document.getElementById('library-link');
     const settingsLink = document.getElementById('settings-link');
+    const likedLink = document.getElementById('liked-link');
     
     // Set all links to navigate via full page reload
     if (homeLink) {
@@ -36,6 +37,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 link => link.classList.remove('active'));
             recentLink.classList.add('active');
             window.location.href = '/?view=recent';
+        });
+    }
+    
+    if (likedLink) {
+        likedLink.addEventListener('click', function(e) {
+            e.preventDefault();
+            document.querySelectorAll('.sidebar-nav a').forEach(
+                link => link.classList.remove('active'));
+            likedLink.classList.add('active');
+            window.location.href = '/?view=liked';
         });
     }
     

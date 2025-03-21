@@ -329,9 +329,10 @@ h1, h2 {
     justify-content: space-between;
 }
 
-.track-actions button {
-    flex: 1;
-    margin: 0 5px;
+.track-actions {
+    display: flex;
+    align-items: center;
+    margin-top: 5px;
 }
 
 /* Add these styles for the settings page */
@@ -2079,4 +2080,279 @@ p, span, div, label {
     padding: 15px;
     color: #aaa;
     font-style: italic;
+}
+
+/* Add these styles for like buttons */
+
+.like-button {
+    cursor: pointer;
+    transition: color 0.2s ease;
+    font-size: 18px;
+}
+
+.like-button:hover {
+    color: #ff4081;
+}
+
+.like-button.liked {
+    color: #ff4081;
+}
+
+.track-like-button {
+    background: none;
+    border: none;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 4px;
+    color: #aaa;
+    transition: color 0.2s ease;
+}
+
+.track-like-button:hover {
+    color: #ff4081;
+}
+
+.track-like-button.liked {
+    color: #ff4081;
+}
+
+/* Add these styles to your style.css file */
+
+.track-like-button {
+    background: none;
+    border: none;
+    font-size: 18px;
+    cursor: pointer;
+    color: #aaa;
+    transition: color 0.2s ease;
+    padding: 4px 8px;
+    margin-left: 4px;
+}
+
+.track-like-button:hover {
+    color: #ff4081;
+}
+
+.track-like-button.liked {
+    color: #ff4081;
+}
+
+.track-actions {
+    display: flex;
+    align-items: center;
+    margin-top: 8px;
+    gap: 6px;
+}
+
+.play-track, .create-station {
+    background: #333;
+    border: none;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.play-track:hover, .create-station:hover {
+    background: #555;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: #888;
+}
+
+/* Add these styles to make sure your results are visible */
+
+#search-results {
+    min-height: 200px;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: #888;
+    background-color: rgba(0,0,0,0.1);
+    border-radius: 8px;
+    margin-top: 20px;
+}
+
+.error {
+    color: #ff5555;
+    padding: 10px;
+    background-color: rgba(255,80,80,0.1);
+    border-radius: 4px;
+    margin: 10px 0;
+}
+
+/* Update modal styles to match the dark theme */
+.modal {
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background-color: rgba(0, 0, 0, 0.6);
+  display: none;
+}
+
+.modal-content {
+  background-color: #282828; /* Dark background to match theme */
+  margin: 15% auto;
+  padding: 20px;
+  border-radius: 8px;
+  width: 80%;
+  max-width: 500px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  color: #fff; /* Light text color to match theme */
+}
+
+.close {
+  color: #aaa;
+  float: right;
+  font-size: 28px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.close:hover {
+  color: #fff;
+}
+
+/* Form elements in the modal */
+.modal-content input[type="text"],
+.modal-content textarea {
+  background-color: #333;
+  border: 1px solid #444;
+  color: #fff;
+  padding: 8px;
+  width: 100%;
+  margin-top: 5px;
+  border-radius: 4px;
+}
+
+.modal-content label {
+  color: #ddd;
+}
+
+/* Add or update these styles for better grid display */
+
+.track-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 20px;
+    margin-top: 20px;
+}
+
+.liked-actions-container {
+    margin-bottom: 15px;
+    margin-top: 10px;
+}
+
+#play-all-liked-btn {
+    background-color: #1DB954;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    padding: 8px 15px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+#play-all-liked-btn:hover {
+    background-color: #1ed760;
+}
+
+/* Ensure playlist grid has proper spacing */
+#playlist .track-grid {
+    margin-top: 10px;
+}
+
+/* Hide duplicate elements */
+.save-liked-actions {
+    display: none;
+}
+
+/* Add or update these styles to fix the modal appearance */
+
+/* Modal styles with higher specificity */
+#save-playlist-modal.modal {
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  background-color: rgba(0, 0, 0, 0.6);
+  display: none;
+}
+
+#save-playlist-modal .modal-content {
+  background-color: #282828; /* Dark background to match theme */
+  margin: 15% auto;
+  padding: 20px;
+  border-radius: 8px;
+  width: 80%;
+  max-width: 500px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  color: #fff; /* Light text color */
+}
+
+#save-playlist-modal .close {
+  color: #aaa;
+  float: right;
+  font-size: 28px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+#save-playlist-modal .close:hover {
+  color: #fff;
+}
+
+#save-playlist-modal h2 {
+  color: #fff;
+  margin-bottom: 20px;
+}
+
+#save-playlist-modal .form-group {
+  margin-bottom: 15px;
+}
+
+#save-playlist-modal input[type="text"],
+#save-playlist-modal textarea {
+  width: 100%;
+  padding: 10px;
+  background-color: #333; /* Darker form fields */
+  border: 1px solid #444;
+  border-radius: 4px;
+  color: #fff;
+}
+
+#save-playlist-modal label {
+  display: block;
+  margin-bottom: 5px;
+  color: #ddd;
+}
+
+/* Ensure primary-button style applies inside modal */
+#save-playlist-modal .primary-button {
+  background-color: #1DB954;
+  color: white;
+  border: none;
+  padding: 10px 15px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  font-weight: bold;
+}
+
+#save-playlist-modal .primary-button:hover {
+  background-color: #1ed760;
 }

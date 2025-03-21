@@ -2645,6 +2645,107 @@ def get_next_scheduled_run():
     next_run = calculate_next_run_time()
     return jsonify({'next_run': next_run})
 
+def setup_liked_tracks_column():
+    """Ensure the database has the necessary liked column"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Check if the liked column exists
+        cursor.execute("PRAGMA table_info(audio_files)")
+        columns = [col[1] for col in cursor.fetchall()]
+        
+        if 'liked' not in columns:
+            logger.info("Adding 'liked' column to audio_files table")
+            cursor.execute("ALTER TABLE audio_files ADD COLUMN liked INTEGER DEFAULT 0")
+            conn.commit()
+            
+        conn.close()
+        logger.info("Database setup for liked tracks complete")
+    except Exception as e:
+        logger.error(f"Error setting up liked tracks column: {e}")
+
+# Then call it during app initialization (add this near where you create your app)
+with app.app_context():
+    setup_liked_tracks_column()
+
+# Add these routes for liked tracks functionality
+
+@app.route('/api/liked-tracks')
+def get_liked_tracks():
+    """Get all liked tracks"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, file_path, title, artist, album, duration, album_art_url
+            FROM audio_files
+            WHERE liked = 1
+            ORDER BY artist, album, title
+        """)
+        
+        tracks = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        return jsonify(tracks)
+    except Exception as e:
+        logger.error(f"Error getting liked tracks: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/tracks/<int:track_id>/like', methods=['POST'])
+def like_track(track_id):
+    """Toggle the liked status of a track"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Get current liked status
+        cursor.execute("SELECT liked FROM audio_files WHERE id = ?", (track_id,))
+        result = cursor.fetchone()
+        
+        if not result:
+            conn.close()
+            return jsonify({"error": "Track not found"}), 404
+            
+        current_status = result[0]
+        new_status = 0 if current_status == 1 else 1
+        
+        # Update liked status
+        cursor.execute("UPDATE audio_files SET liked = ? WHERE id = ?", (new_status, track_id))
+        conn.commit()
+        
+        conn.close()
+        
+        return jsonify({
+            "track_id": track_id,
+            "liked": new_status == 1
+        })
+    except Exception as e:
+        logger.error(f"Error toggling like for track {track_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/tracks/<int:track_id>/liked')
+def is_track_liked(track_id):
+    """Check if a track is liked"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT liked FROM audio_files WHERE id = ?", (track_id,))
+        result = cursor.fetchone()
+        
+        conn.close()
+        
+        if not result:
+            return jsonify({"liked": False}), 404
+            
+        return jsonify({"liked": result[0] == 1})
+    except Exception as e:
+        logger.error(f"Error checking liked status for track {track_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
 # Updated run_server function that initializes scheduler and runs startup actions
 def run_server():
     """Run the Flask server"""
@@ -2661,6 +2762,7 @@ def run_server():
         run_simple(hostname=HOST, port=PORT, application=app, use_reloader=DEBUG, use_debugger=DEBUG)
     except Exception as e:
         logger.error(f"Error running server: {e}")
+
 
 
 if __name__ == '__main__':
