@@ -16,6 +16,7 @@ document.addEventListener('DOMContentLoaded', function() {
         
         let lastMetadataStatus = null;
         let lastAnalysisStatus = null;
+        let lastQuickScanStatus = null;
         let pollInterval = 3000; // Start with 3 seconds between polls
         let consecutiveErrors = 0;
         let timer = null;
@@ -24,17 +25,19 @@ document.addEventListener('DOMContentLoaded', function() {
             // Use Promise.all to make parallel requests for better performance
             Promise.all([
                 fetch('/api/analysis/status').then(r => r.json()),
-                fetch('/api/metadata-update/status').then(r => r.json())
+                fetch('/api/metadata-update/status').then(r => r.json()),
+                fetch('/api/quick-scan/status').then(r => r.json())
             ])
-            .then(([analysisData, metadataData]) => {
+            .then(([analysisData, metadataData, quickScanData]) => {
                 // Reset error counter on success
                 consecutiveErrors = 0;
                 
                 // Update DOM only if status has changed to reduce repaints
                 const analysisChanged = JSON.stringify(analysisData) !== JSON.stringify(lastAnalysisStatus);
                 const metadataChanged = JSON.stringify(metadataData) !== JSON.stringify(lastMetadataStatus);
+                const quickScanChanged = JSON.stringify(quickScanData) !== JSON.stringify(lastQuickScanStatus);
                 
-                if (!analysisChanged && !metadataChanged) {
+                if (!analysisChanged && !metadataChanged && !quickScanChanged) {
                     // No changes, skip DOM update but continue polling
                     scheduleNextPoll();
                     return;
@@ -43,6 +46,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Save the current status for future comparison
                 lastAnalysisStatus = analysisData;
                 lastMetadataStatus = metadataData;
+                lastQuickScanStatus = quickScanData;
                 
                 // First check if analysis is running (takes priority)
                 if (analysisData.running) {
@@ -55,6 +59,23 @@ document.addEventListener('DOMContentLoaded', function() {
                         '<div class="status-text">Analysis running (' + 
                         analysisData.percent_complete + '%)</div>';
                 } 
+                // Then check if quick scan is running
+                else if (quickScanData.running) {
+                    statusIndicator.classList.add('active');
+                    
+                    // Build a concise status message
+                    let statusText = 'Quick scanning files (' + quickScanData.percent_complete + '%)';
+                    
+                    // Create a simpler DOM update
+                    const statusHTML = 
+                        '<div class="status-icon pulse"></div>' +
+                        '<div class="status-text">' + statusText + '</div>' +
+                        '<div class="progress-bar">' +
+                        '<div class="progress-fill" style="width: ' + 
+                        quickScanData.percent_complete + '%"></div></div>';
+                    
+                    statusIndicator.innerHTML = statusHTML;
+                }
                 // Then check if metadata update is running
                 else if (metadataData.running) {
                     statusIndicator.classList.add('active');

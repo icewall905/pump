@@ -186,7 +186,6 @@ except Exception as e:
     logger.error(f"Error initializing metadata service: {e}")
     metadata_service = None
 
-# Add these global variables near the top of the file
 # Analysis status tracking
 ANALYSIS_STATUS = {
     'running': False,
@@ -211,7 +210,6 @@ analysis_progress = {
     'last_run_completed': False
 }
 
-# Add this near the top where the other global variables are defined
 METADATA_UPDATE_STATUS = {
     'running': False,
     'start_time': None,
@@ -219,6 +217,20 @@ METADATA_UPDATE_STATUS = {
     'processed_tracks': 0,
     'updated_tracks': 0,
     'current_track': '',
+    'percent_complete': 0,
+    'last_updated': None,
+    'error': None
+}
+
+
+# Quick Scan status tracking
+QUICK_SCAN_STATUS = {
+    'running': False,
+    'start_time': None,
+    'files_processed': 0,
+    'tracks_added': 0,
+    'total_files': 0,
+    'current_file': '',
     'percent_complete': 0,
     'last_updated': None,
     'error': None
@@ -1675,22 +1687,41 @@ def download_logs():
         logger.error(f"Error downloading logs: {e}")
         return jsonify({"error": "Failed to download logs"}), 500
 
+
 @app.route('/scan_library', methods=['POST'])
-def scan_library():
-    global analyzer
-    
-    data = request.get_json()
-    directory = data.get('directory')
-    recursive = data.get('recursive', True)
-    
-    if not directory:
-        return jsonify({'success': False, 'message': 'No directory specified'})
-    
+def scan_library_endpoint():
+    """Start a quick scan of the music library without analyzing audio features"""
     try:
-        result = analyzer.scan_library(directory, recursive=recursive)
-        return jsonify({'success': True, **result})
+        data = request.get_json()
+        directory = data.get('directory')
+        recursive = data.get('recursive', True)
+        
+        if not directory:
+            return jsonify({"success": False, "error": "No directory specified"}), 400
+            
+        # Don't start if already running
+        global QUICK_SCAN_STATUS
+        if QUICK_SCAN_STATUS['running']:
+            return jsonify({
+                "success": False, 
+                "error": "A scan is already in progress"
+            })
+            
+        # Start quick scan in a background thread
+        thread = threading.Thread(
+            target=run_quick_scan,
+            args=(directory, recursive)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        logger.info(f"Started quick scan for directory: {directory} (recursive={recursive})")
+        
+        return jsonify({"success": True})
+        
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
+        logger.error(f"Error starting quick scan: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/start_background_analysis', methods=['POST'])
 def start_background_analysis():
@@ -2189,6 +2220,80 @@ def get_library_stats():
             'message': str(e)
         })
 
+
+def run_quick_scan(directory, recursive=True):
+    """Run a quick library scan in a background thread"""
+    global analyzer, QUICK_SCAN_STATUS
+    
+    try:
+        # Reset status
+        QUICK_SCAN_STATUS.update({
+            'running': True,
+            'start_time': datetime.now(),
+            'files_processed': 0,
+            'tracks_added': 0,
+            'total_files': 0,
+            'current_file': '',
+            'percent_complete': 0,
+            'last_updated': datetime.now(),
+            'error': None
+        })
+        
+        # Count total files first to provide accurate progress
+        total_files = 0
+        extensions = ['.mp3', '.wav', '.flac', '.ogg']
+        
+        if recursive:
+            for root, dirs, files in os.walk(directory):
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in extensions):
+                        total_files += 1
+        else:
+            total_files = len([f for f in os.listdir(directory)
+                              if os.path.isfile(os.path.join(directory, f)) and 
+                              any(f.lower().endswith(ext) for ext in extensions)])
+                              
+        QUICK_SCAN_STATUS['total_files'] = total_files
+        
+        # Now run the actual scan
+        result = analyzer.scan_library(directory, recursive)
+        
+        # Update final status
+        QUICK_SCAN_STATUS.update({
+            'running': False,
+            'files_processed': result.get('files_processed', 0),
+            'tracks_added': result.get('tracks_added', 0),
+            'percent_complete': 100,
+            'last_updated': datetime.now()
+        })
+        
+        logger.info(f"Quick scan complete: processed {result.get('files_processed', 0)} files, added {result.get('tracks_added', 0)} tracks")
+        
+    except Exception as e:
+        logger.error(f"Error during quick scan: {e}")
+        QUICK_SCAN_STATUS.update({
+            'running': False,
+            'error': str(e),
+            'last_updated': datetime.now()
+        })
+
+@app.route('/api/quick-scan/status')
+def quick_scan_status():
+    """Get the current status of the quick scan process"""
+    global QUICK_SCAN_STATUS
+    
+    # Calculate time elapsed if running
+    if QUICK_SCAN_STATUS['running'] and QUICK_SCAN_STATUS['start_time']:
+        elapsed = datetime.now() - QUICK_SCAN_STATUS['start_time']
+        elapsed_seconds = int(elapsed.total_seconds())
+    else:
+        elapsed_seconds = 0
+        
+    return jsonify({
+        **QUICK_SCAN_STATUS,
+        'elapsed_seconds': elapsed_seconds
+    })
+
 def run_server():
     """Run the Flask server"""
     logger.info(f"Starting server on {HOST}:{PORT} (debug={DEBUG})")
@@ -2201,3 +2306,4 @@ def run_server():
 
 if __name__ == '__main__':
     run_server()
+

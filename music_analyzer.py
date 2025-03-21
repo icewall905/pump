@@ -697,93 +697,72 @@ class MusicAnalyzer:
                      extensions: List[str] = ['.mp3', '.wav', '.flac', '.ogg'], 
                      batch_size: int = 100):
         """
-        Quickly scan a directory and add files to the library without full audio analysis.
-        Only reads basic metadata from files.
-        
-        Args:
-            directory: Directory path containing audio files
-            recursive: Whether to scan subdirectories
-            extensions: List of file extensions to process
-            batch_size: Number of files to check against DB at once
-                
-        Returns:
-            Dict with statistics about processed files
+        Quickly scan a directory and add tracks to the database without analyzing audio features
         """
-        files_processed = 0
-        tracks_added = 0
+        if not os.path.exists(directory):
+            return {'success': False, 'error': f"Directory {directory} does not exist"}
         
-        # First, collect all valid audio files (same as your analyze_directory method)
-        audio_files = []
-        
-        if os.path.exists(directory):
-            if recursive:
-                for root, _, files in os.walk(directory):
-                    for file in files:
-                        if any(file.lower().endswith(ext) for ext in extensions):
-                            file_path = os.path.join(root, file)
-                            audio_files.append(file_path)
-            else:
-                for file in os.listdir(directory):
-                    file_path = os.path.join(directory, file)
-                    if os.path.isfile(file_path) and any(file.lower().endswith(ext) for ext in extensions):
-                        audio_files.append(file_path)
-        else:
-            print(f"WARNING: Folder '{directory}' does not exist. Skipping.")
-            return {'files_processed': 0, 'tracks_added': 0}
-        
-        if not audio_files:
-            print(f"No audio files found in '{directory}'. Skipping.")
-            return {'files_processed': 0, 'tracks_added': 0}
-        
-        print(f"Found {len(audio_files)} audio files in '{directory}'")
-        
-        # Process files in batches to avoid too many DB connections
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
+        # Get all audio files in the directory
+        audio_files = []
+        if recursive:
+            for root, dirs, files in os.walk(directory):
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in extensions):
+                        audio_files.append(os.path.join(root, file))
+        else:
+            audio_files = [os.path.join(directory, f) for f in os.listdir(directory)
+                          if os.path.isfile(os.path.join(directory, f)) and 
+                          any(f.lower().endswith(ext) for ext in extensions)]
+        
+        # Track statistics
+        files_processed = 0
+        tracks_added = 0
+        
+        # Process files in batches to improve performance
         for i in range(0, len(audio_files), batch_size):
             batch = audio_files[i:i+batch_size]
             
-            # Check which files in this batch already exist in the DB
-            placeholders = ','.join(['?'] * len(batch))
-            cursor.execute(f"SELECT file_path FROM audio_files WHERE file_path IN ({placeholders})", batch)
-            existing_files = {row[0] for row in cursor.fetchall()}
-            
-            # Process only new files
             for file_path in batch:
-                files_processed += 1
-                
-                if file_path in existing_files:
-                    print(f"Skipping {file_path}, it already exists in the database.")
-                    continue
-                
-                print(f"Indexing {file_path}...")
                 try:
-                    # Only extract metadata from the file (lightweight operation)
-                    metadata = self.metadata_service.get_metadata_from_file(file_path)
+                    # Check if file already exists in database
+                    cursor.execute("SELECT id FROM audio_files WHERE file_path = ?", (file_path,))
+                    existing = cursor.fetchone()
                     
-                    # Save basic metadata to DB with 'pending' analysis status
+                    if existing:
+                        # Skip this file, it's already in the database
+                        print(f"Skipping {file_path}, it already exists in the database.")
+                        files_processed += 1
+                        continue
+                    
+                    # Extract metadata from file
+                    metadata = self._extract_metadata(None, file_path)
+                    
+                    # Insert into database
                     cursor.execute('''
-                        INSERT OR IGNORE INTO audio_files 
-                        (file_path, title, artist, album, metadata_source, analysis_status) 
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        INSERT INTO audio_files 
+                        (file_path, title, artist, album, duration, date_added) 
+                        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ''', (
                         file_path,
-                        metadata.get("title", ""),
-                        metadata.get("artist", ""),
-                        metadata.get("album", ""),
-                        "file",  # Source is just the file metadata
-                        "pending"  # Mark as pending full analysis
+                        metadata.get('title', os.path.basename(file_path)),
+                        metadata.get('artist', 'Unknown Artist'),
+                        metadata.get('album', 'Unknown Album'),
+                        metadata.get('duration', 0)
                     ))
                     
-                    if cursor.rowcount > 0:
-                        tracks_added += 1
-                        
+                    files_processed += 1
+                    tracks_added += 1
+                    
                 except Exception as e:
-                    print(f"Error scanning {file_path}: {e}")
+                    print(f"Error processing {file_path}: {e}")
+                    # Continue with next file
+            
+            # Commit batch
+            conn.commit()
         
-        # Commit all changes and close the connection
-        conn.commit()
         conn.close()
         
         print(f"Processed {files_processed} files, added {tracks_added} new tracks.")

@@ -236,7 +236,8 @@ function startFullAnalysis() {
     });
 }
 
-// Start quick scan
+// Replace startQuickScan function
+
 function startQuickScan() {
     const quickScanBtn = document.getElementById('quick-scan-btn');
     const path = document.getElementById('music-directory').value;
@@ -249,7 +250,7 @@ function startQuickScan() {
     
     // Show loading state
     quickScanBtn.disabled = true;
-    quickScanBtn.textContent = 'Scanning...';
+    quickScanBtn.textContent = 'Starting Scan...';
     
     // First save the path
     fetch('/api/settings/save_music_path', {
@@ -265,7 +266,7 @@ function startQuickScan() {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            // Now start the quick scan
+            // Now start the quick scan in background
             return fetch('/scan_library', {
                 method: 'POST',
                 headers: {
@@ -283,20 +284,91 @@ function startQuickScan() {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            showMessage(`Scan complete! Found ${data.files_processed} files, added ${data.tracks_added} tracks.`, 'success');
+            showMessage('Quick scan started in background', 'success');
+            
+            // Start polling for updates
+            startPollingQuickScanStatus();
+            
+            // Also update the global status indicator
+            if (window.checkGlobalAnalysisStatus) {
+                window.checkGlobalAnalysisStatus();
+            }
         } else {
             showMessage(`Error: ${data.error || 'Unknown error'}`, 'error');
+            quickScanBtn.disabled = false;
+            quickScanBtn.textContent = 'Quick Scan';
         }
     })
     .catch(error => {
         console.error('Error:', error);
-        showMessage(`Failed to scan library: ${error.message}`, 'error');
-    })
-    .finally(() => {
-        // Reset button
+        showMessage(`Failed to start scan: ${error.message}`, 'error');
         quickScanBtn.disabled = false;
         quickScanBtn.textContent = 'Quick Scan';
     });
+}
+
+// Add the polling function for quick scan status
+function startPollingQuickScanStatus() {
+    const statusContainer = document.getElementById('analysis-status');
+    const quickScanBtn = document.getElementById('quick-scan-btn');
+    
+    function checkStatus() {
+        fetch('/api/quick-scan/status')
+            .then(response => response.json())
+            .then(status => {
+                if (status.running) {
+                    // Update status display
+                    let statusHtml = `
+                        <div class="status-progress">
+                            <p>Quick scanning files...</p>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${status.percent_complete}%"></div>
+                            </div>
+                            <p>${status.files_processed} files processed</p>
+                        </div>
+                    `;
+                    
+                    statusContainer.innerHTML = statusHtml;
+                    
+                    // Keep button disabled
+                    quickScanBtn.disabled = true;
+                    quickScanBtn.textContent = 'Scanning...';
+                    
+                    // Continue polling
+                    setTimeout(checkStatus, 1000);
+                } else if (status.error) {
+                    // Show error
+                    statusContainer.innerHTML = `
+                        <div class="status-error">
+                            Error: ${status.error}
+                        </div>
+                    `;
+                    
+                    // Re-enable button
+                    quickScanBtn.disabled = false;
+                    quickScanBtn.textContent = 'Quick Scan';
+                } else if (status.files_processed > 0) {
+                    // Show success
+                    statusContainer.innerHTML = `
+                        <div class="status-success">
+                            Scan complete! Processed ${status.files_processed} files, added ${status.tracks_added} new tracks.
+                        </div>
+                    `;
+                    
+                    // Re-enable button
+                    quickScanBtn.disabled = false;
+                    quickScanBtn.textContent = 'Quick Scan';
+                }
+            })
+            .catch(error => {
+                console.error('Error checking quick scan status:', error);
+                // Continue polling even on error
+                setTimeout(checkStatus, 3000);
+            });
+    }
+    
+    // Start checking immediately
+    checkStatus();
 }
 
 // Modify the updateMetadata function to trigger the global status indicator
