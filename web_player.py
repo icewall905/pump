@@ -13,7 +13,7 @@ import pathlib
 from metadata_service import MetadataService
 from lastfm_service import LastFMService
 from spotify_service import SpotifyService  # Add this import at the top
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import redirect, url_for
 import time  # For sleep between API calls
 import threading  # Add this import
@@ -88,6 +88,7 @@ default_config = {
     }
 }
 
+
 # Load configuration
 config = configparser.ConfigParser()
 config_file = 'pump.conf'
@@ -126,6 +127,14 @@ if not config.has_section('cache'):
     config.set('cache', 'max_cache_size_mb', '500')  # 500MB default cache size
     config_updated = True
 
+# Add scheduler configuration section if needed
+if not config.has_section('scheduler'):
+    config.add_section('scheduler')
+    config.set('scheduler', 'startup_action', 'nothing')
+    config.set('scheduler', 'schedule_frequency', 'never')
+    config.set('scheduler', 'last_run', '')
+    config_updated = True
+
 # Write config file only if it was changed or didn't exist
 if config_updated or not os.path.exists(config_file):
     logger.info(f"Writing updated configuration to {config_file}")
@@ -162,6 +171,11 @@ except Exception as e:
 # Get cache configuration
 CACHE_DIR = config.get('cache', 'image_cache_dir', fallback='album_art_cache')
 MAX_CACHE_SIZE_MB = config.getint('cache', 'max_cache_size_mb', fallback=500)
+
+
+# Scheduler variables
+SCHEDULER_TIMER = None
+SCHEDULER_RUNNING = False
 
 # Create cache directory if it doesn't exist
 if not os.path.exists(CACHE_DIR):
@@ -546,6 +560,10 @@ def settings():
             # Get default playlist size
             default_playlist_size = request.form.get('default_playlist_size', '10')
             
+            # Get scheduler settings
+            startup_action = request.form.get('startup_action', 'nothing')
+            schedule_frequency = request.form.get('schedule_frequency', 'never')
+            
             # Make sure sections exist
             if not config.has_section('music'):
                 config.add_section('music')
@@ -555,6 +573,8 @@ def settings():
                 config.add_section('spotify')
             if not config.has_section('app'):
                 config.add_section('app')
+            if not config.has_section('scheduler'):
+                config.add_section('scheduler')
             
             # Update configuration
             config.set('music', 'folder_path', music_folder_path)
@@ -568,9 +588,20 @@ def settings():
             
             config.set('app', 'default_playlist_size', default_playlist_size)
             
+            # Update scheduler configuration
+            config.set('scheduler', 'startup_action', startup_action)
+            config.set('scheduler', 'schedule_frequency', schedule_frequency)
+            
+            # If schedule is active, update the last run time to now
+            if schedule_frequency != 'never':
+                config.set('scheduler', 'last_run', datetime.now().isoformat())
+            
             # Save changes
             with open(config_file, 'w') as f:
                 config.write(f)
+            
+            # Update the scheduler
+            update_scheduler()
             
             logger.info("Settings saved successfully")
             return redirect(url_for('settings', message='Settings saved successfully'))
@@ -591,6 +622,17 @@ def settings():
     
     default_playlist_size = config.get('app', 'default_playlist_size', fallback='10')
     
+    # Get scheduler settings
+    startup_action = config.get('scheduler', 'startup_action', fallback='nothing')
+    schedule_frequency = config.get('scheduler', 'schedule_frequency', fallback='never')
+    
+    # Calculate next scheduled run time for display
+    next_run_time = calculate_next_run_time()
+    
+    # Get message and error from query parameters
+    message = request.args.get('message', '')
+    error = request.args.get('error', '')
+    
     return render_template('settings.html',
         music_folder_path=music_folder_path,
         recursive=recursive,
@@ -599,6 +641,11 @@ def settings():
         spotify_client_id=spotify_client_id,
         spotify_client_secret=spotify_client_secret,
         default_playlist_size=default_playlist_size,
+        startup_action=startup_action,
+        schedule_frequency=schedule_frequency,
+        next_run_time=next_run_time,
+        message=message,
+        error=error
     )
 
 @app.route('/debug/metadata')
@@ -2294,15 +2341,327 @@ def quick_scan_status():
         'elapsed_seconds': elapsed_seconds
     })
 
+
+def update_scheduler():
+    """Update the scheduler based on current configuration"""
+    global SCHEDULER_TIMER, SCHEDULER_RUNNING
+    
+    # Cancel any existing timer
+    if SCHEDULER_TIMER:
+        SCHEDULER_TIMER.cancel()
+        SCHEDULER_TIMER = None
+    
+    # Get current settings
+    frequency = config.get('scheduler', 'schedule_frequency', fallback='never')
+    
+    # If schedule is disabled, just return
+    if frequency == 'never':
+        logger.info("Scheduler disabled")
+        return
+    
+    # Calculate interval in seconds
+    interval = get_interval_seconds(frequency)
+    
+    # Schedule the next run
+    SCHEDULER_TIMER = threading.Timer(interval, run_scheduled_tasks)
+    SCHEDULER_TIMER.daemon = True
+    SCHEDULER_TIMER.start()
+    
+    logger.info(f"Scheduler set to run every {frequency}")
+
+def get_interval_seconds(frequency):
+    """Convert frequency string to seconds"""
+    if frequency == '15min':
+        return 15 * 60
+    elif frequency == '1hour':
+        return 60 * 60
+    elif frequency == '6hours':
+        return 6 * 60 * 60
+    elif frequency == '12hours':
+        return 12 * 60 * 60
+    elif frequency == '24hours':
+        return 24 * 60 * 60
+    else:
+        return 24 * 60 * 60  # Default to 24 hours
+
+def calculate_next_run_time():
+    """Calculate when the next scheduled run will happen"""
+    frequency = config.get('scheduler', 'schedule_frequency', fallback='never')
+    
+    if frequency == 'never':
+        return "Not scheduled"
+    
+    # Get last run time
+    last_run_str = config.get('scheduler', 'last_run', fallback=None)
+    
+    if not last_run_str:
+        # If never run, schedule from now
+        last_run = datetime.now()
+    else:
+        try:
+            last_run = datetime.fromisoformat(last_run_str)
+        except (ValueError, TypeError):
+            last_run = datetime.now()
+    
+    # Calculate next run time
+    interval = get_interval_seconds(frequency)
+    next_run = last_run + timedelta(seconds=interval)
+    
+    # Format for display
+    now = datetime.now()
+    if next_run < now:
+        # If we're past due, reschedule from now
+        next_run = now + timedelta(seconds=interval)
+    
+    # Format the time
+    if (next_run - now).total_seconds() < 60:
+        return "Less than a minute"
+    elif (next_run - now).total_seconds() < 3600:
+        minutes = int((next_run - now).total_seconds() / 60)
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    else:
+        return next_run.strftime("%Y-%m-%d %H:%M")
+
+def run_scheduled_tasks():
+    """Run the configured tasks on schedule"""
+    global SCHEDULER_RUNNING
+    
+    if SCHEDULER_RUNNING:
+        logger.warning("Scheduled tasks already running, skipping this run")
+        # Reschedule for next time
+        update_scheduler()
+        return
+    
+    try:
+        SCHEDULER_RUNNING = True
+        logger.info("Starting scheduled tasks")
+        
+        # Get the action to perform
+        action = config.get('scheduler', 'startup_action', fallback='nothing')
+        
+        # Update last run time
+        config.set('scheduler', 'last_run', datetime.now().isoformat())
+        with open(config_file, 'w') as f:
+            config.write(f)
+        
+        # Run the appropriate action(s)
+        if action == 'nothing':
+            logger.info("No action configured for scheduler")
+        elif action == 'quick_scan':
+            run_quick_scan_task()
+        elif action == 'quick_scan_metadata':
+            run_quick_scan_task()
+            run_metadata_update_task()
+        elif action == 'full_analysis':
+            run_quick_scan_task()
+            run_metadata_update_task()
+            run_full_analysis_task()
+        
+        logger.info("Scheduled tasks completed")
+    except Exception as e:
+        logger.error(f"Error running scheduled tasks: {e}")
+    finally:
+        SCHEDULER_RUNNING = False
+        # Reschedule for next time
+        update_scheduler()
+
+def run_quick_scan_task():
+    """Run a quick scan task for scheduler"""
+    global QUICK_SCAN_STATUS
+    
+    folder_path = config.get('music', 'folder_path', fallback='')
+    recursive = config.getboolean('music', 'recursive', fallback=True)
+    
+    if not folder_path:
+        logger.warning("No music folder configured, cannot run quick scan")
+        return
+    
+    logger.info(f"Running scheduled quick scan on {folder_path}")
+    
+    # Update status to trigger UI update
+    QUICK_SCAN_STATUS.update({
+        'running': True,
+        'start_time': datetime.now(),
+        'files_processed': 0,
+        'tracks_added': 0,
+        'total_files': 0,
+        'current_file': '',
+        'percent_complete': 0,
+        'last_updated': datetime.now(),
+        'error': None
+    })
+    
+    # Run the quick scan
+    try:
+        result = run_quick_scan(folder_path, recursive)
+        logger.info("Scheduled quick scan completed")
+        return result
+    except Exception as e:
+        logger.error(f"Error during scheduled quick scan: {e}")
+        QUICK_SCAN_STATUS.update({
+            'running': False,
+            'error': str(e),
+            'last_updated': datetime.now()
+        })
+
+def run_metadata_update_task():
+    """Run metadata update task for scheduler"""
+    global METADATA_UPDATE_STATUS
+    
+    logger.info("Running scheduled metadata update")
+    
+    # Update status to trigger UI update
+    METADATA_UPDATE_STATUS.update({
+        'running': True,
+        'start_time': datetime.now(),
+        'total_tracks': 0,
+        'processed_tracks': 0,
+        'updated_tracks': 0,
+        'current_track': '',
+        'percent_complete': 0,
+        'last_updated': datetime.now(),
+        'error': None
+    })
+    
+    # Use existing metadata update function
+    try:
+        # Skip existing metadata to avoid unnecessary updates
+        metadata_service.update_all_metadata(status_tracker=METADATA_UPDATE_STATUS, skip_existing=True)
+        logger.info("Scheduled metadata update completed")
+    except Exception as e:
+        logger.error(f"Error during scheduled metadata update: {e}")
+        METADATA_UPDATE_STATUS.update({
+            'running': False,
+            'error': str(e),
+            'last_updated': datetime.now()
+        })
+
+def run_full_analysis_task():
+    """Run full analysis task for scheduler"""
+    global ANALYSIS_STATUS, analysis_progress
+    
+    folder_path = config.get('music', 'folder_path', fallback='')
+    recursive = config.getboolean('music', 'recursive', fallback=True)
+    
+    if not folder_path:
+        logger.warning("No music folder configured, cannot run analysis")
+        return
+    
+    logger.info(f"Running scheduled full analysis on {folder_path}")
+    
+    # Update both status trackers to ensure UI shows progress
+    ANALYSIS_STATUS.update({
+        'running': True,
+        'start_time': datetime.now(),
+        'files_processed': 0,
+        'total_files': 0,
+        'current_file': '',
+        'percent_complete': 0,
+        'last_updated': datetime.now(),
+        'error': None,
+        'scan_complete': False
+    })
+    
+    # Also update the analysis_progress tracker used by the UI
+    analysis_progress.update({
+        'is_running': True,
+        'total_files': 0,
+        'current_file_index': 0,
+        'analyzed_count': 0,
+        'failed_count': 0,
+        'pending_count': 0,
+        'last_run_completed': False,
+        'stop_requested': False
+    })
+    
+    # Run the analysis
+    try:
+        run_analysis(folder_path, recursive)
+        logger.info("Scheduled full analysis started")
+    except Exception as e:
+        logger.error(f"Error during scheduled full analysis: {e}")
+        ANALYSIS_STATUS.update({
+            'running': False,
+            'error': str(e),
+            'last_updated': datetime.now()
+        })
+        analysis_progress['is_running'] = False
+
+def run_startup_actions():
+    """Run configured startup actions when the app starts"""
+    action = config.get('scheduler', 'startup_action', fallback='nothing')
+    
+    if action == 'nothing':
+        logger.info("No startup actions configured")
+        return
+    
+    logger.info(f"Running startup action: {action}")
+    
+    # Add a short delay to ensure UI has loaded before starting tasks
+    def run_actions():
+        try:
+            # Give UI time to initialize
+            time.sleep(2)
+            
+            if action == 'quick_scan':
+                logger.info("Starting quick scan as startup action")
+                run_quick_scan_task()
+            elif action == 'quick_scan_metadata':
+                logger.info("Starting quick scan and metadata update as startup action")
+                run_quick_scan_task()
+                # Only start metadata update after quick scan completes
+                while QUICK_SCAN_STATUS['running']:
+                    time.sleep(1)
+                run_metadata_update_task()
+            elif action == 'full_analysis':
+                logger.info("Starting full analysis workflow as startup action")
+                run_quick_scan_task()
+                # Wait for quick scan to complete
+                while QUICK_SCAN_STATUS['running']:
+                    time.sleep(1)
+                
+                # Start both metadata update and analysis concurrently
+                logger.info("Starting both metadata update and analysis concurrently")
+                metadata_thread = threading.Thread(target=run_metadata_update_task)
+                metadata_thread.daemon = True
+                metadata_thread.start()
+                
+                # Start analysis without waiting for metadata to complete
+                time.sleep(1)  # Small delay to let metadata initialize
+                run_full_analysis_task()
+            
+            logger.info("Startup actions initiated")
+        except Exception as e:
+            logger.error(f"Error running startup actions: {e}")
+    
+    thread = threading.Thread(target=run_actions)
+    thread.daemon = True
+    thread.start()
+
+# Add this API endpoint for next run time
+@app.route('/api/next-scheduled-run')
+def get_next_scheduled_run():
+    """Get the next scheduled run time"""
+    next_run = calculate_next_run_time()
+    return jsonify({'next_run': next_run})
+
+# Updated run_server function that initializes scheduler and runs startup actions
 def run_server():
     """Run the Flask server"""
     logger.info(f"Starting server on {HOST}:{PORT} (debug={DEBUG})")
+    
+    # Initialize the scheduler
+    update_scheduler()
+    
+    # Run startup actions
+    run_startup_actions()
+    
     try:
         # Use Werkzeug's run_simple for better error handling
         run_simple(hostname=HOST, port=PORT, application=app, use_reloader=DEBUG, use_debugger=DEBUG)
     except Exception as e:
         logger.error(f"Error running server: {e}")
-        print(f"Error running server: {e}")
+
 
 if __name__ == '__main__':
     run_server()

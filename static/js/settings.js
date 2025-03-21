@@ -17,6 +17,14 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Save current page to session storage
     sessionStorage.setItem('currentPage', 'settings');
+    
+    // Setup scheduled task display
+    const scheduleFrequency = document.getElementById('schedule_frequency');
+    if (scheduleFrequency) {
+        scheduleFrequency.addEventListener('change', updateNextRunDisplay);
+        // Initial display
+        updateNextRunDisplay();
+    }
 });
 
 // Initialize library management functions
@@ -830,3 +838,33 @@ document.getElementById('test-api-connections').addEventListener('click', functi
             this.textContent = 'Test API Connections';
         });
 });
+
+// Update the next scheduled run display
+function updateNextRunDisplay() {
+    const scheduleFrequency = document.getElementById('schedule_frequency');
+    const nextRunElement = document.getElementById('next-run-time');
+    const nextRunContainer = document.getElementById('next-scheduled-run-info');
+    
+    if (scheduleFrequency && nextRunElement && nextRunContainer) {
+        const frequency = scheduleFrequency.value;
+        
+        if (frequency === 'never') {
+            nextRunElement.textContent = 'Not scheduled';
+            nextRunContainer.style.display = 'none';
+        } else {
+            nextRunContainer.style.display = 'block';
+            
+            // Request updated next run time from server
+            fetch('/api/next-scheduled-run')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.next_run) {
+                        nextRunElement.textContent = data.next_run;
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching next run time:', error);
+                });
+        }
+    }
+}

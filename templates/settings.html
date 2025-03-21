@@ -90,6 +90,45 @@
             </div>
         </div>
         
+        <!-- Scheduling and Automation Section -->
+        <div class="settings-section">
+            <h2>Scheduling and Automation</h2>
+            <p>Configure automatic tasks and scheduling</p>
+            
+            <div class="settings-group">
+                <div class="form-group">
+                    <label for="startup_action">On Startup:</label>
+                    <select id="startup_action" name="startup_action" class="settings-select">
+                        <option value="nothing" {% if startup_action == 'nothing' %}selected{% endif %}>Do Nothing</option>
+                        <option value="quick_scan" {% if startup_action == 'quick_scan' %}selected{% endif %}>Quick Scan</option>
+                        <option value="quick_scan_metadata" {% if startup_action == 'quick_scan_metadata' %}selected{% endif %}>Quick Scan + Metadata</option>
+                        <option value="full_analysis" {% if startup_action == 'full_analysis' %}selected{% endif %}>Quick Scan + Metadata + Full Analysis</option>
+                    </select>
+                    <p class="help-text">Select which tasks to run automatically when PUMP starts</p>
+                </div>
+                
+                <div class="form-group">
+                    <label for="schedule_frequency">Run Tasks:</label>
+                    <select id="schedule_frequency" name="schedule_frequency" class="settings-select">
+                        <option value="never" {% if schedule_frequency == 'never' %}selected{% endif %}>Never</option>
+                        <option value="15min" {% if schedule_frequency == '15min' %}selected{% endif %}>Every 15 minutes</option>
+                        <option value="1hour" {% if schedule_frequency == '1hour' %}selected{% endif %}>Every hour</option>
+                        <option value="6hours" {% if schedule_frequency == '6hours' %}selected{% endif %}>Every 6 hours</option>
+                        <option value="12hours" {% if schedule_frequency == '12hours' %}selected{% endif %}>Every 12 hours</option>
+                        <option value="24hours" {% if schedule_frequency == '24hours' %}selected{% endif %}>Every 24 hours</option>
+                    </select>
+                    <p class="help-text">Schedule how often to run the selected startup tasks</p>
+                </div>
+                
+                <div class="form-group" id="next-scheduled-run-info">
+                    <div class="schedule-status">
+                        <span class="schedule-label">Next scheduled run:</span>
+                        <span class="schedule-value" id="next-run-time">Not scheduled</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
         <!-- API Settings Section -->
         <div class="settings-section">
             <h2>External Services</h2>

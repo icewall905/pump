@@ -150,24 +150,30 @@ function initSidebarAnalysisProgress() {
                     
                     // Display appropriate text based on scan_complete flag
                     if (!status.scan_complete) {
-                        text.textContent = `Scanning: ${filesProcessed} files found`;
+                        text.textContent = `Analysis: ${filesProcessed} files found`;
                     } else {
                         // For analysis phase - percent now goes from 0 to 100
                         const displayProcessed = Math.min(filesProcessed, totalFiles);
                         text.textContent = `Analyzing: ${displayProcessed} of ${totalFiles} files`;
                     }
-                } else if (status.last_run_completed) {
-                    // Show completion status briefly
-                    fill.style.width = '100%';
-                    text.textContent = `Analysis complete: ${status.files_processed} files processed`;
-                    
-                    // Hide after 3 seconds
-                    setTimeout(() => {
-                        container.style.display = 'none';
-                    }, 3000);
                 } else {
-                    // Not running and not completed
-                    container.style.display = 'none';
+                    // Check if there's a completed message to show briefly
+                    if (status.last_updated && !status.error) {
+                        const lastUpdateTime = new Date(status.last_updated);
+                        const now = new Date();
+                        const secondsSinceUpdate = (now - lastUpdateTime) / 1000;
+                        
+                        // Show completion message for up to 5 seconds after completion
+                        if (secondsSinceUpdate < 5) {
+                            fill.style.width = '100%';
+                            text.textContent = `Analysis complete: ${status.files_processed} files processed`;
+                            container.style.display = 'block';
+                        } else {
+                            container.style.display = 'none';
+                        }
+                    } else {
+                        container.style.display = 'none';
+                    }
                 }
             })
             .catch(err => {
@@ -208,3 +214,35 @@ function initSidebarMetadataProgress() {
     checkStatus();
 }
 document.addEventListener('DOMContentLoaded', initSidebarMetadataProgress);
+
+// Add this function if it doesn't already exist, or update it if it does
+
+function initSidebarQuickScanProgress() {
+    function checkStatus() {
+        fetch('/api/quick-scan/status')
+            .then(r => r.json())
+            .then(status => {
+                const container = document.getElementById('analysis-sidebar-progress');
+                if (!container) return;
+                
+                const fill = container.querySelector('.progress-fill');
+                const text = container.querySelector('.progress-status-text');
+                
+                if (status.running) {
+                    container.style.display = 'block';
+                    fill.style.width = `${status.percent_complete}%`;
+                    text.textContent = `Quick scan: ${status.files_processed} files processed`;
+                } else if (!document.getElementById('metadata-sidebar-progress').style.display === 'block') {
+                    // Hide only if metadata update isn't also running
+                    container.style.display = 'none';
+                }
+            })
+            .catch(err => console.error('Sidebar quick scan status error:', err))
+            .finally(() => setTimeout(checkStatus, 2000));
+    }
+    
+    checkStatus();
+}
+
+// Call this function when document is ready
+document.addEventListener('DOMContentLoaded', initSidebarQuickScanProgress);
