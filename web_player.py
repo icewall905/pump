@@ -1112,32 +1112,37 @@ def get_track_info(track_id):
     conn.close()
     return jsonify(track_data)
 
+# Add caching headers to streaming route to improve playback
+
 @app.route('/stream/<int:track_id>')
-def stream_track(track_id):
-    """Stream audio file for a track"""
-    # Use the connection from the active app context
-    conn = sqlite3.connect(DB_PATH)  # Changed to use DB_PATH directly
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    # Get track file path from database
-    cursor.execute(
-        'SELECT file_path FROM audio_files WHERE id = ?',  # Changed from "tracks" to "audio_files"
-        (track_id,)
-    )
-    
-    track = cursor.fetchone()
-    if not track:
+def stream(track_id):
+    try:
+        # Get the track information
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM audio_files WHERE id = ?", (track_id,))
+        result = cursor.fetchone()
         conn.close()
-        return jsonify({'error': 'Track not found'}), 404
-    
-    file_path = track['file_path']
-    conn.close()
-    
-    if not os.path.exists(file_path):
-        return jsonify({'error': 'Audio file not found'}), 404
         
-    return send_file(file_path)
+        if not result:
+            return jsonify({"error": "Track not found"}), 404
+            
+        file_path = result[0]
+        
+        # Check if file exists
+        if not os.path.exists(file_path):
+            return jsonify({"error": "Audio file not found"}), 404
+            
+        # Add cache-control headers for better streaming performance
+        response = send_file(file_path, conditional=True)
+        response.headers['Accept-Ranges'] = 'bytes'
+        response.headers['Cache-Control'] = 'public, max-age=3600'  # Cache for 1 hour
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error streaming track {track_id}: {e}")
+        return jsonify({"error": str(e)}), 500
 
 # Add these routes to your web_player.py file
 

@@ -1235,6 +1235,48 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
     }
+
+    // Add these optimizations to your DOMContentLoaded event handler
+
+    // Debounce function to prevent excessive UI updates
+    function debounce(func, wait) {
+        let timeout;
+        return function(...args) {
+            const context = this;
+            clearTimeout(timeout);
+            timeout = setTimeout(() => func.apply(context, args), wait);
+        };
+    }
+
+    // Use requestAnimationFrame for smoother progress bar updates
+    function updateSmoothProgress() {
+        if (!audioPlayer || !progressFill || !currentTimeDisplay) return;
+        
+        const currentTime = audioPlayer.currentTime;
+        const duration = audioPlayer.duration || 0;
+        
+        // Update progress bar
+        if (duration > 0) {
+            const percent = (currentTime / duration) * 100;
+            progressFill.style.width = `${percent}%`;
+        }
+        
+        // Only update time display every 500ms to reduce DOM updates
+        if (!updateSmoothProgress.lastUpdate || Date.now() - updateSmoothProgress.lastUpdate > 500) {
+            currentTimeDisplay.textContent = formatTime(currentTime);
+            updateSmoothProgress.lastUpdate = Date.now();
+        }
+        
+        // Schedule next update
+        if (!audioPlayer.paused) {
+            requestAnimationFrame(updateSmoothProgress);
+        }
+    }
+
+    // Replace the existing updateProgress function
+    function updateProgress() {
+        requestAnimationFrame(updateSmoothProgress);
+    }
 });
 
 // Make sure you have this function defined

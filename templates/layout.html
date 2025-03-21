@@ -54,7 +54,7 @@
     </div>
 
     <!-- Audio element for playback -->
-    <audio id="audio-player"></audio>
+    <audio id="audio-player" preload="auto"></audio>
     
     <!-- Common scripts used across all pages -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
@@ -119,6 +119,94 @@
                 globalStatusInterval = setInterval(checkGlobalAnalysisStatus, 2000);
             }
         }, { once: true });  // Using 'once: true' to ensure it only runs once
+    </script>
+    
+    <!-- Add this script to modify how links work -->
+    <script>
+        // Use history.pushState for navigation when possible
+        document.addEventListener('click', function(e) {
+            // Find closest link ancestor
+            const link = e.target.closest('a');
+            if (!link) return;
+            
+            // Skip external links and links with specific attributes
+            if (link.hostname !== window.location.hostname || 
+                link.getAttribute('target') === '_blank' ||
+                link.getAttribute('data-no-push') === 'true') {
+                return;
+            }
+            
+            // Get the URL from the link
+            const url = link.getAttribute('href');
+            
+            // Special handling for certain views
+            if (url === '/' || url.startsWith('/?view=')) {
+                e.preventDefault();
+                
+                // Don't reload if it's the same view
+                if (window.location.href === url) return;
+                
+                // Use history API to change URL without full page reload
+                history.pushState({}, '', url);
+                
+                // Manually trigger view change
+                const urlParams = new URLSearchParams(url.split('?')[1] || '');
+                const view = urlParams.get('view') || 'home';
+                
+                // Handle different views
+                switch (view) {
+                    case 'home':
+                        loadExplore();
+                        setActiveNav('home');
+                        break;
+                    case 'explore':
+                        loadExplore();
+                        setActiveNav('explore');
+                        break;
+                    case 'recent':
+                        loadRecent();
+                        setActiveNav('recent');
+                        break;
+                    case 'liked':
+                        loadLiked();
+                        setActiveNav('liked');
+                        break;
+                    default:
+                        // For any other view, still do a full reload
+                        window.location.href = url;
+                }
+            }
+        });
+        
+        // Handle back/forward navigation
+        window.addEventListener('popstate', function() {
+            // Get the current view from URL
+            const urlParams = new URLSearchParams(window.location.search);
+            const view = urlParams.get('view') || 'home';
+            
+            // Handle change
+            switch (view) {
+                case 'home':
+                    loadExplore();
+                    setActiveNav('home');
+                    break;
+                case 'explore':
+                    loadExplore();
+                    setActiveNav('explore');
+                    break;
+                case 'recent':
+                    loadRecent();
+                    setActiveNav('recent');
+                    break;
+                case 'liked':
+                    loadLiked();
+                    setActiveNav('liked');
+                    break;
+                default:
+                    // Reload for any other view
+                    window.location.reload();
+            }
+        });
     </script>
     
     {% if request.endpoint == 'settings' %}

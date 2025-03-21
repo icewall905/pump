@@ -201,8 +201,8 @@ document.addEventListener('DOMContentLoaded', function() {
     window.playTrack = playTrackById;
     
     // Player Functions
-    function playTrackById(trackId) {
-        console.log(`Playing track ID: ${trackId}`);
+    function playTrackById(trackId, autoplay = true, startTime = 0) {
+        console.log(`Playing track ID: ${trackId} (autoplay: ${autoplay}, startTime: ${startTime})`);
         
         // Fetch track info
         fetch(`/track/${trackId}`)
@@ -219,18 +219,32 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Set audio source
                 audioPlayer.src = `/stream/${trackId}`;
                 
+                // Set current track ID
+                currentTrackId = trackId;
+                
                 // Update UI
                 updateNowPlayingInfo(track);
                 
-                // Play the audio
-                audioPlayer.play()
-                    .then(() => {
-                        isPlaying = true;
-                        updatePlayPauseButton();
-                    })
-                    .catch(err => {
-                        console.error('Error playing track:', err);
-                    });
+                // Set the current time if provided
+                if (startTime > 0) {
+                    audioPlayer.currentTime = startTime;
+                }
+                
+                // Play the audio if autoplay is true
+                if (autoplay) {
+                    audioPlayer.play()
+                        .then(() => {
+                            isPlaying = true;
+                            updatePlayPauseButton();
+                        })
+                        .catch(err => {
+                            console.error('Error playing track:', err);
+                        });
+                } else {
+                    // Just load but don't play
+                    isPlaying = false;
+                    updatePlayPauseButton();
+                }
                 
                 // Update queue if not already part of it
                 if (!queue.some(t => t.id === track.id)) {
@@ -241,6 +255,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     currentTrackIndex = queue.findIndex(t => t.id === track.id);
                 }
                 document.dispatchEvent(new Event('queue-updated'));
+
+                // After everything is set up, preload the next track
+                setTimeout(preloadNextTrack, 5000); // Wait 5 seconds before preloading
             })
             .catch(error => {
                 console.error('Error fetching track data:', error);
@@ -287,6 +304,34 @@ document.addEventListener('DOMContentLoaded', function() {
             .catch(error => {
                 console.error('Error checking like status:', error);
             });
+
+        // Update Media Session API if available
+        if ('mediaSession' in navigator) {
+            navigator.mediaSession.metadata = new MediaMetadata({
+                title: track.title || 'Unknown Title',
+                artist: track.artist || 'Unknown Artist',
+                album: track.album || 'Unknown Album',
+                artwork: [
+                    { src: track.album_art_url || '/static/images/default-album-art.png', sizes: '512x512', type: 'image/png' }
+                ]
+            });
+            
+            // Set action handlers
+            navigator.mediaSession.setActionHandler('play', () => {
+                audioPlayer.play();
+                isPlaying = true;
+                updatePlayPauseButton();
+            });
+            
+            navigator.mediaSession.setActionHandler('pause', () => {
+                audioPlayer.pause();
+                isPlaying = false;
+                updatePlayPauseButton();
+            });
+            
+            navigator.mediaSession.setActionHandler('previoustrack', playPreviousTrack);
+            navigator.mediaSession.setActionHandler('nexttrack', playNextTrack);
+        }
     }
     
     function togglePlayPause() {
@@ -627,5 +672,104 @@ document.addEventListener('DOMContentLoaded', function() {
             likeButton.innerHTML = '♡';
             likeButton.title = 'Like';
         }
+    }
+
+    // Save playback state before page unload
+    window.addEventListener('beforeunload', function() {
+        // Only save if we're actually playing something
+        if (audioPlayer && audioPlayer.src && !audioPlayer.paused) {
+            const playbackState = {
+                trackId: currentTrackId,
+                currentTime: audioPlayer.currentTime,
+                isPlaying: !audioPlayer.paused,
+                queue: queue,
+                currentTrackIndex: currentTrackIndex,
+                timestamp: Date.now()
+            };
+            localStorage.setItem('playbackState', JSON.stringify(playbackState));
+        }
+    });
+
+    // Add this after your other initialization code
+    function restorePlaybackState() {
+        try {
+            const savedState = localStorage.getItem('playbackState');
+            if (!savedState) return false;
+            
+            const state = JSON.parse(savedState);
+            
+            // Only restore if saved less than 1 hour ago
+            if (Date.now() - state.timestamp > 3600000) {
+                localStorage.removeItem('playbackState');
+                return false;
+            }
+            
+            console.log('Restoring playback state:', state);
+            
+            // Restore queue
+            if (Array.isArray(state.queue) && state.queue.length > 0) {
+                queue = state.queue;
+                currentTrackIndex = state.currentTrackIndex || 0;
+            }
+            
+            // Restore current track
+            if (state.trackId) {
+                // Set high priority for audio loading
+                const audioPlayer = document.getElementById('audio-player');
+                if (audioPlayer) {
+                    audioPlayer.preload = 'auto';
+                    audioPlayer.setAttribute('data-prioritize', 'true');
+                }
+                
+                // Play the track but don't autoplay yet
+                const autoplay = state.isPlaying;
+                playTrackById(state.trackId, autoplay, state.currentTime);
+                
+                // For autoplay, focus on getting audio going quickly
+                if (autoplay) {
+                    // Add a class to body to indicate we're restoring playback
+                    document.body.classList.add('restoring-playback');
+                    
+                    // Remove the class after restoration is complete
+                    setTimeout(() => {
+                        document.body.classList.remove('restoring-playback');
+                    }, 2000);
+                }
+                
+                return true;
+            }
+        } catch (e) {
+            console.error('Error restoring playback state:', e);
+        }
+        return false;
+    }
+
+    // Call this at the end of the DOMContentLoaded event
+    setTimeout(restorePlaybackState, 500); // Small delay to ensure all UI is ready
+
+    // Add these optimizations to help with smoother transitions
+
+    // After your playTrackById function, add this function to preload the next track
+    function preloadNextTrack() {
+        if (queue.length === 0 || currentTrackIndex >= queue.length - 1) return;
+        
+        const nextTrack = queue[currentTrackIndex + 1];
+        if (!nextTrack || !nextTrack.id) return;
+        
+        // Create a hidden audio element to preload the next track
+        const preloader = document.createElement('audio');
+        preloader.style.display = 'none';
+        preloader.preload = 'auto';
+        preloader.src = `/stream/${nextTrack.id}`;
+        
+        // Remove preloader once it's loaded enough data
+        preloader.addEventListener('canplaythrough', function() {
+            document.body.removeChild(preloader);
+        });
+        
+        // Add to DOM to start loading
+        document.body.appendChild(preloader);
+        
+        console.log(`Preloading next track: ${nextTrack.title}`);
     }
 });

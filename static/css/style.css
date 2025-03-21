@@ -2414,3 +2414,41 @@ p, span, div, label {
 .progress-container .progress-bar.dragging .progress-fill {
     background-color: #1ED760;
 }
+
+/* Add loading indicator styles */
+.page-loading-indicator {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 3px;
+    background-color: rgba(0,0,0,0.1);
+    z-index: 9999;
+    overflow: hidden;
+}
+
+.page-loading-indicator .spinner {
+    height: 100%;
+    width: 100%;
+    position: relative;
+    overflow: hidden;
+}
+
+.page-loading-indicator .spinner:before {
+    content: "";
+    position: absolute;
+    height: 100%;
+    width: 50%;
+    background-color: #1DB954;
+    animation: loading-animation 1s infinite ease-in-out;
+    left: -50%;
+}
+
+@keyframes loading-animation {
+    0% {
+        left: -50%;
+    }
+    100% {
+        left: 100%;
+    }
+}

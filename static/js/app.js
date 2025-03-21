@@ -20,13 +20,34 @@ document.addEventListener('DOMContentLoaded', function() {
         let pollInterval = 3000; // Start with 3 seconds between polls
         let consecutiveErrors = 0;
         let timer = null;
+        let isNavigating = false;
+        
+        // Function to pause polling during navigation
+        window.pauseStatusPolling = function() {
+            isNavigating = true;
+            console.log('Status polling paused for navigation');
+            if (timer) clearTimeout(timer);
+        };
+        
+        // Function to resume polling after navigation
+        window.resumeStatusPolling = function() {
+            isNavigating = false;
+            console.log('Status polling resumed');
+            checkStatus();
+        };
         
         function checkStatus() {
+            // Skip checking if we're in the middle of navigation
+            if (isNavigating) {
+                scheduleNextPoll();
+                return;
+            }
+            
             // Use Promise.all to make parallel requests for better performance
             Promise.all([
-                fetch('/api/analysis/status').then(r => r.json()),
-                fetch('/api/metadata-update/status').then(r => r.json()),
-                fetch('/api/quick-scan/status').then(r => r.json())
+                fetch('/api/analysis/status').then(r => r.json()).catch(() => ({})),
+                fetch('/api/metadata-update/status').then(r => r.json()).catch(() => ({})),
+                fetch('/api/quick-scan/status').then(r => r.json()).catch(() => ({}))
             ])
             .then(([analysisData, metadataData, quickScanData]) => {
                 // Reset error counter on success
@@ -48,56 +69,48 @@ document.addEventListener('DOMContentLoaded', function() {
                 lastMetadataStatus = metadataData;
                 lastQuickScanStatus = quickScanData;
                 
-                // First check if analysis is running (takes priority)
-                if (analysisData.running) {
-                    // Update the status indicator
+                // Only update the UI if something is running
+                if ((analysisData.running || metadataData.running || quickScanData.running) && !isNavigating) {
                     statusIndicator.classList.add('active');
                     
-                    // Simplified HTML update to reduce parsing time
-                    statusIndicator.innerHTML = 
-                        '<div class="status-icon pulse"></div>' +
-                        '<div class="status-text">Analysis running (' + 
-                        analysisData.percent_complete + '%)</div>';
-                } 
-                // Then check if quick scan is running
-                else if (quickScanData.running) {
-                    statusIndicator.classList.add('active');
+                    // Simplified DOM update - determine the most important status to show
+                    let statusHTML = '';
+                    if (analysisData.running) {
+                        statusHTML = 
+                            '<div class="status-icon pulse"></div>' +
+                            '<div class="status-text">Analysis running (' + 
+                            analysisData.percent_complete + '%)</div>';
+                    } else if (quickScanData.running) {
+                        statusHTML = 
+                            '<div class="status-icon pulse"></div>' +
+                            '<div class="status-text">Quick scanning files (' + 
+                            quickScanData.percent_complete + '%)</div>';
+                    } else if (metadataData.running) {
+                        statusHTML = 
+                            '<div class="status-icon pulse"></div>' +
+                            '<div class="status-text">Updating metadata (' + 
+                            metadataData.percent_complete + '%)</div>';
+                    }
                     
-                    // Build a concise status message
-                    let statusText = 'Quick scanning files (' + quickScanData.percent_complete + '%)';
-                    
-                    // Create a simpler DOM update
-                    const statusHTML = 
-                        '<div class="status-icon pulse"></div>' +
-                        '<div class="status-text">' + statusText + '</div>' +
-                        '<div class="progress-bar">' +
-                        '<div class="progress-fill" style="width: ' + 
-                        quickScanData.percent_complete + '%"></div></div>';
-                    
-                    statusIndicator.innerHTML = statusHTML;
-                }
-                // Then check if metadata update is running
-                else if (metadataData.running) {
-                    statusIndicator.classList.add('active');
-                    
-                    // Build a more concise status message
-                    let statusText = 'Updating metadata (' + metadataData.percent_complete + '%)';
-                    
-                    // Create a simpler DOM update
-                    const statusHTML = 
-                        '<div class="status-icon pulse"></div>' +
-                        '<div class="status-text">' + statusText + '</div>' +
-                        '<div class="progress-bar">' +
-                        '<div class="progress-fill" style="width: ' + 
-                        metadataData.percent_complete + '%"></div></div>';
-                    
-                    statusIndicator.innerHTML = statusHTML;
+                    if (statusHTML) {
+                        statusIndicator.innerHTML = statusHTML;
+                    } else {
+                        statusIndicator.classList.remove('active');
+                    }
                 } else {
                     statusIndicator.classList.remove('active');
                     statusIndicator.innerHTML = '';
                 }
                 
-                // Schedule next poll
+                // Schedule next poll with adaptive interval
+                if (analysisData.running || metadataData.running || quickScanData.running) {
+                    // Poll more frequently if tasks are running
+                    pollInterval = 3000;
+                } else {
+                    // Poll less frequently when idle
+                    pollInterval = 8000;
+                }
+                
                 scheduleNextPoll();
             })
             .catch(error => {
@@ -125,9 +138,13 @@ document.addEventListener('DOMContentLoaded', function() {
         // Start checking
         checkStatus();
         
-        // Return a function to cancel polling
-        return function stopPolling() {
-            if (timer) clearTimeout(timer);
+        // Return the control functions
+        return {
+            stop: function() {
+                if (timer) clearTimeout(timer);
+            },
+            pause: window.pauseStatusPolling,
+            resume: window.resumeStatusPolling
         };
     };
 
