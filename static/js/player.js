@@ -467,6 +467,193 @@ function playTrackFromPlaylist(index) {
     }
 }
 
+// Add this to optimize album art loading
+function optimizeImageLoading(imgElement, src) {
+    // Create a low-priority image loader
+    const loader = new Image();
+    
+    // Set up load handler before setting src
+    loader.onload = function() {
+        // Only update the main image when loading completes
+        if (imgElement) {
+            imgElement.src = src;
+        }
+    };
+    
+    loader.onerror = function() {
+        // Fallback to default on error
+        if (imgElement) {
+            imgElement.src = '/static/images/default-album-art.png';
+        }
+    };
+    
+    // Low priority loading
+    if ('fetchPriority' in loader) {
+        loader.fetchPriority = 'low';
+    }
+    
+    // Start loading
+    loader.src = src;
+}
+
+// Update the displayTracksInGrid function to use lazy loading and optimized image loading
+function displayTracksInGrid(tracks, container) {
+    if (!container) return;
+    
+    container.innerHTML = '';
+    
+    // Create track grid
+    const trackGrid = document.createElement('div');
+    trackGrid.className = 'track-grid';
+    
+    // Only render visible tracks initially (virtual rendering)
+    const initialVisibleCount = Math.min(20, tracks.length);
+    
+    // Add initial visible tracks to grid
+    for (let i = 0; i < initialVisibleCount; i++) {
+        const trackCard = createOptimizedTrackCard(tracks[i]);
+        trackGrid.appendChild(trackCard);
+    }
+    
+    // Add grid to container
+    container.appendChild(trackGrid);
+    
+    // Setup intersection observer for infinite scrolling if there are more tracks
+    if (tracks.length > initialVisibleCount) {
+        setupInfiniteScroll(trackGrid, tracks, initialVisibleCount);
+    }
+    
+    // Add Play All button at the top
+    const actionButton = document.createElement('div');
+    actionButton.className = 'liked-actions-container';
+    actionButton.innerHTML = `
+        <button class="primary-button" id="play-all-liked-btn">Play All Tracks</button>
+    `;
+    container.insertBefore(actionButton, trackGrid);
+    
+    // Add event listener for Play All button
+    document.getElementById('play-all-liked-btn')?.addEventListener('click', function() {
+        if (window.currentPlaylist && window.currentPlaylist.length > 0) {
+            if (typeof window.playEntirePlaylist === 'function') {
+                window.playEntirePlaylist(window.currentPlaylist);
+            } else {
+                // Fallback to playing the first track
+                if (typeof window.playTrack === 'function' && window.currentPlaylist[0]) {
+                    window.playTrack(window.currentPlaylist[0].id);
+                }
+            }
+        }
+    });
+}
+
+// Optimized track card creation
+function createOptimizedTrackCard(track) {
+    const trackCard = document.createElement('div');
+    trackCard.className = 'track-card';
+    
+    // Create album art container with image placeholder
+    const albumArt = document.createElement('div');
+    albumArt.className = 'album-art';
+    
+    // Create image with lazy loading
+    const img = document.createElement('img');
+    img.alt = 'Album Art';
+    img.loading = "lazy"; // Use browser's lazy loading
+    img.src = '/static/images/default-album-art.png'; // Start with default
+    
+    if (track.album_art_url) {
+        // Process image URL but delay actual loading
+        let imgSrc = track.album_art_url;
+        
+        if (imgSrc.includes('album_art_cache/') || imgSrc.includes('album_art_cache\\')) {
+            const parts = imgSrc.split(/[\/\\]/);
+            const filename = parts[parts.length - 1];
+            imgSrc = `/cache/${filename}`;
+        } else if (imgSrc.startsWith('http')) {
+            imgSrc = `/albumart/${encodeURIComponent(imgSrc)}`;
+        }
+        
+        // Set the data-src instead of src for delayed loading
+        img.setAttribute('data-src', imgSrc);
+        
+        // Use intersection observer to load when visible
+        if ('IntersectionObserver' in window) {
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        const image = entry.target;
+                        image.src = image.dataset.src;
+                        observer.unobserve(image);
+                    }
+                });
+            });
+            observer.observe(img);
+        } else {
+            // Fallback for browsers without IntersectionObserver
+            setTimeout(() => { img.src = imgSrc; }, 100);
+        }
+    }
+    
+    // Create play overlay with hover effect
+    const playOverlay = document.createElement('div');
+    playOverlay.className = 'play-overlay';
+    playOverlay.innerHTML = '<i class="play-icon">▶</i>';
+    
+    // Add elements to container
+    albumArt.appendChild(img);
+    albumArt.appendChild(playOverlay);
+    trackCard.appendChild(albumArt);
+    
+    // Add track info
+
+    return trackCard;
+}
+
+// Setup infinite scrolling
+function setupInfiniteScroll(container, allTracks, startIndex) {
+    // Create a sentinel element to observe
+    const sentinel = document.createElement('div');
+    sentinel.className = 'scroll-sentinel';
+    sentinel.style.height = '10px';
+    sentinel.style.width = '100%';
+    container.appendChild(sentinel);
+    
+    // Function to load more items
+    let isLoading = false;
+    let currentIndex = startIndex;
+    
+    function loadMoreItems() {
+        if (isLoading || currentIndex >= allTracks.length) return;
+        
+        isLoading = true;
+        const fragment = document.createDocumentFragment();
+        
+        // Load next batch
+        const batchSize = 10;
+        const endIndex = Math.min(currentIndex + batchSize, allTracks.length);
+        
+        for (let i = currentIndex; i < endIndex; i++) {
+            const trackCard = createOptimizedTrackCard(allTracks[i]);
+            fragment.appendChild(trackCard);
+        }
+        
+        // Insert before sentinel
+        container.insertBefore(fragment, sentinel);
+        currentIndex = endIndex;
+        isLoading = false;
+    }
+    
+    // Create intersection observer
+    const observer = new IntersectionObserver((entries) => {
+        if (entries[0].isIntersecting) {
+            loadMoreItems();
+        }
+    });
+    
+    // Start observing
+    observer.observe(sentinel);
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     console.log('DOM loaded - initializing player.js');
     

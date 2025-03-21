@@ -12,7 +12,7 @@ document.addEventListener('DOMContentLoaded', function() {
     window.checkGlobalAnalysisStatus = function() {
         const statusIndicator = document.getElementById('global-analysis-status');
         
-        if (!statusIndicator) return;
+        if (!statusIndicator) return null;
         
         let lastMetadataStatus = null;
         let lastAnalysisStatus = null;
@@ -128,15 +128,22 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         function scheduleNextPoll() {
-            // Clear any existing timer
-            if (timer) clearTimeout(timer);
+            // Clear existing timer to prevent overlap
+            if (pollTimer) clearTimeout(pollTimer);
             
-            // Schedule next poll
-            timer = setTimeout(checkStatus, pollInterval);
+            // Schedule next check
+            pollTimer = setTimeout(checkAllStatuses, pollInterval);
         }
         
-        // Start checking
-        checkStatus();
+        // Debounce function to avoid excessive event handling
+        function debounce(func, wait) {
+            let timeout;
+            return function() {
+                const context = this, args = arguments;
+                clearTimeout(timeout);
+                timeout = setTimeout(() => func.apply(context, args), wait);
+            };
+        }
         
         // Return the control functions
         return {
@@ -148,86 +155,12 @@ document.addEventListener('DOMContentLoaded', function() {
         };
     };
 
-    // Initialize global status checking on page load
-    window.globalStatusChecker = window.checkGlobalAnalysisStatus();
-});
-
-// Global status checking
-let metadataStatusChecker = null;
-
-function setupGlobalStatusChecking() {
-    // Check immediately on page load
-    checkBackgroundTasks();
-    
-    // Then check periodically
-    metadataStatusChecker = setInterval(checkBackgroundTasks, 5000);
-}
-
-function checkBackgroundTasks() {
-    // Check metadata update status
-    fetch('/api/metadata-update/status').then(r => r.json())
-        .then(data => {
-            const container = document.getElementById('global-status-container');
-            const metadataTask = document.getElementById('metadata-task');
-            const progressFill = metadataTask.querySelector('.task-progress-fill');
-            const infoSpan = metadataTask.querySelector('.task-info');
-            
-            if (data.running) {
-                // Show the status container and task
-                container.style.display = 'block';
-                metadataTask.style.display = 'block';
-                
-                // Update progress
-                progressFill.style.width = `${data.percent_complete}%`;
-                
-                // Update info text
-                const processed = data.processed_tracks || 0;
-                const total = data.total_tracks || 0;
-                const updated = data.updated_tracks || 0;
-                infoSpan.textContent = `${processed}/${total} (${updated} updated)`;
-            } else if (container.style.display === 'block' && !data.running) {
-                // If we were showing a task that's now complete
-                if (data.error) {
-                    infoSpan.textContent = `Error: ${data.error}`;
-                    setTimeout(() => {
-                        metadataTask.style.display = 'none';
-                        // Hide container if no active tasks
-                        if (!document.querySelector('.task-status[style="display: block;"]')) {
-                            container.style.display = 'none';
-                        }
-                    }, 10000); // Hide after 10 seconds
-                } else if (data.processed_tracks > 0) {
-                    // Show completion message
-                    progressFill.style.width = '100%';
-                    infoSpan.textContent = `Complete! ${data.updated_tracks} of ${data.total_tracks} updated`;
-                    setTimeout(() => {
-                        metadataTask.style.display = 'none';
-                        // Hide container if no active tasks
-                        if (!document.querySelector('.task-status[style="display: block;"]')) {
-                            container.style.display = 'none';
-                        }
-                    }, 10000); // Hide after 10 seconds
-                } else {
-                    // Just hide if no activity
-                    metadataTask.style.display = 'none';
-                    // Hide container if no active tasks
-                    if (!document.querySelector('.task-status[style="display: block;"]')) {
-                        container.style.display = 'none';
-                    }
-                }
-            }
-        })
-        .catch(err => console.error('Error checking metadata status:', err));
-    
-    // Add other background task checks here if needed
-}
-
-// Setup on page load
-document.addEventListener('DOMContentLoaded', setupGlobalStatusChecking);
-
-// Clean up on page unload
-window.addEventListener('beforeunload', () => {
-    if (metadataStatusChecker) {
-        clearInterval(metadataStatusChecker);
+    // Remove all other global status checking functions and intervals
+    if (window.metadataStatusChecker) {
+        clearInterval(window.metadataStatusChecker);
+        window.metadataStatusChecker = null;
     }
+
+    // Create a single centralized status checker
+    window.statusChecker = window.checkGlobalAnalysisStatus();
 });

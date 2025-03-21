@@ -2750,6 +2750,34 @@ def is_track_liked(track_id):
     except Exception as e:
         logger.error(f"Error checking liked status for track {track_id}: {e}")
         return jsonify({"error": str(e)}), 500
+    
+@app.route('/api/all-status')
+def get_all_status():
+    """Single endpoint to get all statuses at once to reduce API calls"""
+    return jsonify({
+        'analysis': {
+            'running': ANALYSIS_STATUS.get('running', False),
+            'percent': ANALYSIS_STATUS.get('percent_complete', 0),
+            'files_processed': ANALYSIS_STATUS.get('files_processed', 0),
+            'total_files': ANALYSIS_STATUS.get('total_files', 0),
+            'error': ANALYSIS_STATUS.get('error')
+        },
+        'metadata': {
+            'running': METADATA_UPDATE_STATUS.get('running', False),
+            'percent': METADATA_UPDATE_STATUS.get('percent_complete', 0),
+            'processed': METADATA_UPDATE_STATUS.get('processed_tracks', 0),
+            'updated': METADATA_UPDATE_STATUS.get('updated_tracks', 0),
+            'total': METADATA_UPDATE_STATUS.get('total_tracks', 0),
+            'error': METADATA_UPDATE_STATUS.get('error')
+        },
+        'quickScan': {
+            'running': QUICK_SCAN_STATUS.get('running', False),
+            'percent': QUICK_SCAN_STATUS.get('percent_complete', 0),
+            'files_processed': QUICK_SCAN_STATUS.get('files_processed', 0),
+            'tracks_added': QUICK_SCAN_STATUS.get('tracks_added', 0),
+            'error': QUICK_SCAN_STATUS.get('error')
+        }
+    })
 
 # Updated run_server function that initializes scheduler and runs startup actions
 def run_server():
@@ -2767,6 +2795,7 @@ def run_server():
         run_simple(hostname=HOST, port=PORT, application=app, use_reloader=DEBUG, use_debugger=DEBUG)
     except Exception as e:
         logger.error(f"Error running server: {e}")
+
 
 
 
