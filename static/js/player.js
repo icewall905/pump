@@ -275,78 +275,67 @@ function createStation(trackId) {
     
     console.log('Creating station for track ID:', trackId);
     
-    // Show loading state in the playlist area
-    const playlist = document.getElementById('playlist');
+    // Show the playlist container if it exists
     const playlistContainer = document.getElementById('playlist-container');
-    
-    // Make sure playlist container is visible
     if (playlistContainer) {
         playlistContainer.style.display = 'block';
     }
     
-    // Show loading state
+    // Show loading state in the playlist
+    const playlist = document.getElementById('playlist');
     if (playlist) {
-        playlist.innerHTML = '<div class="loading">Creating playlist based on this track...</div>';
+        playlist.innerHTML = '<div class="loading">Creating station based on this track...</div>';
     }
     
-    // Reset any status messages
-    const analyzeStatus = document.getElementById('analyze-status');
-    if (analyzeStatus) {
-        analyzeStatus.innerHTML = '<div class="status-progress">Creating station...</div>';
-    }
+    // Get configured station size from settings if available
+    const stationSize = window.stationSize || 20; // Default to 20 if not set
     
-    // Fetch the station tracks
-    fetch(`/station/${trackId}`)
-        .then(response => response.json())
+    // Fetch station tracks from our API endpoint
+    fetch(`/api/station/${trackId}?num_tracks=${stationSize}`)
+        .then(response => {
+            console.log('Station response received:', response.status);
+            if (!response.ok) {
+                throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+            }
+            return response.json();
+        })
         .then(data => {
+            console.log('Station data received:', data);
             if (Array.isArray(data) && data.length > 0) {
                 // Store tracks in currentPlaylist
                 window.currentPlaylist = data;
                 
-                // Display track list
+                // Display the tracks in the playlist
                 displayPlaylist(data);
                 
-                // Set seed track information for header
+                // Update playlist header with seed track information
                 const seedTrack = data[0];
                 const playlistHeader = document.querySelector('.playlist-header h2');
-                
                 if (playlistHeader) {
                     playlistHeader.textContent = `Station: ${seedTrack.artist || 'Unknown'} - ${seedTrack.title || 'Unknown'} (${data.length} tracks)`;
                 }
                 
-                // Enable save button
+                // Enable save playlist button
                 const savePlaylistBtn = document.getElementById('save-playlist-btn');
                 if (savePlaylistBtn) {
                     savePlaylistBtn.disabled = false;
                 }
-                
-                // Clear status
-                if (analyzeStatus) {
-                    analyzeStatus.innerHTML = '';
-                }
             } else if (data.error) {
-                if (analyzeStatus) {
-                    analyzeStatus.innerHTML = `<div class="status-error">Error: ${data.error}</div>`;
-                }
+                // Show error message
                 if (playlist) {
                     playlist.innerHTML = `<div class="error">Error creating station: ${data.error}</div>`;
                 }
             } else {
-                if (analyzeStatus) {
-                    analyzeStatus.innerHTML = '<div class="status-error">Invalid response from server</div>';
-                }
+                // Empty array but no error
                 if (playlist) {
-                    playlist.innerHTML = '<div class="error">Failed to create station</div>';
+                    playlist.innerHTML = '<div class="empty-state">Could not create station. No similar tracks found.</div>';
                 }
             }
         })
         .catch(error => {
             console.error('Error creating station:', error);
-            if (analyzeStatus) {
-                analyzeStatus.innerHTML = '<div class="status-error">Failed to create playlist</div>';
-            }
             if (playlist) {
-                playlist.innerHTML = `<div class="error">Error: ${error}</div>`;
+                playlist.innerHTML = `<div class="error">Failed to create station: ${error.message}</div>`;
             }
         });
 }
@@ -2052,7 +2041,7 @@ function createTrackCard(track) {
     return trackCard;
 }
 
-// Global explore loader
+// Global explore loader - make sure it only updates the necessary elements
 window.loadExplore = function() {
     console.log('Global loadExplore called');
     
@@ -2071,7 +2060,7 @@ window.loadExplore = function() {
     // Show loading indicator
     searchResults.innerHTML = '<div class="loading">Loading tracks...</div>';
     
-    // Hide the playlist container
+    // Hide the playlist container without recreating it
     const playlistContainer = document.getElementById('playlist-container');
     if (playlistContainer) {
         playlistContainer.style.display = 'none';
@@ -2083,7 +2072,6 @@ window.loadExplore = function() {
         .then(data => {
             console.log('Explore data received:', data);
             if (Array.isArray(data) && data.length > 0) {
-                // Limit to 6 items only if needed
                 const displayData = data.slice(0, 12);
                 displaySearchResults(displayData);
             } else if (Array.isArray(data) && data.length === 0) {
@@ -2100,7 +2088,7 @@ window.loadExplore = function() {
         });
 };
 
-// Global recent tracks loader
+// Similarly update loadRecent and loadLiked to follow the same pattern
 window.loadRecent = function() {
     console.log('Global loadRecent called');
     
@@ -2119,7 +2107,7 @@ window.loadRecent = function() {
     // Show loading indicator
     searchResults.innerHTML = '<div class="loading">Loading recent tracks...</div>';
     
-    // Hide the playlist container
+    // Hide the playlist container without recreating it
     const playlistContainer = document.getElementById('playlist-container');
     if (playlistContainer) {
         playlistContainer.style.display = 'none';
@@ -2131,7 +2119,6 @@ window.loadRecent = function() {
         .then(data => {
             console.log('Recent data received:', data);
             if (Array.isArray(data) && data.length > 0) {
-                // Limit to 12 items only
                 const displayData = data.slice(0, 12);
                 displaySearchResults(displayData);
             } else if (Array.isArray(data) && data.length === 0) {
@@ -2148,7 +2135,6 @@ window.loadRecent = function() {
         });
 };
 
-// Global liked tracks loader
 window.loadLiked = function() {
     console.log('Global loadLiked called');
     
@@ -2167,7 +2153,7 @@ window.loadLiked = function() {
     // Show loading indicator
     searchResults.innerHTML = '<div class="loading">Loading liked tracks...</div>';
     
-    // Hide the playlist container
+    // Hide the playlist container without recreating it
     const playlistContainer = document.getElementById('playlist-container');
     if (playlistContainer) {
         playlistContainer.style.display = 'none';
@@ -2244,8 +2230,73 @@ function toggleLikeStatus(trackId) {
 
 // Add create station function
 function createStation(trackId) {
-    // Redirect to station page
-    window.location.href = `/station?seed=${trackId}`;
+    if (!trackId) return;
+    
+    console.log('Creating station for track ID:', trackId);
+    
+    // Show the playlist container if it exists
+    const playlistContainer = document.getElementById('playlist-container');
+    if (playlistContainer) {
+        playlistContainer.style.display = 'block';
+    }
+    
+    // Show loading state in the playlist
+    const playlist = document.getElementById('playlist');
+    if (playlist) {
+        playlist.innerHTML = '<div class="loading">Creating station based on this track...</div>';
+    }
+    
+    // Get configured station size from settings if available
+    const stationSize = window.stationSize || 20; // Default to 20 if not set
+    
+    // Fetch station tracks from the CORRECT endpoint "/station/[id]"
+    fetch(`/station/${trackId}?num_tracks=${stationSize}`)
+        .then(response => {
+            console.log('Station response received:', response.status);
+            if (!response.ok) {
+                throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('Station data received:', data);
+            if (Array.isArray(data) && data.length > 0) {
+                // Store tracks in currentPlaylist
+                window.currentPlaylist = data;
+                
+                // Display the tracks in the playlist
+                displayPlaylist(data);
+                
+                // Update playlist header with seed track information
+                const seedTrack = data[0];
+                const playlistHeader = document.querySelector('.playlist-header h2');
+                if (playlistHeader) {
+                    playlistHeader.textContent = `Station: ${seedTrack.artist || 'Unknown'} - ${seedTrack.title || 'Unknown'} (${data.length} tracks)`;
+                }
+                
+                // Enable save playlist button
+                const savePlaylistBtn = document.getElementById('save-playlist-btn');
+                if (savePlaylistBtn) {
+                    savePlaylistBtn.disabled = false;
+                }
+            } else if (data.error) {
+                // Show error message
+                if (playlist) {
+                    playlist.innerHTML = `<div class="error">Error creating station: ${data.error}</div>`;
+                }
+            } else {
+                // Empty array but no error
+                if (playlist) {
+                    playlist.innerHTML = '<div class="empty-state">Could not create station. No similar tracks found.</div>';
+                }
+            }
+        })
+        .catch(error => {
+            console.error('Error creating station:', error);
+            if (playlist) {
+                playlist.innerHTML = `<div class="error">Failed to create station: ${error.message}</div>`;
+            }
+        });
 }
 
 // Initialize player page

@@ -16,10 +16,11 @@ document.addEventListener('DOMContentLoaded', function() {
     const totalTimeDisplay = document.getElementById('total-time');
     const volumeSlider = document.getElementById('volume-slider');
     const muteButton = document.getElementById('mute-button');
+    const likeButton = document.getElementById('like-track');
     
     // Show the now playing bar by default (it's already in the DOM)
     if (nowPlayingBar) {
-        // Remove the 'active' class but make sure it's visible
+        // Keep the 'empty' class but make sure it's visible
         nowPlayingBar.classList.remove('active');
         nowPlayingBar.classList.add('empty');
     }
@@ -88,11 +89,18 @@ document.addEventListener('DOMContentLoaded', function() {
         audioPlayer.volume = volumeSlider.value;
     }
     
-    // Event listeners
+    // Event listeners - this is the key fix for the play/pause button
     if (playPauseButton) {
-        playPauseButton.addEventListener('click', togglePlayPause);
+        console.log('Adding click event to play/pause button');
+        playPauseButton.addEventListener('click', function() {
+            console.log('Play/Pause button clicked');
+            togglePlayPause();
+        });
+    } else {
+        console.error('Play/pause button not found in the DOM');
     }
     
+    // Add remaining event listeners
     if (prevButton) {
         prevButton.addEventListener('click', playPreviousTrack);
     }
@@ -201,6 +209,17 @@ document.addEventListener('DOMContentLoaded', function() {
         audioPlayer.addEventListener('error', function(e) {
             console.error('Audio error:', e);
             playNextTrack(); // Skip to next track on error
+        });
+
+        // Important: Update button state when play/pause state changes
+        audioPlayer.addEventListener('play', function() {
+            isPlaying = true;
+            updatePlayPauseButton();
+        });
+        
+        audioPlayer.addEventListener('pause', function() {
+            isPlaying = false;
+            updatePlayPauseButton();
         });
     }
     
@@ -350,27 +369,38 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     function togglePlayPause() {
+        console.log('togglePlayPause called, audioPlayer exists:', !!audioPlayer);
+        
         if (!audioPlayer) return;
         
         if (audioPlayer.paused) {
-            audioPlayer.play();
-            isPlaying = true;
+            console.log('Audio was paused, attempting to play');
+            audioPlayer.play()
+                .then(() => {
+                    isPlaying = true;
+                    updatePlayPauseButton();
+                })
+                .catch(error => {
+                    console.error('Play prevented:', error);
+                });
         } else {
+            console.log('Audio was playing, pausing');
             audioPlayer.pause();
             isPlaying = false;
+            updatePlayPauseButton();
         }
-        
-        updatePlayPauseButton();
     }
     
     function updatePlayPauseButton() {
         if (!playPauseButton) return;
         
+        console.log('Updating play/pause button, isPlaying:', isPlaying);
+        
         if (isPlaying) {
-            playPauseButton.innerHTML = '⏸';
+            playPauseButton.textContent = '⏸'; // Pause symbol
             playPauseButton.title = 'Pause';
         } else {
-            playPauseButton.innerHTML = '▶';
+            playPauseButton.textContent = '▶'; // Play symbol
             playPauseButton.title = 'Play';
         }
     }
@@ -631,7 +661,6 @@ document.addEventListener('DOMContentLoaded', function() {
     document.addEventListener('queue-updated', updateQueueDisplay);
 
     // Like button functionality
-    const likeButton = document.getElementById('like-track');
     let currentTrackId = null;
 
     if (likeButton) {

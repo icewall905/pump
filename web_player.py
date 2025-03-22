@@ -2779,6 +2779,7 @@ def get_all_status():
         }
     })
 
+
 # Updated run_server function that initializes scheduler and runs startup actions
 def run_server():
     """Run the Flask server"""
@@ -2797,8 +2798,5 @@ def run_server():
         logger.error(f"Error running server: {e}")
 
 
-
-
 if __name__ == '__main__':
     run_server()
-
