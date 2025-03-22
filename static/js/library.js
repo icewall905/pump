@@ -1,5 +1,5 @@
-document.addEventListener('DOMContentLoaded', function() {
-    // Get DOM elements
+window.initLibraryPage = function() {
+    // Move all the initialization code here
     const tabArtists = document.getElementById('tab-artists');
     const tabAlbums = document.getElementById('tab-albums');
     const tabSongs = document.getElementById('tab-songs');
@@ -329,4 +329,8 @@ document.addEventListener('DOMContentLoaded', function() {
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
     }
+};
+
+document.addEventListener('DOMContentLoaded', function() {
+    window.initLibraryPage();
 });

@@ -1,5 +1,5 @@
-// When document is ready
-document.addEventListener('DOMContentLoaded', () => {
+// Add this at the beginning of the file
+window.initSettingsPage = function() {
     // Initialize settings page functions
     initLibraryManagement();
     initMetadataControls();
@@ -25,6 +25,11 @@ document.addEventListener('DOMContentLoaded', () => {
         // Initial display
         updateNextRunDisplay();
     }
+};
+
+// When document is ready
+document.addEventListener('DOMContentLoaded', () => {
+    window.initSettingsPage();
 });
 
 // Initialize library management functions

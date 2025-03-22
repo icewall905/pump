@@ -17,6 +17,13 @@ document.addEventListener('DOMContentLoaded', function() {
     const volumeSlider = document.getElementById('volume-slider');
     const muteButton = document.getElementById('mute-button');
     
+    // Show the now playing bar by default (it's already in the DOM)
+    if (nowPlayingBar) {
+        // Remove the 'active' class but make sure it's visible
+        nowPlayingBar.classList.remove('active');
+        nowPlayingBar.classList.add('empty');
+    }
+
     // Add queue button to the now playing bar - place after the volume controls
     const nowPlayingContainer = document.querySelector('.now-playing-container');
     if (nowPlayingContainer) {
@@ -201,6 +208,8 @@ document.addEventListener('DOMContentLoaded', function() {
     window.playTrack = playTrackById;
     
     // Player Functions
+    window.currentTrackId = window.currentTrackId || null;
+
     function playTrackById(trackId, autoplay = true, startTime = 0) {
         console.log(`Playing track ID: ${trackId} (autoplay: ${autoplay}, startTime: ${startTime})`);
         
@@ -213,6 +222,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     return;
                 }
                 
+                // Show the now playing bar as active (not empty)
+                if (nowPlayingBar) {
+                    nowPlayingBar.classList.remove('empty');
+                    nowPlayingBar.classList.add('active');
+                }
+                
                 // Show the now playing bar
                 nowPlayingBar.classList.add('active');
                 
@@ -220,7 +235,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 audioPlayer.src = `/stream/${trackId}`;
                 
                 // Set current track ID
-                currentTrackId = trackId;
+                window.currentTrackId = trackId;
                 
                 // Update UI
                 updateNowPlayingInfo(track);
@@ -772,4 +787,34 @@ document.addEventListener('DOMContentLoaded', function() {
         
         console.log(`Preloading next track: ${nextTrack.title}`);
     }
+
+    // Handle play button when no track is playing
+    if (playPauseButton) {
+        playPauseButton.addEventListener('click', function() {
+            if (!audioPlayer.src) {
+                // If nothing is playing, try to load a previous track or recent track
+                restorePlaybackState() || loadRecentTrack();
+            } else {
+                togglePlayPause();
+            }
+        });
+    }
 });
+
+// Add this function at the bottom
+function loadRecentTrack() {
+    // Fetch a recent track to play
+    fetch('/recent?limit=1')
+        .then(response => response.json())
+        .then(data => {
+            if (Array.isArray(data) && data.length > 0) {
+                playTrackById(data[0].id);
+                return true;
+            }
+            return false;
+        })
+        .catch(error => {
+            console.error('Error loading recent track:', error);
+            return false;
+        });
+}

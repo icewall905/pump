@@ -17,8 +17,8 @@
     
     {% block content %}{% endblock %}
     
-    <!-- Now Playing bar -->
-    <div id="now-playing-bar" class="now-playing-bar">
+    <!-- Now Playing bar - updated to be always visible -->
+    <div id="now-playing-bar" class="now-playing-bar empty">
         <div class="now-playing-container">
             <div class="now-playing-art">
                 <img id="now-playing-art" src="{{ url_for('static', filename='images/default-album-art.png') }}" alt="Album Art">
@@ -121,99 +121,35 @@
         }, { once: true });  // Using 'once: true' to ensure it only runs once
     </script>
     
-    <!-- Add this script to modify how links work -->
-    <script>
-        // Use history.pushState for navigation when possible
-        document.addEventListener('click', function(e) {
-            // Find closest link ancestor
-            const link = e.target.closest('a');
-            if (!link) return;
-            
-            // Skip external links and links with specific attributes
-            if (link.hostname !== window.location.hostname || 
-                link.getAttribute('target') === '_blank' ||
-                link.getAttribute('data-no-push') === 'true') {
-                return;
-            }
-            
-            // Get the URL from the link
-            const url = link.getAttribute('href');
-            
-            // Special handling for certain views
-            if (url === '/' || url.startsWith('/?view=')) {
-                e.preventDefault();
-                
-                // Don't reload if it's the same view
-                if (window.location.href === url) return;
-                
-                // Use history API to change URL without full page reload
-                history.pushState({}, '', url);
-                
-                // Manually trigger view change
-                const urlParams = new URLSearchParams(url.split('?')[1] || '');
-                const view = urlParams.get('view') || 'home';
-                
-                // Handle different views
-                switch (view) {
-                    case 'home':
-                        loadExplore();
-                        setActiveNav('home');
-                        break;
-                    case 'explore':
-                        loadExplore();
-                        setActiveNav('explore');
-                        break;
-                    case 'recent':
-                        loadRecent();
-                        setActiveNav('recent');
-                        break;
-                    case 'liked':
-                        loadLiked();
-                        setActiveNav('liked');
-                        break;
-                    default:
-                        // For any other view, still do a full reload
-                        window.location.href = url;
-                }
-            }
-        });
-        
-        // Handle back/forward navigation
-        window.addEventListener('popstate', function() {
-            // Get the current view from URL
-            const urlParams = new URLSearchParams(window.location.search);
-            const view = urlParams.get('view') || 'home';
-            
-            // Handle change
-            switch (view) {
-                case 'home':
-                    loadExplore();
-                    setActiveNav('home');
-                    break;
-                case 'explore':
-                    loadExplore();
-                    setActiveNav('explore');
-                    break;
-                case 'recent':
-                    loadRecent();
-                    setActiveNav('recent');
-                    break;
-                case 'liked':
-                    loadLiked();
-                    setActiveNav('liked');
-                    break;
-                default:
-                    // Reload for any other view
-                    window.location.reload();
-            }
-        });
-    </script>
-    
-    {% if request.endpoint == 'settings' %}
-    <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
-    {% endif %}
+    <!-- Page-specific scripts will be loaded dynamically by navigation.js -->
     
     {% block scripts %}{% endblock %}
+    
+    <script>
+        // Debug helper
+        window.debugNavigation = {
+            logElement: function(selector) {
+                const el = document.querySelector(selector);
+                console.log(`Element "${selector}": ${el ? "Found" : "NOT FOUND"}`);
+                return el;
+            },
+            
+            checkPageState: function() {
+                console.log('--- Page State Check ---');
+                this.logElement('.main-content');
+                this.logElement('#now-playing-bar');
+                this.logElement('#audio-player');
+                console.log('Current URL:', window.location.href);
+                console.log('Playing:', document.getElementById('audio-player')?.paused === false);
+                console.log('----------------------');
+            }
+        };
+        
+        // Run a check after page loads
+        window.addEventListener('load', function() {
+            window.debugNavigation.checkPageState();
+        });
+    </script>
 </body>
 </html>
 <!-- Add this somewhere in your sidebar, after the navigation links -->
