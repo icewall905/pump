@@ -175,6 +175,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     // Initialize any scripts needed for the new content
                     initializePageScripts(url);
                     
+                    // Reinitialize player controls after navigation
+                    reinitializePlayerControls();
+                    
                     console.log('Content update complete for:', url);
                 } else {
                     console.error('Could not extract main content from response for:', url);
@@ -403,6 +406,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 }, 100);
             }
         }
+        
+        // Always reinitialize player controls after navigation
+        reinitializePlayerControls();
     }
     
     // Helper function to load a script dynamically if it doesn't exist
@@ -499,6 +505,64 @@ document.addEventListener('DOMContentLoaded', function() {
                     logContent.innerHTML = `<div class="error">Error loading logs: ${error}</div>`;
                 });
         }
+    }
+    
+    // Add this function after your navigateTo function or anywhere in your navigation.js file
+
+    function reinitializePlayerControls() {
+        console.log('Reinitializing player controls after navigation');
+        
+        // Get references to DOM elements
+        const playPauseButton = document.getElementById('play-pause');
+        const audioPlayer = document.getElementById('audio-player');
+        
+        // Check if elements exist
+        if (!playPauseButton || !audioPlayer) {
+            console.error('Missing required elements for player controls');
+            console.log('playPauseButton exists:', !!playPauseButton);
+            console.log('audioPlayer exists:', !!audioPlayer);
+            return;
+        }
+        
+        // Remove any existing event listeners by cloning and replacing
+        const newButton = playPauseButton.cloneNode(true);
+        playPauseButton.parentNode.replaceChild(newButton, playPauseButton);
+        
+        // Add fresh event listener
+        newButton.addEventListener('click', function() {
+            console.log('Play/Pause button clicked');
+            
+            if (!audioPlayer) return;
+            
+            if (audioPlayer.paused) {
+                console.log('Audio was paused, attempting to play');
+                audioPlayer.play()
+                    .then(() => {
+                        console.log('Audio started playing');
+                        newButton.textContent = '⏸'; // Pause symbol
+                        newButton.title = 'Pause';
+                    })
+                    .catch(error => {
+                        console.error('Play prevented:', error);
+                    });
+            } else {
+                console.log('Audio was playing, pausing');
+                audioPlayer.pause();
+                newButton.textContent = '▶'; // Play symbol
+                newButton.title = 'Play';
+            }
+        });
+        
+        // Update the button to match current state
+        if (audioPlayer && !audioPlayer.paused) {
+            newButton.textContent = '⏸';
+            newButton.title = 'Pause';
+        } else {
+            newButton.textContent = '▶';
+            newButton.title = 'Play';
+        }
+        
+        console.log('Play/Pause button reinitialized');
     }
 });
 

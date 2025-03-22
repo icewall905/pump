@@ -2516,3 +2516,83 @@ p, span, div, label {
     text-align: center;
     color: #888;
 }
+
+/* Playlist header and controls */
+.playlist-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+    padding: 10px 0;
+    border-bottom: 1px solid #333;
+}
+
+.playlist-controls {
+    display: flex;
+    gap: 10px;
+}
+
+.playlist-controls button {
+    padding: 8px 12px;
+    border-radius: 4px;
+    border: none;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+/* Playlist table styles */
+.playlist-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+}
+
+.playlist-table th {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid #333;
+    font-size: 0.9em;
+    color: #aaa;
+}
+
+.playlist-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #222;
+}
+
+.playlist-row {
+    transition: background-color 0.2s;
+    cursor: pointer;
+}
+
+.playlist-row:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+.track-number {
+    text-align: right;
+    color: #888;
+    font-size: 0.9em;
+}
+
+.play-playlist-track {
+    background: none;
+    border: none;
+    color: #ccc;
+    font-size: 0.9em;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 50%;
+    transition: background-color 0.2s;
+}
+
+.play-playlist-track:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Seed track highlight */
+.seed-track {
+    font-weight: bold;
+    color: #1DB954; /* Spotify-like green */
+}

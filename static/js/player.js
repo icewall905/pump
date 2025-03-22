@@ -2374,3 +2374,140 @@ document.addEventListener('DOMContentLoaded', function() {
             });
     }
 });
+
+// Add this function to handle saving playlists
+function saveCurrentPlaylist() {
+    // Check if we have a playlist to save
+    if (!window.currentPlaylist || window.currentPlaylist.length === 0) {
+        alert('No playlist to save');
+        return;
+    }
+    
+    // Show the save playlist modal
+    const savePlaylistModal = document.getElementById('save-playlist-modal');
+    if (savePlaylistModal) {
+        savePlaylistModal.style.display = 'block';
+        
+        // Set up the form submission
+        const savePlaylistForm = document.getElementById('save-playlist-form');
+        
+        // Remove any previous event listeners
+        const newForm = savePlaylistForm.cloneNode(true);
+        savePlaylistForm.parentNode.replaceChild(newForm, savePlaylistForm);
+        
+        // Get fresh references to the NEW form elements after replacement
+        const playlistNameInput = document.getElementById('playlist-name');
+        const playlistDescriptionInput = document.getElementById('playlist-description');
+        
+        // Add new event listener
+        newForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const name = playlistNameInput.value.trim();
+            const description = playlistDescriptionInput.value.trim();
+            
+            if (!name) {
+                alert('Please enter a playlist name');
+                return;
+            }
+            
+            // Get track IDs from the current playlist
+            const trackIds = window.currentPlaylist.map(track => track.id);
+            
+            // Send request to save playlist
+            fetch('/playlists', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    name: name,
+                    description: description,
+                    tracks: trackIds
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Playlist saved:', data);
+                
+                // Show success message
+                alert(`Playlist "${name}" saved successfully!`);
+                
+                // Hide the modal
+                savePlaylistModal.style.display = 'none';
+                
+                // Reset form
+                playlistNameInput.value = '';
+                if (playlistDescriptionInput) {
+                    playlistDescriptionInput.value = '';
+                }
+                
+                // Refresh the playlists in sidebar
+                if (typeof window.loadSidebarPlaylists === 'function') {
+                    window.loadSidebarPlaylists();
+                }
+            })
+            .catch(error => {
+                console.error('Error saving playlist:', error);
+                alert(`Error saving playlist: ${error.message}`);
+            });
+        });
+    } else {
+        alert('Save playlist modal not found');
+    }
+}
+
+// Connect the Close button in the modal
+document.addEventListener('DOMContentLoaded', function() {
+    const closeButtons = document.querySelectorAll('.modal .close');
+    
+    closeButtons.forEach(button => {
+        button.addEventListener('click', function() {
+            const modal = this.closest('.modal');
+            if (modal) {
+                modal.style.display = 'none';
+            }
+        });
+    });
+    
+    // Close modal when clicking outside of it
+    window.addEventListener('click', function(e) {
+        if (e.target.classList.contains('modal')) {
+            e.target.style.display = 'none';
+        }
+    });
+    
+    // Connect Save Playlist button to the save function
+    const savePlaylistBtn = document.getElementById('save-playlist-btn');
+    if (savePlaylistBtn) {
+        savePlaylistBtn.addEventListener('click', function() {
+            saveCurrentPlaylist();
+        });
+    }
+});
+
+// Add this to your static/js/player.js file
+document.addEventListener('DOMContentLoaded', function() {
+    // Connect Play All button
+    const playAllBtn = document.getElementById('play-all-btn');
+    if (playAllBtn) {
+        playAllBtn.addEventListener('click', function() {
+            if (!window.currentPlaylist || window.currentPlaylist.length === 0) {
+                alert('No tracks to play');
+                return;
+            }
+            
+            console.log(`Playing all ${window.currentPlaylist.length} tracks in playlist`);
+            
+            // Use the existing playEntirePlaylist function if available
+            if (typeof window.playEntirePlaylist === 'function') {
+                window.playEntirePlaylist(window.currentPlaylist);
+            } else {
+                // Fallback: Just play the first track
+                if (window.currentPlaylist[0] && typeof window.playTrack === 'function') {
+                    window.playTrack(window.currentPlaylist[0].id);
+                }
+            }
+        });
+    }
+});

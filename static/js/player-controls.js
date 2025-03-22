@@ -847,3 +847,68 @@ function loadRecentTrack() {
             return false;
         });
 }
+
+// Add or verify this code in your player-controls.js file:
+
+document.addEventListener('DOMContentLoaded', function() {
+    // DOM elements
+    const audioPlayer = document.getElementById('audio-player');
+    const playPauseButton = document.getElementById('play-pause');
+    
+    // Debug logging
+    console.log('Audio player element:', audioPlayer);
+    console.log('Play/pause button element:', playPauseButton);
+    
+    // Attach event listener to play/pause button
+    if (playPauseButton) {
+        console.log('Adding click event to play/pause button');
+        playPauseButton.addEventListener('click', function() {
+            console.log('Play/Pause button clicked');
+            togglePlayPause();
+        });
+    } else {
+        console.error('Play/pause button not found in the DOM');
+    }
+    
+    // Toggle play/pause function
+    function togglePlayPause() {
+        console.log('Toggle play/pause called');
+        console.log('Audio player paused state before toggle:', audioPlayer.paused);
+        
+        if (audioPlayer.paused) {
+            audioPlayer.play().then(() => {
+                console.log('Started playback');
+                playPauseButton.textContent = '⏸';
+            }).catch(error => {
+                console.error('Error starting playback:', error);
+            });
+        } else {
+            audioPlayer.pause();
+            console.log('Paused playback');
+            playPauseButton.textContent = '▶';
+        }
+    }
+    
+    // Make togglePlayPause available globally
+    window.togglePlayPause = togglePlayPause;
+});
+
+// Check if this is happening somewhere in your code
+function loadTrack(trackId) {
+    fetch(`/api/tracks/${trackId}`)
+        .then(response => response.json())
+        .then(track => {
+            const audioPlayer = document.getElementById('audio-player');
+            audioPlayer.src = track.file_url;
+            audioPlayer.load(); // Important for some browsers
+            
+            // Update UI elements
+            document.getElementById('now-playing-title').textContent = track.title;
+            document.getElementById('now-playing-artist').textContent = track.artist;
+            
+            // After loading, you can play
+            audioPlayer.play().then(() => {
+                document.getElementById('play-pause').textContent = '⏸';
+            });
+        });
+}
