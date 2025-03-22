@@ -1927,3 +1927,399 @@ window.loadLiked = function() {
             // ...existing code...
         });
 };
+
+// Global functions for loading home page content sections
+
+// Make displaySearchResults globally accessible for all views
+function displaySearchResults(tracks) {
+    console.log('Displaying tracks:', tracks);
+    const searchResults = document.getElementById('search-results');
+    
+    if (!searchResults) {
+        console.error('search-results element not found');
+        return;
+    }
+    
+    searchResults.innerHTML = '';
+    
+    if (!Array.isArray(tracks) || tracks.length === 0) {
+        searchResults.innerHTML = '<div class="empty-state"><h3>No tracks found</h3><p>Try another search or add more music to your library.</p></div>';
+        return;
+    }
+    
+    const resultsContainer = document.createElement('div');
+    resultsContainer.className = 'track-grid';
+    
+    tracks.forEach(track => {
+        const trackCard = createTrackCard(track);
+        resultsContainer.appendChild(trackCard);
+    });
+    
+    searchResults.appendChild(resultsContainer);
+}
+
+// Create track card function
+function createTrackCard(track) {
+    const trackCard = document.createElement('div');
+    trackCard.className = 'track-card';
+    
+    // Create album art container with image
+    const albumArt = document.createElement('div');
+    albumArt.className = 'album-art';
+    
+    const img = document.createElement('img');
+    if (track.album_art_url) {
+        img.src = track.album_art_url;
+    } else {
+        img.src = '/static/images/default-album-art.png';
+    }
+    img.alt = 'Album Art';
+    img.onerror = function() {
+        this.src = '/static/images/default-album-art.png';
+    };
+    
+    const playOverlay = document.createElement('div');
+    playOverlay.className = 'play-overlay';
+    playOverlay.innerHTML = '<i class="play-icon">▶</i>';
+    
+    albumArt.appendChild(img);
+    albumArt.appendChild(playOverlay);
+    trackCard.appendChild(albumArt);
+    
+    // Create track info container
+    const trackInfo = document.createElement('div');
+    trackInfo.className = 'track-info';
+    
+    const trackTitle = document.createElement('div');
+    trackTitle.className = 'track-title';
+    trackTitle.textContent = track.title || 'Unknown Title';
+    
+    const trackArtist = document.createElement('div');
+    trackArtist.className = 'track-artist';
+    trackArtist.textContent = track.artist || 'Unknown Artist';
+    
+    trackInfo.appendChild(trackTitle);
+    trackInfo.appendChild(trackArtist);
+    trackCard.appendChild(trackInfo);
+    
+    // Create actions container with all buttons
+    const trackActions = document.createElement('div');
+    trackActions.className = 'track-actions';
+    
+    // Play button
+    const playButton = document.createElement('button');
+    playButton.className = 'play-track';
+    playButton.textContent = 'Play';
+    playButton.dataset.id = track.id;
+    playButton.addEventListener('click', function(e) {
+        e.stopPropagation();
+        window.playTrack(track.id);
+    });
+    
+    // Station button
+    const stationButton = document.createElement('button');
+    stationButton.className = 'create-station';
+    stationButton.textContent = 'Station';
+    stationButton.dataset.id = track.id;
+    stationButton.addEventListener('click', function(e) {
+        e.stopPropagation();
+        createStation(track.id);
+    });
+    
+    // Like button
+    const likeButton = document.createElement('button');
+    likeButton.className = track.liked ? 'track-like-button liked' : 'track-like-button';
+    likeButton.innerHTML = track.liked ? '♥' : '♡';
+    likeButton.title = track.liked ? 'Unlike' : 'Like';
+    likeButton.dataset.id = track.id;
+    likeButton.addEventListener('click', function(e) {
+        e.stopPropagation();
+        toggleLikeStatus(track.id);
+    });
+    
+    // Add all buttons to actions container
+    trackActions.appendChild(playButton);
+    trackActions.appendChild(stationButton);
+    trackActions.appendChild(likeButton);
+    
+    trackCard.appendChild(trackActions);
+    
+    // Add click event to play track when clicking card
+    trackCard.addEventListener('click', function() {
+        window.playTrack(track.id);
+    });
+    
+    return trackCard;
+}
+
+// Global explore loader
+window.loadExplore = function() {
+    console.log('Global loadExplore called');
+    
+    // Update heading
+    const resultsHeading = document.getElementById('results-heading');
+    if (resultsHeading) {
+        resultsHeading.textContent = 'Discover';
+    }
+    
+    const searchResults = document.getElementById('search-results');
+    if (!searchResults) {
+        console.error('search-results element not found');
+        return;
+    }
+    
+    // Show loading indicator
+    searchResults.innerHTML = '<div class="loading">Loading tracks...</div>';
+    
+    // Hide the playlist container
+    const playlistContainer = document.getElementById('playlist-container');
+    if (playlistContainer) {
+        playlistContainer.style.display = 'none';
+    }
+    
+    // Fetch explore data
+    fetch('/explore')
+        .then(response => response.json())
+        .then(data => {
+            console.log('Explore data received:', data);
+            if (Array.isArray(data) && data.length > 0) {
+                // Limit to 6 items only if needed
+                const displayData = data.slice(0, 12);
+                displaySearchResults(displayData);
+            } else if (Array.isArray(data) && data.length === 0) {
+                searchResults.innerHTML = '<p>No tracks found. Try adding some music!</p>';
+            } else if (data.error) {
+                searchResults.innerHTML = `<p>Error: ${data.error}</p>`;
+            }
+        })
+        .catch(error => {
+            console.error('Error loading explore:', error);
+            if (searchResults) {
+                searchResults.innerHTML = '<p>Failed to load tracks. See console for details.</p>';
+            }
+        });
+};
+
+// Global recent tracks loader
+window.loadRecent = function() {
+    console.log('Global loadRecent called');
+    
+    // Update heading
+    const resultsHeading = document.getElementById('results-heading');
+    if (resultsHeading) {
+        resultsHeading.textContent = 'Recently Added';
+    }
+    
+    const searchResults = document.getElementById('search-results');
+    if (!searchResults) {
+        console.error('search-results element not found');
+        return;
+    }
+    
+    // Show loading indicator
+    searchResults.innerHTML = '<div class="loading">Loading recent tracks...</div>';
+    
+    // Hide the playlist container
+    const playlistContainer = document.getElementById('playlist-container');
+    if (playlistContainer) {
+        playlistContainer.style.display = 'none';
+    }
+    
+    // Fetch recent tracks
+    fetch('/recent')
+        .then(response => response.json())
+        .then(data => {
+            console.log('Recent data received:', data);
+            if (Array.isArray(data) && data.length > 0) {
+                // Limit to 12 items only
+                const displayData = data.slice(0, 12);
+                displaySearchResults(displayData);
+            } else if (Array.isArray(data) && data.length === 0) {
+                searchResults.innerHTML = '<p>No recent tracks found. Try adding some music!</p>';
+            } else if (data.error) {
+                searchResults.innerHTML = `<p>Error: ${data.error}</p>`;
+            }
+        })
+        .catch(error => {
+            console.error('Error loading recent tracks:', error);
+            if (searchResults) {
+                searchResults.innerHTML = '<p>Failed to load recent tracks. See console for details.</p>';
+            }
+        });
+};
+
+// Global liked tracks loader
+window.loadLiked = function() {
+    console.log('Global loadLiked called');
+    
+    // Update heading
+    const resultsHeading = document.getElementById('results-heading');
+    if (resultsHeading) {
+        resultsHeading.textContent = 'Liked Tracks';
+    }
+    
+    const searchResults = document.getElementById('search-results');
+    if (!searchResults) {
+        console.error('search-results element not found');
+        return;
+    }
+    
+    // Show loading indicator
+    searchResults.innerHTML = '<div class="loading">Loading liked tracks...</div>';
+    
+    // Hide the playlist container
+    const playlistContainer = document.getElementById('playlist-container');
+    if (playlistContainer) {
+        playlistContainer.style.display = 'none';
+    }
+    
+    // Fetch liked tracks
+    fetch('/api/liked-tracks')
+        .then(response => response.json())
+        .then(data => {
+            console.log('Liked tracks data received:', data);
+            
+            // Handle empty results
+            if (!Array.isArray(data) || data.length === 0) {
+                if (searchResults) {
+                    searchResults.innerHTML = `
+                        <div class="empty-state">
+                            <h3>No liked tracks found</h3>
+                            <p>Like some tracks to see them appear here.</p>
+                        </div>
+                    `;
+                }
+                return;
+            }
+            
+            // Ensure all tracks have the liked property set to true
+            const likedTracks = data.map(track => ({
+                ...track,
+                liked: true
+            }));
+            
+            // Display the tracks
+            displaySearchResults(likedTracks);
+        })
+        .catch(error => {
+            console.error('Error loading liked tracks:', error);
+            if (searchResults) {
+                searchResults.innerHTML = `<div class="error">Error loading liked tracks: ${error}</div>`;
+            }
+        });
+};
+
+// Add helper function for like/unlike
+function toggleLikeStatus(trackId) {
+    if (!trackId) return;
+    
+    console.log('Toggling like status for track:', trackId);
+    
+    // Send request to toggle like status
+    fetch(`/api/tracks/${trackId}/like`, {
+        method: 'POST'
+    })
+    .then(response => response.json())
+    .then(data => {
+        console.log('Like status toggled:', data);
+        
+        // Update the UI
+        const likeButtons = document.querySelectorAll(`.track-like-button[data-id="${trackId}"]`);
+        likeButtons.forEach(button => {
+            if (data.liked) {
+                button.classList.add('liked');
+                button.innerHTML = '♥';
+                button.title = 'Unlike';
+            } else {
+                button.classList.remove('liked');
+                button.innerHTML = '♡';
+                button.title = 'Like';
+            }
+        });
+    })
+    .catch(error => {
+        console.error('Error toggling like status:', error);
+    });
+}
+
+// Add create station function
+function createStation(trackId) {
+    // Redirect to station page
+    window.location.href = `/station?seed=${trackId}`;
+}
+
+// Initialize player page
+window.initPlayerPage = function() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const view = urlParams.get('view');
+    
+    console.log('Initializing player page with view:', view);
+    
+    // Load the appropriate view based on URL parameter
+    if (view === 'explore') {
+        window.loadExplore();
+    } else if (view === 'recent') {
+        window.loadRecent();
+    } else if (view === 'liked') {
+        window.loadLiked();
+    } else {
+        // Default view - home shows explore
+        window.loadExplore();
+    }
+};
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+    window.initPlayerPage();
+    
+    // Search functionality
+    const searchInput = document.getElementById('search-input');
+    const searchButton = document.getElementById('search-button');
+    
+    if (searchButton && searchInput) {
+        searchButton.addEventListener('click', function() {
+            const query = searchInput.value.trim();
+            if (query) {
+                searchTracks(query);
+            }
+        });
+        
+        searchInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                const query = searchInput.value.trim();
+                if (query) {
+                    searchTracks(query);
+                }
+            }
+        });
+    }
+    
+    function searchTracks(query) {
+        const searchResults = document.getElementById('search-results');
+        const resultsHeading = document.getElementById('results-heading');
+        
+        if (resultsHeading) {
+            resultsHeading.textContent = `Search Results: "${query}"`;
+        }
+        
+        if (searchResults) {
+            searchResults.innerHTML = '<div class="loading">Searching...</div>';
+        }
+        
+        fetch(`/search?query=${encodeURIComponent(query)}`)
+            .then(response => response.json())
+            .then(data => {
+                if (Array.isArray(data)) {
+                    displaySearchResults(data);
+                } else if (data.error) {
+                    searchResults.innerHTML = `<p>Error: ${data.error}</p>`;
+                }
+            })
+            .catch(error => {
+                console.error('Error searching:', error);
+                if (searchResults) {
+                    searchResults.innerHTML = '<p>Search failed. See console for details.</p>';
+                }
+            });
+    }
+});
