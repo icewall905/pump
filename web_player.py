@@ -19,6 +19,7 @@ import time  # For sleep between API calls
 import threading  # Add this import
 from flask import jsonify, request  # Add this import
 import re
+from db_utils import get_optimized_connection, optimized_connection
 
 # Import logging configuration
 try:
@@ -135,6 +136,14 @@ if not config.has_section('scheduler'):
     config.set('scheduler', 'last_run', '')
     config_updated = True
 
+# Add database performance configuration section if needed
+if not config.has_section('database_performance'):
+    config.add_section('database_performance')
+    config.set('database_performance', 'in_memory', 'false')  # Keep in memory?
+    config.set('database_performance', 'cache_size_mb', '75')  # Cache size in MB
+    config.set('database_performance', 'optimize_connections', 'true')  # Apply optimizations?
+    config_updated = True
+
 # Write config file only if it was changed or didn't exist
 if config_updated or not os.path.exists(config_file):
     logger.info(f"Writing updated configuration to {config_file}")
@@ -172,15 +181,6 @@ except Exception as e:
 CACHE_DIR = config.get('cache', 'image_cache_dir', fallback='album_art_cache')
 MAX_CACHE_SIZE_MB = config.getint('cache', 'max_cache_size_mb', fallback=500)
 
-
-# Scheduler variables
-SCHEDULER_TIMER = None
-SCHEDULER_RUNNING = False
-
-# Create cache directory if it doesn't exist
-if not os.path.exists(CACHE_DIR):
-    os.makedirs(CACHE_DIR)
-    logger.info(f"Created album art cache directory: {CACHE_DIR}")
 
 # Create Flask app
 app = Flask(__name__)
@@ -250,6 +250,68 @@ QUICK_SCAN_STATUS = {
     'error': None
 }
 
+
+# Scheduler variables
+SCHEDULER_TIMER = None
+SCHEDULER_RUNNING = False
+
+# Create cache directory if it doesn't exist
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
+    logger.info(f"Created album art cache directory: {CACHE_DIR}")
+
+# Get database performance settings
+DB_IN_MEMORY = config.getboolean('database_performance', 'in_memory', fallback=False)
+DB_CACHE_SIZE_MB = config.getint('database_performance', 'cache_size_mb', fallback=75)
+DB_OPTIMIZE = config.getboolean('database_performance', 'optimize_connections', fallback=True)
+
+# Add this code after your DB performance settings, around line 175-200
+
+# Create a global connection for in-memory mode
+if DB_IN_MEMORY:
+    try:
+        # Instead of creating a global connection object directly,
+        # we'll use a thread-specific connection store
+        from db_utils import get_optimized_connection, save_memory_db_to_disk
+        import atexit
+        
+        # Create connection in main thread
+        main_thread_conn = get_optimized_connection(
+            DB_PATH, in_memory=True, cache_size_mb=DB_CACHE_SIZE_MB, check_same_thread=False)
+        
+        # Register function to save at exit
+        def save_db_at_exit():
+            logger.info("Application shutting down. Saving in-memory database to disk...")
+            save_memory_db_to_disk(main_thread_conn, DB_PATH)
+        
+        atexit.register(save_db_at_exit)
+        
+        # Use a different approach for request teardown - use a hook function
+        # that saves after each request completes (only if changes were made)
+        from flask import g
+        
+        @app.before_request
+        def setup_db_connection():
+            g.db_modified = False
+        
+        @app.teardown_request
+        def save_if_modified(exception):
+            """Save in-memory database to disk if modified during request"""
+            if hasattr(g, 'db_modified') and g.db_modified and DB_IN_MEMORY and main_thread_conn:
+                try:
+                    logger.info("Saving in-memory database to disk after request...")
+                    from db_utils import save_memory_db_to_disk
+                    save_memory_db_to_disk(main_thread_conn, DB_PATH)
+                except Exception as e:
+                    logger.error(f"Error saving in-memory database to disk: {e}")
+        
+        logger.info("In-memory database mode initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize in-memory database: {e}")
+        DB_IN_MEMORY = False
+else:
+    main_thread_conn = None
+
 @app.route('/')
 def index():
     """Home page with search functionality"""
@@ -265,7 +327,12 @@ def search():
         return jsonify([])
     
     try:
-        conn = sqlite3.connect(DB_PATH)
+        # Use optimized connection instead of direct sqlite3.connect
+        if DB_IN_MEMORY and main_thread_conn:  # Changed global_db_conn to main_thread_conn
+            conn = main_thread_conn  # Changed global_db_conn to main_thread_conn
+        else:
+            conn = get_optimized_connection(DB_PATH, cache_size_mb=DB_CACHE_SIZE_MB)
+            
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
@@ -279,7 +346,10 @@ def search():
         ''', (f'%{query}%', f'%{query}%', f'%{query}%', MAX_SEARCH_RESULTS))
         
         tracks = [dict(row) for row in cursor.fetchall()]
-        conn.close()
+        
+        # Only close if not using in-memory mode
+        if not (DB_IN_MEMORY and main_thread_conn):  # Changed global_db_conn to main_thread_conn
+            conn.close()
         
         logger.info(f"Search for '{query}' returned {len(tracks)} results")
         return jsonify(tracks)
@@ -414,7 +484,10 @@ def analyze_music():
         )
         analysis_thread.daemon = True
         analysis_thread.start()
-        
+
+        # Indicate the database will be modified (actual modification happens in the thread)
+        g.db_modified = True
+
         return jsonify({
             'success': True,
             'message': 'Analysis started in background. This is a two-step process: 1) Quick scan to identify files, 2) Analysis of audio features',
@@ -436,13 +509,16 @@ def analyze_music():
 # Update the run_analysis function
 
 def run_analysis(folder_path, recursive):
-    """Run the analysis in a background thread"""
-    global analyzer, ANALYSIS_STATUS
+    """Run full analysis in a background thread"""
+    global analysis_thread
     
     try:
-        logger.info(f"Starting audio analysis for {folder_path} (recursive={recursive})")
-        
-        # Initialize status with empty values
+        # Make sure analyzer exists
+        if not analyzer:
+            logger.error("Cannot run analysis: Music analyzer not available")
+            return
+            
+        # Update status
         ANALYSIS_STATUS.update({
             'running': True,
             'start_time': datetime.now().isoformat(),
@@ -451,9 +527,7 @@ def run_analysis(folder_path, recursive):
             'current_file': '',
             'percent_complete': 0,
             'last_updated': datetime.now().isoformat(),
-            'error': None,
-            'last_run_completed': False,
-            'scan_complete': False  # Add a flag to track scan completion
+            'error': None
         })
         
         # Step 1: Quick scan to identify files and add to database
@@ -511,14 +585,13 @@ def run_analysis(folder_path, recursive):
         logger.info(f"Step 2/2: Analyzing {pending_count} pending files...")
         feature_result = analyzer.analyze_pending_files(
             progress_callback=analysis_progress_callback
-        )
+)
         
         # Update final status
         ANALYSIS_STATUS.update({
             'running': False,
             'percent_complete': 100,
-            'last_updated': datetime.now().isoformat(),
-            'last_run_completed': True
+            'last_updated': datetime.now().isoformat()
         })
         
         # Combine results
@@ -532,14 +605,20 @@ def run_analysis(folder_path, recursive):
         }
         
         logger.info(f"Background analysis complete: {full_result['files_processed']} files processed, {full_result['tracks_added']} tracks added, {full_result['features_analyzed']} features analyzed")
-    
+        
     except Exception as e:
-        logger.error(f"Background analysis error: {e}")
+        logger.error(f"Error running analysis: {e}")
+        # Update status with error
         ANALYSIS_STATUS.update({
             'running': False,
             'error': str(e),
             'last_updated': datetime.now().isoformat()
         })
+        
+        # Save any partial changes to database
+        if DB_IN_MEMORY and main_thread_conn:
+            from db_utils import trigger_db_save
+            trigger_db_save(main_thread_conn, DB_PATH)
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
@@ -596,12 +675,31 @@ def settings():
             if schedule_frequency != 'never':
                 config.set('scheduler', 'last_run', datetime.now().isoformat())
             
+            # Database performance settings
+            if 'in_memory' in request.form:
+                config.set('database_performance', 'in_memory', 
+                         'true' if request.form.get('in_memory') == 'on' else 'false')
+            
+            if 'cache_size_mb' in request.form:
+                cache_size = request.form.get('cache_size_mb', '75')
+                # Validate it's a number between 10 and 1000
+                try:
+                    cache_size_int = int(cache_size)
+                    if 10 <= cache_size_int <= 1000:
+                        config.set('database_performance', 'cache_size_mb', cache_size)
+                except ValueError:
+                    # If not a valid number, keep existing value
+                    pass
+            
             # Save changes
             with open(config_file, 'w') as f:
                 config.write(f)
             
             # Update the scheduler
             update_scheduler()
+            
+            # Mark database as modified (in case config db is stored in memory)
+            g.db_modified = True
             
             logger.info("Settings saved successfully")
             return redirect(url_for('settings', message='Settings saved successfully'))
@@ -626,6 +724,10 @@ def settings():
     startup_action = config.get('scheduler', 'startup_action', fallback='nothing')
     schedule_frequency = config.get('scheduler', 'schedule_frequency', fallback='never')
     
+    # Get database performance settings
+    in_memory = config.getboolean('database_performance', 'in_memory', fallback=False)
+    cache_size_mb = config.get('database_performance', 'cache_size_mb', fallback='75')
+    
     # Calculate next scheduled run time for display
     next_run_time = calculate_next_run_time()
     
@@ -644,6 +746,8 @@ def settings():
         startup_action=startup_action,
         schedule_frequency=schedule_frequency,
         next_run_time=next_run_time,
+        in_memory=in_memory,
+        cache_size_mb=cache_size_mb,
         message=message,
         error=error
     )
@@ -835,25 +939,63 @@ def cache_stats():
 
 @app.route('/cache/clear', methods=['POST'])
 def clear_cache():
-    """Clear the album art cache"""
     try:
+        # Ensure the cache directory exists
+        if not os.path.exists(CACHE_DIR):
+            return jsonify({"status": "success", "message": "Cache is already empty"})
+        
+        # Get all files in the cache directory
         file_count = 0
-        for file in os.listdir(CACHE_DIR):
-            file_path = os.path.join(CACHE_DIR, file)
+        total_size = 0
+        
+        for filename in os.listdir(CACHE_DIR):
+            file_path = os.path.join(CACHE_DIR, filename)
             if os.path.isfile(file_path):
+                file_size = os.path.getsize(file_path)
+                total_size += file_size
                 os.remove(file_path)
                 file_count += 1
         
-        logger.info(f"Cache cleared. Removed {file_count} files.")
+        # Also clear artist image cache if it exists
+        artist_cache_dir = 'artist_image_cache'
+        if os.path.exists(artist_cache_dir):
+            for filename in os.listdir(artist_cache_dir):
+                file_path = os.path.join(artist_cache_dir, filename)
+                if os.path.isfile(file_path):
+                    file_size = os.path.getsize(file_path)
+                    total_size += file_size
+                    os.remove(file_path)
+                    file_count += 1
+        
+        # Format sizes for display
+        if total_size < 1024:
+            size_str = f"{total_size} bytes"
+        elif total_size < 1024 * 1024:
+            size_str = f"{total_size / 1024:.1f} KB"
+        else:
+            size_str = f"{total_size / (1024 * 1024):.1f} MB"
+        
+        # Remove cache records from database if applicable
+        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+            cursor = conn.cursor()
+            
+            # Update album_art_url to null for all tracks
+            cursor.execute("UPDATE audio_files SET album_art_url = NULL WHERE album_art_url LIKE '/cache/%'")
+            cursor.execute("UPDATE audio_files SET artist_image_url = NULL WHERE artist_image_url LIKE '/cache/%'")
+            
+            conn.commit()
+            
+            # Mark database as modified
+            g.db_modified = True
+        
         return jsonify({
-            'status': 'success',
-            'message': f'Cache cleared. Removed {file_count} files.',
-            'files_removed': file_count
+            "status": "success",
+            "message": f"Cache cleared. Removed {file_count} files ({size_str})."
         })
     
     except Exception as e:
         logger.error(f"Error clearing cache: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # Add these routes for playlist management
 
@@ -885,39 +1027,48 @@ def get_playlists():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/playlists', methods=['POST'])
-def save_playlist():  # RENAMED from create_playlist to save_playlist
-    """Create a new playlist"""
+def save_playlist():
     try:
         data = request.get_json()
         
-        if not data or 'name' not in data:
-            return jsonify({'error': 'Playlist name is required'}), 400
-        
-        name = data.get('name')
+        # Validate required fields
+        if not data or 'name' not in data or 'tracks' not in data:
+            return jsonify({'error': 'Missing required fields'}), 400
+            
+        name = data['name']
         description = data.get('description', '')
-        tracks = data.get('tracks', [])
+        tracks = data['tracks']
         
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        # Insert playlist
-        cursor.execute(
-            'INSERT INTO playlists (name, description) VALUES (?, ?)',
-            (name, description)
-        )
-        playlist_id = cursor.lastrowid
-        
-        # Insert tracks
-        for i, track_id in enumerate(tracks):
+        # Validate tracks format
+        if not isinstance(tracks, list):
+            return jsonify({'error': 'Tracks must be a list'}), 400
+            
+        # Connect to database
+        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Insert playlist
             cursor.execute(
-                'INSERT INTO playlist_items (playlist_id, track_id, position) VALUES (?, ?, ?)',
-                (playlist_id, track_id, i)
+                'INSERT INTO playlists (name, description) VALUES (?, ?)',
+                (name, description)
             )
-        
-        conn.commit()
-        conn.close()
-        
+            
+            # Get the new playlist ID
+            playlist_id = cursor.lastrowid
+            
+            # Insert tracks
+            for i, track_id in enumerate(tracks):
+                cursor.execute(
+                    'INSERT INTO playlist_items (playlist_id, track_id, position) VALUES (?, ?, ?)',
+                    (playlist_id, track_id, i)
+                )
+                
+            conn.commit()
+            
+        # Mark database as modified
+        g.db_modified = True
+            
         return jsonify({
             'id': playlist_id,
             'name': name,
@@ -926,7 +1077,7 @@ def save_playlist():  # RENAMED from create_playlist to save_playlist
         })
         
     except Exception as e:
-        logger.error(f"Error creating playlist: {e}")
+        logger.error(f"Error saving playlist: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/playlists/<int:playlist_id>', methods=['GET'])
@@ -966,86 +1117,93 @@ def get_playlist(playlist_id):
 
 @app.route('/playlists/<int:playlist_id>', methods=['PUT'])
 def update_playlist(playlist_id):
-    """Update an existing playlist"""
     try:
         data = request.get_json()
         
+        # Validate required fields
         if not data:
             return jsonify({'error': 'No data provided'}), 400
+            
+        name = data.get('name')
+        description = data.get('description')
+        tracks = data.get('tracks')
         
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Check if playlist exists
-        cursor.execute('SELECT id FROM playlists WHERE id = ?', (playlist_id,))
-        if not cursor.fetchone():
-            conn.close()
-            return jsonify({'error': 'Playlist not found'}), 404
-        
-        # Update metadata if provided
-        if 'name' in data or 'description' in data:
-            update_fields = []
-            update_values = []
+        # Connect to database
+        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
             
-            if 'name' in data:
-                update_fields.append('name = ?')
-                update_values.append(data['name'])
-            
-            if 'description' in data:
-                update_fields.append('description = ?')
-                update_values.append(data['description'])
-            
-            update_fields.append('updated_at = CURRENT_TIMESTAMP')
-            
-            cursor.execute(
-                f'UPDATE playlists SET {", ".join(update_fields)} WHERE id = ?',
-                (*update_values, playlist_id)
-            )
-        
-        # Update tracks if provided
-        if 'tracks' in data:
-            # Delete existing tracks
-            cursor.execute('DELETE FROM playlist_items WHERE playlist_id = ?', (playlist_id,))
-            
-            # Insert new tracks
-            for i, track_id in enumerate(data['tracks']):
+            # Check if playlist exists
+            cursor.execute('SELECT id FROM playlists WHERE id = ?', (playlist_id,))
+            if not cursor.fetchone():
+                return jsonify({'error': 'Playlist not found'}), 404
+                
+            # Update playlist details if provided
+            if name or description is not None:
+                update_fields = []
+                update_values = []
+                
+                if name:
+                    update_fields.append('name = ?')
+                    update_values.append(name)
+                    
+                if description is not None:
+                    update_fields.append('description = ?')
+                    update_values.append(description)
+                    
+                update_fields.append('updated_at = CURRENT_TIMESTAMP')
+                
                 cursor.execute(
-                    'INSERT INTO playlist_items (playlist_id, track_id, position) VALUES (?, ?, ?)',
-                    (playlist_id, track_id, i)
+                    f'UPDATE playlists SET {", ".join(update_fields)} WHERE id = ?',
+                    update_values + [playlist_id]
                 )
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'success': True})
+                
+            # Update tracks if provided
+            if tracks is not None:
+                # First delete existing tracks
+                cursor.execute('DELETE FROM playlist_items WHERE playlist_id = ?', (playlist_id,))
+                
+                # Then insert new tracks
+                for i, track_id in enumerate(tracks):
+                    cursor.execute(
+                        'INSERT INTO playlist_items (playlist_id, track_id, position) VALUES (?, ?, ?)',
+                        (playlist_id, track_id, i)
+                    )
+                    
+            conn.commit()
+            
+        # Mark database as modified
+        g.db_modified = True
+            
+        return jsonify({'message': 'Playlist updated successfully'})
         
     except Exception as e:
-        logger.error(f"Error updating playlist {playlist_id}: {e}")
+        logger.error(f"Error updating playlist: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/playlists/<int:playlist_id>', methods=['DELETE'])
 def delete_playlist(playlist_id):
-    """Delete a playlist"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Check if playlist exists
-        cursor.execute('SELECT id FROM playlists WHERE id = ?', (playlist_id,))
-        if not cursor.fetchone():
-            conn.close()
-            return jsonify({'error': 'Playlist not found'}), 404
-        
-        # Delete playlist (cascade will delete playlist items)
-        cursor.execute('DELETE FROM playlists WHERE id = ?', (playlist_id,))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({'success': True})
+        # Connect to database
+        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+            cursor = conn.cursor()
+            
+            # Check if playlist exists
+            cursor.execute('SELECT id FROM playlists WHERE id = ?', (playlist_id,))
+            if not cursor.fetchone():
+                return jsonify({'error': 'Playlist not found'}), 404
+                
+            # Delete playlist (cascade will delete playlist items)
+            cursor.execute('DELETE FROM playlists WHERE id = ?', (playlist_id,))
+            conn.commit()
+            
+        # Mark database as modified
+        g.db_modified = True
+            
+        return jsonify({'message': 'Playlist deleted successfully'})
         
     except Exception as e:
-        logger.error(f"Error deleting playlist {playlist_id}: {e}")
+        logger.error(f"Error deleting playlist: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/recent')
@@ -1187,7 +1345,12 @@ def get_album_tracks(album):
 @app.route('/api/library/artists')
 def get_artists():
     try:
-        conn = sqlite3.connect(DB_PATH)
+        # Use optimized connection
+        if DB_IN_MEMORY and main_thread_conn:  # FIXED: Changed global_db_conn to main_thread_conn
+            conn = main_thread_conn  # FIXED: Changed global_db_conn to main_thread_conn
+        else:
+            conn = get_optimized_connection(DB_PATH, cache_size_mb=DB_CACHE_SIZE_MB)
+            
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
@@ -1204,7 +1367,10 @@ def get_artists():
         ''')
         
         artists = [dict(row) for row in cursor.fetchall()]
-        conn.close()
+        
+        # Only close if not using in-memory mode
+        if not (DB_IN_MEMORY and main_thread_conn):  # FIXED: Changed global_db_conn to main_thread_conn
+            conn.close()
         
         # Log the first few artists to see if they have images
         if artists and len(artists) > 0:
@@ -1277,85 +1443,89 @@ def get_songs():
 
 @app.route('/api/update-artist-images', methods=['POST'])
 def update_artist_images():
-    """Update artist images using LastFM"""
-    global analyzer
+    # Initialize LastFM service
+    lastfm_api_key = config.get('lastfm', 'api_key', fallback='')
+    lastfm_api_secret = config.get('lastfm', 'api_secret', fallback='')
     
-    if not analyzer:
-        return jsonify({"success": False, "error": "Analyzer not initialized"})
+    if not lastfm_api_key or not lastfm_api_secret:
+        return jsonify({"status": "error", "message": "LastFM API keys not configured"}), 400
+        
+    service_name = request.args.get('service', 'lastfm')
+    
+    if service_name == 'lastfm':
+        service = LastFMService(lastfm_api_key, lastfm_api_secret)
+    else:
+        return jsonify({"status": "error", "message": f"Unknown service: {service_name}"}), 400
     
     try:
-        # Configure LastFM API service
-        lastfm_api_key = config.get('lastfm', 'api_key', fallback='')
-        lastfm_api_secret = config.get('lastfm', 'api_secret', fallback='')
-        lastfm = LastFMService(lastfm_api_key, lastfm_api_secret)
-        
-        if not lastfm_api_key or not lastfm_api_secret:
-            return jsonify({"success": False, "error": "LastFM API keys not configured"})
+        # Connect to database
+        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
             
-        # Get artists without images
-        conn = sqlite3.connect(analyzer.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT DISTINCT artist FROM audio_files 
-            WHERE artist IS NOT NULL AND artist != '' 
-            AND (artist_image_url IS NULL OR artist_image_url = '' OR artist_image_url = ?)
-            LIMIT 100
-        ''', ('',))
-        
-        artists = [row[0] for row in cursor.fetchall()]
-        
-        if not artists:
-            return jsonify({"success": True, "message": "No artists without images found"})
+            # Get distinct artists without images
+            cursor.execute('''
+                SELECT DISTINCT artist
+                FROM audio_files
+                WHERE artist IS NOT NULL AND artist != '' AND artist_image_url IS NULL OR artist_image_url = ''
+                LIMIT 50
+            ''')
             
-        logger.info(f"Found {len(artists)} artists without images. Updating...")
-        
-        updated_count = 0
-        
-        # Update each artist
-        for artist in artists:
-            # Clean artist name
-            artist = sanitize_artist_name(artist)
+            artists = [row['artist'] for row in cursor.fetchall()]
             
-            if not artist:
-                continue
+            if not artists:
+                return jsonify({"status": "success", "message": "No artists need images"})
                 
-            # Check if artist already has image
-            if artist_has_image(artist):
-                continue
+            # Create cache directory if it doesn't exist
+            artist_cache_dir = 'artist_image_cache'
+            if not os.path.exists(artist_cache_dir):
+                os.makedirs(artist_cache_dir)
                 
-            # Get image URL from LastFM
-            image_url = lastfm.get_artist_image_url(artist, CACHE_DIR)  # Pass cache directory
+            updated_count = 0
             
-            if image_url:
-                logger.info(f"Got image for artist: {artist}")
-                
-                # Update database
+            # Get images for each artist
+            for artist in artists:
                 try:
-                    cursor.execute(
-                        'UPDATE audio_files SET artist_image_url = ? WHERE artist = ?', 
-                        (image_url, artist)
-                    )
-                    conn.commit()
-                    updated_count += 1
-                except Exception as db_error:
-                    logger.error(f"Database error updating artist image: {db_error}")
+                    # Check if we already have an image for this artist (might have been added in a previous run)
+                    if artist_has_image(artist):
+                        continue
+                        
+                    # Clean artist name
+                    clean_artist = sanitize_artist_name(artist)
+                    
+                    # Get image from service
+                    image_url = service.get_artist_image_url(clean_artist, cache_dir=artist_cache_dir)
+                    
+                    if image_url:
+                        # Update all tracks for this artist
+                        cursor.execute('''
+                            UPDATE audio_files
+                            SET artist_image_url = ?
+                            WHERE artist = ?
+                        ''', (image_url, artist))
+                        
+                        updated_count += cursor.rowcount
+                        
+                except Exception as e:
+                    logger.error(f"Error getting image for artist '{artist}': {e}")
+                    continue
+                    
+            # Commit changes
+            conn.commit()
             
-            # Add a small delay to avoid overwhelming the API
-            time.sleep(0.5)
+            # Mark database as modified
+            g.db_modified = True
+                
+            return jsonify({
+                "status": "success",
+                "message": f"Updated {updated_count} tracks with artist images",
+                "artists_processed": len(artists),
+                "updated_count": updated_count
+            })
             
-        conn.close()
-        
-        return jsonify({
-            "success": True, 
-            "message": f"Updated {updated_count} artist images via LastFM",
-            "updated_count": updated_count,
-            "total_artists": len(artists)
-        })
-        
     except Exception as e:
         logger.error(f"Error updating artist images: {e}")
-        return jsonify({"success": False, "error": str(e)})
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/test-lastfm/<artist_name>')
 def test_lastfm(artist_name):
@@ -1457,92 +1627,85 @@ def test_lastfm_key():
 
 @app.route('/api/update-artist-images/spotify', methods=['POST'])
 def update_artist_images_spotify():
-    """Update artist images using Spotify"""
+    # Initialize Spotify service
+    spotify_client_id = config.get('spotify', 'client_id', fallback='')
+    spotify_client_secret = config.get('spotify', 'client_secret', fallback='')
+    
+    if not spotify_client_id or not spotify_client_secret:
+        return jsonify({"status": "error", "message": "Spotify API keys not configured"}), 400
+        
+    service = SpotifyService(spotify_client_id, spotify_client_secret)
+    
     try:
-        # Get Spotify API credentials
-        client_id = config.get('spotify', 'client_id', fallback=None)
-        client_secret = config.get('spotify', 'client_secret', fallback=None)
-        
-        # Use fallback keys if needed
-        if not client_id or not client_secret:
-            client_id = '5de01599b1ec493ea7fc3d0c4b1ec977'
-            client_secret = 'be8bb04ebb9c447484f62320bfa9b4cc'
-            logger.info("Using fallback Spotify API credentials")
-        
-        # Initialize Spotify service
-        spotify = SpotifyService(client_id, client_secret)
-        
-        # Get artists WITHOUT images only
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        default_image = "https://lastfm.freetls.fastly.net/i/u/300x300/2a96cbd8b46e442fc41c2b86b821562f.png"
-        
-        cursor.execute('''
-            SELECT DISTINCT artist FROM audio_files 
-            WHERE artist IS NOT NULL AND artist != '' 
-            AND (artist_image_url IS NULL OR artist_image_url = '' OR artist_image_url = ?)
-            ORDER BY artist
-        ''', (default_image,))
-        
-        artists = [row['artist'] for row in cursor.fetchall()]
-        conn.close()
-        
-        if not artists:
-            return jsonify({'message': 'No artists without images found'}), 200
-        
-        # Dictionary to collect images before DB updates
-        artist_images = {}
-        
-        # First fetch all images without touching DB
-        total = len(artists)
-        for artist in artists:
-            try:
-                logger.info(f"Fetching Spotify image for artist: {artist}")
-                image_url = spotify.get_artist_image_url(artist)
-                if image_url:
-                    logger.info(f"Found Spotify image for {artist}: {image_url}")
-                    artist_images[artist] = image_url
-                else:
-                    logger.warning(f"No Spotify image found for {artist}")
-            except Exception as e:
-                logger.error(f"Error processing artist {artist} with Spotify: {e}")
-
-        # Now update the database in a single transaction
-        updated_count = 0
-        if artist_images:
-            try:
-                conn = sqlite3.connect(DB_PATH)
-                cursor = conn.cursor()
-                conn.execute('BEGIN')
+        # Connect to database
+        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Get distinct artists without images
+            cursor.execute('''
+                SELECT DISTINCT artist
+                FROM audio_files
+                WHERE artist IS NOT NULL AND artist != '' 
+                AND (artist_image_url IS NULL OR artist_image_url = '')
+                LIMIT 50
+            ''')
+            
+            artists = [row['artist'] for row in cursor.fetchall()]
+            
+            if not artists:
+                return jsonify({"status": "success", "message": "No artists need images"})
                 
-                for artist, image_url in artist_images.items():
-                    cursor.execute(
-                        'UPDATE audio_files SET artist_image_url = ? WHERE artist = ?', 
-                        (image_url, artist)
-                    )
-                    updated_count += cursor.rowcount
+            # Create cache directory if it doesn't exist
+            artist_cache_dir = 'artist_image_cache'
+            if not os.path.exists(artist_cache_dir):
+                os.makedirs(artist_cache_dir)
                 
-                conn.commit()
-                conn.close()
-                logger.info(f"Updated {updated_count} artist images in database")
-            except Exception as e:
-                logger.error(f"Database update error: {e}")
-                if 'conn' in locals():
-                    conn.rollback()
-                    conn.close()
-
-        return jsonify({
-            'success': True,
-            'message': f'Updated images for {updated_count} of {total} artists using Spotify',
-            'updated': updated_count,
-            'total': total
-        })
-        
+            updated_count = 0
+            
+            # Get images for each artist
+            for artist in artists:
+                try:
+                    # Check if we already have an image for this artist (might have been added in a previous run)
+                    if artist_has_image(artist):
+                        continue
+                        
+                    # Clean artist name
+                    clean_artist = sanitize_artist_name(artist)
+                    
+                    # Get image from service
+                    image_url = service.get_artist_image_url(clean_artist, cache_dir=artist_cache_dir)
+                    
+                    if image_url:
+                        # Update all tracks for this artist
+                        cursor.execute('''
+                            UPDATE audio_files
+                            SET artist_image_url = ?
+                            WHERE artist = ?
+                        ''', (image_url, artist))
+                        
+                        updated_count += cursor.rowcount
+                        
+                except Exception as e:
+                    logger.error(f"Error getting image for artist '{artist}': {e}")
+                    continue
+                    
+            # Commit changes
+            conn.commit()
+            
+            # Mark database as modified
+            g.db_modified = True
+                
+            return jsonify({
+                "status": "success",
+                "message": f"Updated {updated_count} tracks with artist images via Spotify",
+                "artists_processed": len(artists),
+                "updated_count": updated_count
+            })
+            
     except Exception as e:
-        logger.error(f"Error updating artist images with Spotify: {e}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Error updating artist images via Spotify: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/test-spotify/<artist_name>')
 def test_spotify(artist_name):
@@ -1777,82 +1940,52 @@ def scan_library_endpoint():
 
 @app.route('/start_background_analysis', methods=['POST'])
 def start_background_analysis():
-    global analyzer, analysis_thread, analysis_progress
-    
-    # If analysis is already running, don't start a new one
-    if analysis_progress['is_running']:
-        return jsonify({'status': 'already_running'})
-    
-    data = request.get_json()
-    limit = data.get('limit')
-    batch_size = data.get('batch_size', 10)
-    
-    # Get initial counts
-    conn = sqlite3.connect(analyzer.db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
-    pending_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'analyzed'")
-    analyzed_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'failed'")
-    failed_count = cursor.fetchone()[0]
-    conn.close()
-    
-    # Update progress tracking instead of redefining
-    analysis_progress.update({
-        'is_running': True,
-        'total_files': min(pending_count, limit) if limit else pending_count,
-        'current_file_index': 0,
-        'analyzed_count': analyzed_count,
-        'failed_count': failed_count,
-        'pending_count': pending_count,
-        'last_run_completed': False,
-        'stop_requested': False  # Reset stop flag
-    })
-    
-    # Start analysis in a background thread
-    def background_task():
-        global analysis_progress
+    try:
+        # Check if already running
+        if analysis_progress['is_running']:
+            return jsonify({
+                'status': 'error',
+                'message': 'Analysis is already running'
+            }), 409
         
-        print(f"Starting background analysis of {analysis_progress['total_files']} files")
+        # Get folder path from config
+        folder_path = config.get('music', 'folder_path', fallback='')
+        recursive = config.getboolean('music', 'recursive', fallback=True)
         
-        # Define a callback to update progress
-        def update_progress(index, status):
-            if status == 'analyzed':
-                analysis_progress['analyzed_count'] += 1
-            elif status == 'failed':
-                analysis_progress['failed_count'] += 1
-            analysis_progress['current_file_index'] = index
+        if not folder_path:
+            return jsonify({
+                'status': 'error',
+                'message': 'Music folder path not configured'
+            }), 400
         
-        try:
-            # Run the analyzer
-            result = analyzer.analyze_pending_files(
-                limit=limit,
-                batch_size=batch_size,
-                progress_callback=update_progress
-            )
-            
-            # Update the progress with the final results
-            analysis_progress.update({
-                'is_running': False,
-                'last_run_completed': True,
-                'pending_count': result.get('remaining', 0)
-            })
-            
-            print(f"Background analysis complete: {result}")
-            
-        except Exception as e:
-            print(f"Error in background analysis: {e}")
-            analysis_progress.update({
-                'is_running': False,
-                'error': str(e)
-            })
-    
-    analysis_thread = threading.Thread(target=background_task)
-    analysis_thread.daemon = True
-    analysis_thread.start()
-    
-    return jsonify({'status': 'started'})
+        if not os.path.exists(folder_path):
+            return jsonify({
+                'status': 'error',
+                'message': f'Music folder path does not exist: {folder_path}'
+            }), 400
+        
+        # Start analysis in a background thread
+        analysis_thread = threading.Thread(
+            target=run_analysis,
+            args=(folder_path, recursive)
+        )
+        analysis_thread.daemon = True
+        analysis_thread.start()
+        
+        # Mark database as modified (actual modification happens in thread)
+        g.db_modified = True
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Background analysis started for {folder_path}'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error starting background analysis: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 @app.route('/stop_background_analysis', methods=['POST'])
 def stop_background_analysis():
@@ -1933,180 +2066,78 @@ def save_music_path():
 
 @app.route('/api/update-metadata', methods=['POST'])
 def update_metadata():
-    """Start background metadata update process"""
-    try:
-        # Get skip_existing parameter, default to False if not provided
-        data = request.get_json() or {}
-        skip_existing = data.get('skip_existing', False)
+    if not metadata_service:
+        return jsonify({"status": "error", "message": "Metadata service not available"}), 500
         
-        # Update global tracking variable
-        global METADATA_UPDATE_STATUS
-        
-        # Don't start if already running
-        if METADATA_UPDATE_STATUS['running']:
-            return jsonify({
-                'success': False,
-                'message': 'Metadata update already in progress'
-            })
-        
-        # Reset status
-        METADATA_UPDATE_STATUS.update({
-            'running': True,
-            'start_time': datetime.now(),
-            'total_tracks': 0,
-            'processed_tracks': 0,
-            'updated_tracks': 0,
-            'current_track': '',
-            'percent_complete': 0,
-            'last_updated': datetime.now(),
-            'error': None
-        })
-        
-        # Start in background thread
-        thread = threading.Thread(
-            target=metadata_service.update_all_metadata,
-            kwargs={
-                'status_tracker': METADATA_UPDATE_STATUS,
-                'skip_existing': skip_existing  # Pass the parameter
-            }
-        )
-        thread.daemon = True
-        thread.start()
-        
-        logger.info(f"Started metadata update (skip_existing={skip_existing})")
-        
-        return jsonify({
-            'success': True
-        })
-    except Exception as e:
-        logger.error(f"Error starting metadata update: {e}")
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        })
+    # Get skip_existing parameter
+    skip_existing = request.form.get('skip_existing', 'false') == 'true'
+    
+    # Check if metadata update is already running
+    if METADATA_UPDATE_STATUS['running']:
+        return jsonify({"status": "error", "message": "Metadata update already in progress"}), 409
+    
+    # Update status
+    METADATA_UPDATE_STATUS.update({
+        'running': True,
+        'start_time': datetime.now().isoformat(),
+        'total_tracks': 0,
+        'processed_tracks': 0,
+        'updated_tracks': 0,
+        'current_track': '',
+        'percent_complete': 0,
+        'last_updated': datetime.now().isoformat(),
+        'error': None
+    })
+    
+    # Start metadata update in a background thread
+    metadata_thread = threading.Thread(target=run_metadata_update, args=(skip_existing,))
+    metadata_thread.daemon = True
+    metadata_thread.start()
+    
+    # Mark database as modified (actual modification happens in thread)
+    g.db_modified = True
+    
+    return jsonify({"status": "started", "message": "Metadata update started"})
 
 # Add this function to run metadata update in background
-def run_metadata_update():
-    """Run the metadata update in a background thread"""
-    global analyzer, METADATA_UPDATE_STATUS
-    
+def run_metadata_update(skip_existing=False):
+    """Run metadata update in a background thread"""
     try:
-        conn = sqlite3.connect(analyzer.db_path)
-        cursor = conn.cursor()
-        
-        # Get all tracks
-        cursor.execute("SELECT id, artist, title, file_path FROM audio_files")
-        tracks = cursor.fetchall()
-        conn.close()
-        
-        # Smaller batch size for more responsive UI updates
-        batch_size = 3  # Process 3 tracks at a time
-        updated_count = 0
-        images_updated = 0
-        track_count = len(tracks)
-        
-        # Initialize the metadata service if not already done
-        metadata_service = analyzer.metadata_service
-        
-        METADATA_UPDATE_STATUS['total_tracks'] = track_count
-        
-        # Process tracks in small chunks to allow UI to be responsive
-        for i in range(0, track_count, batch_size):
-            # Get the next batch of tracks
-            batch = tracks[i:i+batch_size]
+        if not metadata_service:
+            logger.error("Cannot update metadata: Metadata service not available")
+            return
             
-            # Update status
-            METADATA_UPDATE_STATUS.update({
-                'processed_tracks': i,
-                'percent_complete': int((i / track_count) * 100) if track_count > 0 else 0,
-                'last_updated': datetime.now().isoformat()
-            })
-            
-            # Process each track in the batch
-            for track_id, artist, title, file_path in batch:
-                track_name = f"{artist} - {title}" if artist and title else file_path
-                METADATA_UPDATE_STATUS['current_track'] = track_name
-                
-                try:
-                    # Get existing metadata
-                    basic_metadata = {
-                        'title': title,
-                        'artist': artist,
-                        'file_path': file_path
-                    }
-                    
-                    # Try to enhance with online services - pass the CACHE_DIR
-                    enhanced_metadata = metadata_service.enrich_metadata(basic_metadata, CACHE_DIR)
-                    
-                    # Check if we got improved metadata - inspect what we actually got
-                    was_enhanced = enhanced_metadata.get('metadata_source') in ['last.fm', 'musicbrainz']
-                    if was_enhanced:
-                        logger.info(f"Found enhanced metadata for '{artist} - {title}' from {enhanced_metadata.get('metadata_source')}")
-                        
-                        # Update database with enhanced metadata
-                        conn = sqlite3.connect(analyzer.db_path)
-                        cursor = conn.cursor()
-                        
-                        try:
-                            # Update track metadata
-                            cursor.execute('''
-                                UPDATE audio_files SET 
-                                title = ?, 
-                                artist = ?, 
-                                album = ?, 
-                                album_art_url = ?,
-                                metadata_source = ?
-                                WHERE id = ?
-                            ''', (
-                                enhanced_metadata.get('title', title),
-                                enhanced_metadata.get('artist', artist),
-                                enhanced_metadata.get('album', ''),
-                                enhanced_metadata.get('album_art_url', ''),
-                                enhanced_metadata.get('metadata_source', 'unknown'),
-                                track_id
-                            ))
-                            
-                            # Check if any rows were actually updated
-                            if cursor.rowcount > 0:
-                                updated_count += 1
-                                logger.info(f"Successfully updated database for '{artist} - {title}'")
-                                
-                                # Check if we got album art
-                                if enhanced_metadata.get('album_art_url'):
-                                    images_updated += 1
-                                    logger.info(f"Added album art for '{artist} - {title}'")
-                            else:
-                                logger.warning(f"No rows updated for '{artist} - {title}' despite finding metadata")
-                                
-                            conn.commit()
-                        except Exception as db_error:
-                            logger.error(f"Database error updating '{artist} - {title}': {db_error}")
-                            conn.rollback()
-                        finally:
-                            conn.close()
-                    else:
-                        logger.info(f"No enhanced metadata found for '{artist} - {title}'")
-                except Exception as e:
-                    logger.error(f"Error updating metadata for {track_name}: {e}")
+        # Run metadata update
+        logger.info(f"Starting metadata update (skip_existing={skip_existing})")
+        metadata_service.update_all_metadata(status_tracker=METADATA_UPDATE_STATUS, skip_existing=skip_existing)
         
-        # Update status when complete
+        # Update final status
         METADATA_UPDATE_STATUS.update({
             'running': False,
             'percent_complete': 100,
-            'processed_tracks': track_count,
-            'updated_tracks': updated_count,
             'last_updated': datetime.now().isoformat()
         })
         
-        logger.info(f"Background metadata update complete: {updated_count} tracks updated, {images_updated} images updated")
-    
+        # Save database changes if in-memory mode is active
+        if DB_IN_MEMORY and main_thread_conn:
+            from db_utils import trigger_db_save
+            trigger_db_save(main_thread_conn, DB_PATH)
+        
+        logger.info("Metadata update completed successfully")
+        
     except Exception as e:
-        logger.error(f"Background metadata update error: {e}")
+        logger.error(f"Error updating metadata: {e}")
+        # Update status with error
         METADATA_UPDATE_STATUS.update({
             'running': False,
             'error': str(e),
             'last_updated': datetime.now().isoformat()
         })
+        
+        # Save any partial changes to database
+        if DB_IN_MEMORY and main_thread_conn:
+            from db_utils import trigger_db_save
+            trigger_db_save(main_thread_conn, DB_PATH)
 
 # Add this helper function to check if an artist already has an image
 def artist_has_image(artist_name):
@@ -2224,47 +2255,45 @@ def serve_cache_file(filename):
 def get_library_stats():
     """Get statistics about the music library"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Get total tracks count
-        cursor.execute("SELECT COUNT(*) FROM audio_files")
-        total_tracks = cursor.fetchone()[0]
-        
-        # Get tracks with metadata count
-        cursor.execute("SELECT COUNT(*) FROM audio_files WHERE metadata_source IS NOT NULL")
-        tracks_with_metadata = cursor.fetchone()[0]
-        
-        # Get analyzed tracks count 
-        cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'analyzed'")
-        analyzed_tracks = cursor.fetchone()[0]
-        
-        # Calculate DB size
-        db_size_bytes = os.path.getsize(DB_PATH)
-        db_size_mb = round(db_size_bytes / (1024 * 1024), 2)  # Convert to MB
-        
-        # Calculate cache size
-        cache_dir = config.get('cache', 'image_cache_dir', fallback='album_art_cache')
-        cache_size_bytes = 0
-        if os.path.exists(cache_dir):
-            for file in os.listdir(cache_dir):
-                file_path = os.path.join(cache_dir, file)
-                if os.path.isfile(file_path):
-                    cache_size_bytes += os.path.getsize(file_path)
-        cache_size_mb = round(cache_size_bytes / (1024 * 1024), 2)  # Convert to MB
-        
-        conn.close()
-        
-        return jsonify({
-            'status': 'success',
-            'stats': {
-                'total_tracks': total_tracks,
-                'tracks_with_metadata': tracks_with_metadata,
-                'analyzed_tracks': analyzed_tracks,
-                'db_size_mb': db_size_mb,
-                'cache_size_mb': cache_size_mb
-            }
-        })
+        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+            cursor = conn.cursor()
+            
+            # Get total tracks count
+            cursor.execute("SELECT COUNT(*) FROM audio_files")
+            total_tracks = cursor.fetchone()[0]
+            
+            # Get tracks with metadata count
+            cursor.execute("SELECT COUNT(*) FROM audio_files WHERE metadata_source IS NOT NULL")
+            tracks_with_metadata = cursor.fetchone()[0]
+            
+            # Get analyzed tracks count 
+            cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'analyzed'")
+            analyzed_tracks = cursor.fetchone()[0]
+            
+            # Calculate DB size
+            db_size_bytes = os.path.getsize(DB_PATH)
+            db_size_mb = round(db_size_bytes / (1024 * 1024), 2)  # Convert to MB
+            
+            # Calculate cache size
+            cache_dir = config.get('cache', 'image_cache_dir', fallback='album_art_cache')
+            cache_size_bytes = 0
+            if os.path.exists(cache_dir):
+                for file in os.listdir(cache_dir):
+                    file_path = os.path.join(cache_dir, file)
+                    if os.path.isfile(file_path):
+                        cache_size_bytes += os.path.getsize(file_path)
+            cache_size_mb = round(cache_size_bytes / (1024 * 1024), 2)  # Convert to MB
+            
+            return jsonify({
+                'status': 'success',
+                'stats': {
+                    'total_tracks': total_tracks,
+                    'tracks_with_metadata': tracks_with_metadata,
+                    'analyzed_tracks': analyzed_tracks,
+                    'db_size_mb': db_size_mb,
+                    'cache_size_mb': cache_size_mb
+                }
+            })
     except Exception as e:
         logger.error(f"Error getting library stats: {e}")
         return jsonify({
@@ -2273,61 +2302,60 @@ def get_library_stats():
         })
 
 
-def run_quick_scan(directory, recursive=True):
-    """Run a quick library scan in a background thread"""
-    global analyzer, QUICK_SCAN_STATUS
-    
+def run_quick_scan(folder_path, recursive=True):
+    """Run quick scan in a background thread"""
     try:
-        # Reset status
+        # Make sure analyzer exists
+        if not analyzer:
+            logger.error("Cannot run quick scan: Music analyzer not available")
+            return
+            
+        # Update status
         QUICK_SCAN_STATUS.update({
             'running': True,
-            'start_time': datetime.now(),
+            'start_time': datetime.now().isoformat(),
             'files_processed': 0,
             'tracks_added': 0,
             'total_files': 0,
             'current_file': '',
             'percent_complete': 0,
-            'last_updated': datetime.now(),
+            'last_updated': datetime.now().isoformat(),
             'error': None
         })
         
-        # Count total files first to provide accurate progress
-        total_files = 0
-        extensions = ['.mp3', '.wav', '.flac', '.ogg']
-        
-        if recursive:
-            for root, dirs, files in os.walk(directory):
-                for file in files:
-                    if any(file.lower().endswith(ext) for ext in extensions):
-                        total_files += 1
-        else:
-            total_files = len([f for f in os.listdir(directory)
-                              if os.path.isfile(os.path.join(directory, f)) and 
-                              any(f.lower().endswith(ext) for ext in extensions)])
-                              
-        QUICK_SCAN_STATUS['total_files'] = total_files
-        
-        # Now run the actual scan
-        result = analyzer.scan_library(directory, recursive)
+        # Run scan
+        logger.info(f"Starting quick scan of {folder_path} (recursive={recursive})")
+        result = analyzer.scan_library(folder_path, recursive=recursive)
         
         # Update final status
         QUICK_SCAN_STATUS.update({
             'running': False,
-            'files_processed': result.get('files_processed', 0),
-            'tracks_added': result.get('tracks_added', 0),
             'percent_complete': 100,
-            'last_updated': datetime.now()
+            'files_processed': result.get('processed', 0),
+            'tracks_added': result.get('added', 0),
+            'last_updated': datetime.now().isoformat()
         })
         
-        logger.info(f"Quick scan complete: processed {result.get('files_processed', 0)} files, added {result.get('tracks_added', 0)} tracks")
+        # Save database changes if in-memory mode is active
+        if DB_IN_MEMORY and main_thread_conn:
+            from db_utils import trigger_db_save
+            trigger_db_save(main_thread_conn, DB_PATH)
+            
+        logger.info(f"Quick scan completed successfully. Processed {result.get('processed', 0)} files, added {result.get('added', 0)} tracks.")
         
     except Exception as e:
-        logger.error(f"Error during quick scan: {e}")
+        logger.error(f"Error running quick scan: {e}")
+        # Update status with error
         QUICK_SCAN_STATUS.update({
             'running': False,
             'error': str(e),
-            'last_updated': datetime.now()
+            'last_updated': datetime.now().isoformat()
         })
+        
+        # Save any partial changes to database
+        if DB_IN_MEMORY and main_thread_conn:
+            from db_utils import trigger_db_save
+            trigger_db_save(main_thread_conn, DB_PATH)
 
 @app.route('/api/quick-scan/status')
 def quick_scan_status():
@@ -2385,8 +2413,6 @@ def get_interval_seconds(frequency):
     elif frequency == '12hours':
         return 12 * 60 * 60
     elif frequency == '24hours':
-        return 24 * 60 * 60
-    else:
         return 24 * 60 * 60  # Default to 24 hours
 
 def calculate_next_run_time():
@@ -2471,43 +2497,34 @@ def run_scheduled_tasks():
         update_scheduler()
 
 def run_quick_scan_task():
-    """Run a quick scan task for scheduler"""
-    global QUICK_SCAN_STATUS
+    """Run quick scan as a scheduled task"""
+    logger.info("Running scheduled quick scan")
     
+    # Get folder path from config
     folder_path = config.get('music', 'folder_path', fallback='')
     recursive = config.getboolean('music', 'recursive', fallback=True)
     
     if not folder_path:
-        logger.warning("No music folder configured, cannot run quick scan")
-        return
-    
-    logger.info(f"Running scheduled quick scan on {folder_path}")
-    
-    # Update status to trigger UI update
-    QUICK_SCAN_STATUS.update({
-        'running': True,
-        'start_time': datetime.now(),
-        'files_processed': 0,
-        'tracks_added': 0,
-        'total_files': 0,
-        'current_file': '',
-        'percent_complete': 0,
-        'last_updated': datetime.now(),
-        'error': None
-    })
-    
-    # Run the quick scan
+        logger.error("Music folder path not configured")
+        return False
+        
+    if not os.path.exists(folder_path):
+        logger.error(f"Music folder path does not exist: {folder_path}")
+        return False
+        
     try:
         result = run_quick_scan(folder_path, recursive)
         logger.info("Scheduled quick scan completed")
+        
+        # Add this line to save changes if in-memory mode is active
+        if DB_IN_MEMORY and main_thread_conn:
+            from db_utils import trigger_db_save
+            trigger_db_save(main_thread_conn, DB_PATH)
+            
         return result
     except Exception as e:
-        logger.error(f"Error during scheduled quick scan: {e}")
-        QUICK_SCAN_STATUS.update({
-            'running': False,
-            'error': str(e),
-            'last_updated': datetime.now()
-        })
+        logger.error(f"Error running scheduled quick scan: {e}")
+        return False
 
 def run_metadata_update_task():
     """Run metadata update task for scheduler"""
@@ -2542,55 +2559,34 @@ def run_metadata_update_task():
         })
 
 def run_full_analysis_task():
-    """Run full analysis task for scheduler"""
-    global ANALYSIS_STATUS, analysis_progress
+    """Run full analysis as a scheduled task"""
+    logger.info("Running scheduled full analysis")
     
+    # Get folder path from config
     folder_path = config.get('music', 'folder_path', fallback='')
     recursive = config.getboolean('music', 'recursive', fallback=True)
     
     if not folder_path:
-        logger.warning("No music folder configured, cannot run analysis")
-        return
-    
-    logger.info(f"Running scheduled full analysis on {folder_path}")
-    
-    # Update both status trackers to ensure UI shows progress
-    ANALYSIS_STATUS.update({
-        'running': True,
-        'start_time': datetime.now(),
-        'files_processed': 0,
-        'total_files': 0,
-        'current_file': '',
-        'percent_complete': 0,
-        'last_updated': datetime.now(),
-        'error': None,
-        'scan_complete': False
-    })
-    
-    # Also update the analysis_progress tracker used by the UI
-    analysis_progress.update({
-        'is_running': True,
-        'total_files': 0,
-        'current_file_index': 0,
-        'analyzed_count': 0,
-        'failed_count': 0,
-        'pending_count': 0,
-        'last_run_completed': False,
-        'stop_requested': False
-    })
-    
-    # Run the analysis
+        logger.error("Music folder path not configured")
+        return False
+        
+    if not os.path.exists(folder_path):
+        logger.error(f"Music folder path does not exist: {folder_path}")
+        return False
+        
     try:
         run_analysis(folder_path, recursive)
-        logger.info("Scheduled full analysis started")
+        logger.info("Scheduled full analysis completed")
+        
+        # Add this line to save changes if in-memory mode is active
+        if DB_IN_MEMORY and main_thread_conn:
+            from db_utils import trigger_db_save
+            trigger_db_save(main_thread_conn, DB_PATH)
+            
+        return True
     except Exception as e:
-        logger.error(f"Error during scheduled full analysis: {e}")
-        ANALYSIS_STATUS.update({
-            'running': False,
-            'error': str(e),
-            'last_updated': datetime.now()
-        })
-        analysis_progress['is_running'] = False
+        logger.error(f"Error running scheduled full analysis: {e}")
+        return False
 
 def run_startup_actions():
     """Run configured startup actions when the app starts"""
@@ -2701,35 +2697,39 @@ def get_liked_tracks():
 
 @app.route('/api/tracks/<int:track_id>/like', methods=['POST'])
 def like_track(track_id):
-    """Toggle the liked status of a track"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+        data = request.get_json()
+        liked = data.get('liked', False)
         
-        # Get current liked status
-        cursor.execute("SELECT liked FROM audio_files WHERE id = ?", (track_id,))
-        result = cursor.fetchone()
-        
-        if not result:
-            conn.close()
-            return jsonify({"error": "Track not found"}), 404
+        # Connect to database
+        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+            cursor = conn.cursor()
             
-        current_status = result[0]
-        new_status = 0 if current_status == 1 else 1
-        
-        # Update liked status
-        cursor.execute("UPDATE audio_files SET liked = ? WHERE id = ?", (new_status, track_id))
-        conn.commit()
-        
-        conn.close()
-        
-        return jsonify({
-            "track_id": track_id,
-            "liked": new_status == 1
-        })
+            # Check if track exists
+            cursor.execute('SELECT id FROM audio_files WHERE id = ?', (track_id,))
+            if not cursor.fetchone():
+                return jsonify({'error': 'Track not found'}), 404
+                
+            # Update liked status
+            cursor.execute(
+                'UPDATE audio_files SET liked = ? WHERE id = ?',
+                (1 if liked else 0, track_id)
+            )
+            
+            conn.commit()
+            
+            # Mark database as modified
+            g.db_modified = True
+                
+            return jsonify({
+                'success': True,
+                'track_id': track_id,
+                'liked': liked
+            })
+            
     except Exception as e:
-        logger.error(f"Error toggling like for track {track_id}: {e}")
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Error updating liked status: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/tracks/<int:track_id>/liked')
 def is_track_liked(track_id):
@@ -2797,6 +2797,75 @@ def run_server():
     except Exception as e:
         logger.error(f"Error running server: {e}")
 
+# Add this function near the end of the file
+
+def create_indexes():
+    """Create indexes for commonly searched fields"""
+    try:
+        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+            cursor = conn.cursor()
+            
+            # Create indexes if they don't exist
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_artist ON audio_files(artist)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_album ON audio_files(album)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_title ON audio_files(title)")
+            
+            logger.info("Database indexes created successfully")
+    except Exception as e:
+        logger.error(f"Error creating database indexes: {e}")
+
+# Then call it directly during app initialization:
+# Add this near line 270-300 where you initialize other components
+create_indexes()
+
+# Add this route
+
+@app.route('/api/db-status')
+def get_db_status():
+    """Get database performance statistics"""
+    try:
+        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+            cursor = conn.cursor()
+            
+            # Get database size
+            if os.path.exists(DB_PATH):
+                db_size = os.path.getsize(DB_PATH) / (1024 * 1024)  # Size in MB
+            else:
+                db_size = 0
+                
+            # Get table counts
+            cursor.execute("SELECT COUNT(*) FROM audio_files")
+            track_count = cursor.fetchone()[0]
+            
+            try:
+                cursor.execute("SELECT COUNT(*) FROM audio_features")
+                feature_count = cursor.fetchone()[0]
+            except:
+                feature_count = 0
+            
+            # Get SQLite's cache statistics
+            cursor.execute("PRAGMA cache_size")
+            cache_size = cursor.fetchone()[0]
+            
+            cursor.execute("PRAGMA page_size")
+            page_size = cursor.fetchone()[0]
+            
+            # Calculate memory usage
+            approx_memory_usage = (abs(cache_size) * page_size) / (1024 * 1024)  # in MB
+            
+            return jsonify({
+                'db_size_mb': round(db_size, 2),
+                'track_count': track_count,
+                'feature_count': feature_count,
+                'in_memory_mode': DB_IN_MEMORY,
+                'cache_size_mb': DB_CACHE_SIZE_MB,
+                'approx_memory_usage_mb': round(approx_memory_usage, 2),
+                'page_size_bytes': page_size
+            })
+            
+    except Exception as e:
+        logger.error(f"Error getting DB status: {e}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     run_server()

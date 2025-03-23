@@ -33,6 +33,74 @@ function displaySearchResults(tracks) {
     searchResults.appendChild(resultsContainer);
 }
 
+// Add this near the top of your file, before any event handlers
+
+// Global function for loading playlists
+window.loadPlaylist = function(playlistId) {
+    console.log(`Global loadPlaylist called for playlist ${playlistId}`);
+    
+    // Show loading state
+    const analyzeStatus = document.getElementById('analyze-status');
+    if (analyzeStatus) {
+        analyzeStatus.innerHTML = '<div class="status-progress">Loading playlist...</div>';
+    }
+    
+    // Make the playlist container visible
+    const playlistContainer = document.getElementById('playlist-container');
+    if (playlistContainer) {
+        playlistContainer.style.display = 'block';
+    }
+    
+    fetch(`/playlists/${playlistId}`)
+        .then(response => response.json())
+        .then(data => {
+            console.log('Loaded playlist:', data);
+            if (data.error) {
+                if (analyzeStatus) {
+                    analyzeStatus.innerHTML = `<div class="status-error">Error: ${data.error}</div>`;
+                }
+                return;
+            }
+            
+            // Store current playlist in the global scope
+            window.currentPlaylist = data.tracks;
+            
+            // Display the playlist
+            if (typeof displayPlaylist === 'function') {
+                displayPlaylist(data.tracks);
+            } else if (typeof window.displayPlaylist === 'function') {
+                window.displayPlaylist(data.tracks);
+            } else {
+                console.error('displayPlaylist function not available');
+            }
+            
+            // Update header with playlist name
+            const playlistHeader = document.querySelector('.playlist-header h2');
+            if (playlistHeader) {
+                playlistHeader.textContent = `Playlist: ${data.name}`;
+            }
+            
+            // Enable save button
+            const savePlaylistBtn = document.getElementById('save-playlist-btn');
+            if (savePlaylistBtn) {
+                savePlaylistBtn.disabled = false;
+            }
+            
+            // Clear status after a delay
+            if (analyzeStatus) {
+                setTimeout(() => {
+                    analyzeStatus.innerHTML = '';
+                }, 2000);
+            }
+        })
+        .catch(error => {
+            console.error('Error loading playlist:', error);
+            if (analyzeStatus) {
+                analyzeStatus.innerHTML = '<div class="status-error">Failed to load playlist</div>';
+            }
+        });
+};
+
 // Then make createTrackCard globally accessible as well
 function createTrackCard(track) {
     const trackCard = document.createElement('div');
@@ -1241,7 +1309,10 @@ window.initPlayerPage = function() {
                     showAnalyzeStatus('Failed to load playlist', 'error');
                 });
         }
-        
+
+        // Make loadPlaylist globally accessible
+        window.loadPlaylist = loadPlaylist;
+
         function deletePlaylist(playlistId) {
             console.log(`Deleting playlist ${playlistId}`);
             

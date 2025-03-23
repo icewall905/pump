@@ -4,6 +4,7 @@ window.initSettingsPage = function() {
     initLibraryManagement();
     initMetadataControls();
     initCacheControls();
+    initDatabasePerformanceSettings();
     
     // Create toast container if it doesn't exist
     if (!document.getElementById('toast-container')) {
@@ -739,6 +740,22 @@ function showMessage(message, type) {
 
 // Add this function to settings.js after the showMessage function
 
+function initDatabasePerformanceSettings() {
+    const form = document.querySelector('.settings-form');
+    if (form) {
+        form.addEventListener('submit', function(e) {
+            const optimizeConnections = document.getElementById('optimize_connections').checked;
+            const inMemory = document.getElementById('in_memory').checked;
+            const cacheSize = document.getElementById('cache_size_mb').value;
+            const formData = new FormData(form);
+            formData.append('optimize_connections', optimizeConnections);
+            formData.append('in_memory', inMemory);
+            formData.append('cache_size_mb', cacheSize);
+            // ...existing code...
+        });
+    }
+}
+
 // Library Statistics
 function updateLibraryStats() {
     const totalTracks = document.getElementById('total-tracks');
@@ -873,3 +890,50 @@ function updateNextRunDisplay() {
         }
     }
 }
+
+// Add this to your existing settings.js file
+
+function initDatabasePerformanceSettings() {
+    const checkDbStatusBtn = document.getElementById('check-db-status');
+    const dbStatusDisplay = document.getElementById('db-status-display');
+    
+    if (checkDbStatusBtn) {
+        checkDbStatusBtn.addEventListener('click', function() {
+            // Show loading state
+            checkDbStatusBtn.textContent = 'Loading...';
+            
+            // Fetch database status
+            fetch('/api/db-status')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    // Update the display
+                    document.getElementById('db-size').textContent = data.db_size_mb;
+                    document.getElementById('track-count').textContent = data.track_count;
+                    document.getElementById('in-memory-mode').textContent = data.in_memory_mode ? 'Enabled' : 'Disabled';
+                    document.getElementById('memory-usage').textContent = data.approx_memory_usage_mb;
+                    
+                    // Show the status display
+                    dbStatusDisplay.style.display = 'block';
+                    
+                    // Reset button
+                    checkDbStatusBtn.textContent = 'Check Database Status';
+                })
+                .catch(error => {
+                    alert('Error checking database status: ' + error.message);
+                    checkDbStatusBtn.textContent = 'Check Database Status';
+                });
+        });
+    }
+}
+
+// Call this from your main initialization function
+window.initSettingsPage = function() {
+    // Existing code...
+    initDatabasePerformanceSettings();
+    // Existing code...
+};
+

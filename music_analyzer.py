@@ -16,6 +16,7 @@ import mutagen  # Make sure this is imported
 import librosa.display
 import matplotlib.pyplot as plt
 from metadata_service import MetadataService
+from db_utils import get_optimized_connection, optimized_connection
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ class MusicAnalyzer:
     A class for analyzing music files and extracting audio features for music categorization.
     """
 
-    def __init__(self, db_path: str = "pump.db"):
+    def __init__(self, db_path: str = "pump.db", in_memory=False, cache_size_mb=75):
         """
         Initialize the MusicAnalyzer.
         
@@ -47,6 +48,8 @@ class MusicAnalyzer:
             db_path: Path to the SQLite database file
         """
         self.db_path = db_path
+        self.in_memory = in_memory
+        self.cache_size_mb = cache_size_mb
         self._initialize_db()
         self.metadata_service = MetadataService()
         
@@ -108,112 +111,109 @@ class MusicAnalyzer:
             logging.error(f"Error initializing services: {e}")
         
     def _initialize_db(self):
-        """Create database tables if they don't exist."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        with optimized_connection(self.db_path, self.in_memory, self.cache_size_mb) as conn:
+            cursor = conn.cursor()
         
-        # Create table for audio files with analysis_status field
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS audio_files (
-            id INTEGER PRIMARY KEY,
-            file_path TEXT UNIQUE,
-            title TEXT,
-            artist TEXT,
-            album TEXT,
-            album_art_url TEXT,
-            metadata_source TEXT,
-            duration REAL,
-            date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            analysis_status TEXT DEFAULT 'pending'
-        )
-        ''')
-        
-        # Add analysis_status column if it doesn't exist
-        try:
-            cursor.execute("PRAGMA table_info(audio_files)")
+            # Create table for audio files with analysis_status field
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS audio_files (
+                id INTEGER PRIMARY KEY,
+                file_path TEXT UNIQUE,
+                title TEXT,
+                artist TEXT,
+                album TEXT,
+                album_art_url TEXT,
+                metadata_source TEXT,
+                duration REAL,
+                date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                analysis_status TEXT DEFAULT 'pending'
+            )
+            ''')
+            
+            # Add analysis_status column if it doesn't exist
+            try:
+                cursor.execute("PRAGMA table_info(audio_files)")
+                columns = [column[1] for column in cursor.fetchall()]
+                if 'analysis_status' not in columns:
+                    cursor.execute('ALTER TABLE audio_files ADD COLUMN analysis_status TEXT DEFAULT "pending"')
+                    conn.commit()
+            except Exception as e:
+                logging.error(f"Error adding analysis_status column: {e}")
+            
+            # Add artist_image_url column if it doesn't exist
+            try:
+                cursor.execute("PRAGMA table_info(audio_files)")
+                columns = [column[1] for column in cursor.fetchall()]
+                if 'artist_image_url' not in columns:
+                    cursor.execute('''
+                    ALTER TABLE audio_files ADD COLUMN artist_image_url TEXT
+                    ''')
+                    conn.commit()
+            except Exception as e:
+                logging.error(f"Error adding artist_image_url column: {e}")
+            
+            # Create table for audio features
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS audio_features (
+                id INTEGER PRIMARY KEY,
+                file_id INTEGER,
+                tempo REAL,
+                key INTEGER,
+                mode INTEGER,
+                time_signature INTEGER,
+                energy REAL,
+                danceability REAL,
+                brightness REAL,
+                noisiness REAL,
+                FOREIGN KEY (file_id) REFERENCES audio_files (id)
+            )
+            ''')
+            
+            # Check for required columns and add if missing
+            cursor.execute("PRAGMA table_info(audio_features)")
             columns = [column[1] for column in cursor.fetchall()]
-            if 'analysis_status' not in columns:
-                cursor.execute('ALTER TABLE audio_files ADD COLUMN analysis_status TEXT DEFAULT "pending"')
+            
+            # Add loudness column if it doesn't exist
+            if 'loudness' not in columns:
+                logger.info("Adding 'loudness' column to audio_features table")
+                cursor.execute('ALTER TABLE audio_features ADD COLUMN loudness REAL')
                 conn.commit()
-        except Exception as e:
-            logging.error(f"Error adding analysis_status column: {e}")
-        
-        # Add artist_image_url column if it doesn't exist
-        try:
-            cursor.execute("PRAGMA table_info(audio_files)")
-            columns = [column[1] for column in cursor.fetchall()]
-            if 'artist_image_url' not in columns:
-                cursor.execute('''
-                ALTER TABLE audio_files ADD COLUMN artist_image_url TEXT
-                ''')
-                conn.commit()
-        except Exception as e:
-            logging.error(f"Error adding artist_image_url column: {e}")
-        
-        # Create table for audio features
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS audio_features (
-            id INTEGER PRIMARY KEY,
-            file_id INTEGER,
-            tempo REAL,
-            key INTEGER,
-            mode INTEGER,
-            time_signature INTEGER,
-            energy REAL,
-            danceability REAL,
-            brightness REAL,
-            noisiness REAL,
-            FOREIGN KEY (file_id) REFERENCES audio_files (id)
-        )
-        ''')
-        
-        # Check for required columns and add if missing
-        cursor.execute("PRAGMA table_info(audio_features)")
-        columns = [column[1] for column in cursor.fetchall()]
-        
-        # Add loudness column if it doesn't exist
-        if 'loudness' not in columns:
-            logger.info("Adding 'loudness' column to audio_features table")
-            cursor.execute('ALTER TABLE audio_features ADD COLUMN loudness REAL')
+            
+            # Create table for playlists
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS playlists (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            
+            # Create table for playlist items
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS playlist_items (
+                id INTEGER PRIMARY KEY,
+                playlist_id INTEGER NOT NULL,
+                track_id INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                FOREIGN KEY (playlist_id) REFERENCES playlists (id) ON DELETE CASCADE,
+                FOREIGN KEY (track_id) REFERENCES audio_files (id),
+                UNIQUE(playlist_id, track_id)
+            )
+            ''')
+            
             conn.commit()
-        
-        # Create table for playlists
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS playlists (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            description TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        ''')
-        
-        # Create table for playlist items
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS playlist_items (
-            id INTEGER PRIMARY KEY,
-            playlist_id INTEGER NOT NULL,
-            track_id INTEGER NOT NULL,
-            position INTEGER NOT NULL,
-            FOREIGN KEY (playlist_id) REFERENCES playlists (id) ON DELETE CASCADE,
-            FOREIGN KEY (track_id) REFERENCES audio_files (id),
-            UNIQUE(playlist_id, track_id)
-        )
-        ''')
-        
-        conn.commit()
-        conn.close()
     
     def analyze_file(self, file_path: str, save_to_db: bool = True) -> Dict:
         """
         Analyze a music file and extract its features, but skip if it's already in the database.
         """
         # 1) Check if file has already been analyzed
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM audio_files WHERE file_path = ?", (file_path,))
-        row = cursor.fetchone()
-        conn.close()
+        with optimized_connection(self.db_path, self.in_memory, self.cache_size_mb) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM audio_files WHERE file_path = ?", (file_path,))
+            row = cursor.fetchone()
 
         if row is not None:
             # The file already exists in the database; skip re-analysis

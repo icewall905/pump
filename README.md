@@ -1,4 +1,3 @@
-
 ![logo copy 2](https://github.com/user-attachments/assets/d531b729-c97b-4de2-92e5-f631f4630227)
 
 PUMP is a local music player application with advanced audio analysis features, playlist generation, and music metadata services integration.
@@ -134,6 +133,12 @@ The analysis process may take time depending on your library size as it extracts
 - Metadata enrichment
 - Recently added tracking
 - Advanced audio search
+
+## Performance Tips for Large Libraries
+1. Enable “Keep Database in Memory” in Settings → Database Performance
+2. Adjust “Database Cache Size” based on available RAM
+3. At least 4GB RAM recommended; 8GB+ for 100k tracks
+4. Initial analysis can take hours; subsequent scans are faster
 
 ## Troubleshooting
 
