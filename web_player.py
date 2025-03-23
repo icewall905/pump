@@ -518,93 +518,62 @@ def run_analysis(folder_path, recursive):
             logger.error("Cannot run analysis: Music analyzer not available")
             return
             
-        # Update status
+        # First count the total number of files to be analyzed
+        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Get count of analyzed vs non-analyzed tracks - FIXED NULL HANDLING
+            cursor.execute('''
+                SELECT 
+                    COUNT(*) as total_in_db,
+                    COALESCE(SUM(CASE WHEN analysis_status = 'analyzed' THEN 1 ELSE 0 END), 0) as already_analyzed
+                FROM audio_files
+            ''')
+            result = cursor.fetchone()
+            
+            total_in_db = result['total_in_db'] if result else 0
+            already_analyzed = result['already_analyzed'] if result else 0
+            pending_count = total_in_db - already_analyzed
+            
+            # Log counts
+            logger.info(f"Database status: {total_in_db} total files, {already_analyzed} already analyzed, {pending_count} pending analysis")
+            
+        # Update status with these counts *before* starting analysis
         ANALYSIS_STATUS.update({
             'running': True,
             'start_time': datetime.now().isoformat(),
-            'files_processed': 0,
-            'total_files': 0,
+            'files_processed': already_analyzed,
+            'total_files': total_in_db,  # Set the total files here
             'current_file': '',
-            'percent_complete': 0,
+            'percent_complete': 0 if total_in_db > 0 else 100,
             'last_updated': datetime.now().isoformat(),
             'error': None
         })
         
-        # Step 1: Quick scan to identify files and add to database
-        logger.info("Step 1/2: Quick scanning music files...")
-        result = analyzer.scan_library(folder_path, recursive)
+        # Run analysis
+        logger.info(f"Starting full analysis of {folder_path} (recursive={recursive})")
         
-        # Connect to database to get accurate counts
-        conn = sqlite3.connect(analyzer.db_path)
-        cursor = conn.cursor()
+        # Store the start time to calculate progress accurately
+        start_time = time.time()
         
-        # Count total files in database
-        cursor.execute("SELECT COUNT(*) FROM audio_files")
-        total_in_db = cursor.fetchone()[0]
-        
-        # Count already analyzed files (status = 'analyzed')
-        cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'analyzed'")
-        already_analyzed = cursor.fetchone()[0]
-        
-        # Count pending files
-        cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
-        pending_count = cursor.fetchone()[0]
-        
-        conn.close()
-        
-        logger.info(f"Database status: {total_in_db} total files, {already_analyzed} already analyzed, {pending_count} pending analysis")
-        
-        # Update status after scan - IMPORTANT: Set percent_complete to 0 for analysis phase
-        ANALYSIS_STATUS.update({
-            'files_processed': already_analyzed,  # Start count from already analyzed files
-            'total_files': total_in_db,
-            'current_file': "Starting analysis...",
-            'percent_complete': 0,  # Start at 0% for analysis phase
-            'last_updated': datetime.now().isoformat(),
-            'scan_complete': True   # Mark scan as complete
-        })
-        
-        # Define a progress callback function that properly tracks files
-        def analysis_progress_callback(file_id, file_path, success):
-            # Increment processed count
-            processed_count = ANALYSIS_STATUS.get('files_processed', already_analyzed) + 1
-            
-            # Calculate progress percentage from 0-100% for analysis phase
-            analysis_percent = (processed_count - already_analyzed) / pending_count * 100 if pending_count > 0 else 0
-            
-            ANALYSIS_STATUS.update({
-                'files_processed': processed_count,
-                'current_file': file_path,
-                'percent_complete': analysis_percent,  # Use full 0-100% range for analysis
-                'last_updated': datetime.now().isoformat()
-            })
-            
-            logger.debug(f"Analysis progress: {processed_count}/{total_in_db} files ({analysis_percent:.1f}%)")
-        
-        # Step 2: Analyze audio features with progress callback
-        logger.info(f"Step 2/2: Analyzing {pending_count} pending files...")
-        feature_result = analyzer.analyze_pending_files(
-            progress_callback=analysis_progress_callback
-)
+        # Run the actual analysis
+        analyzer.analyze_directory(folder_path, recursive=recursive)
         
         # Update final status
         ANALYSIS_STATUS.update({
             'running': False,
             'percent_complete': 100,
-            'last_updated': datetime.now().isoformat()
+            'last_updated': datetime.now().isoformat(),
+            'error': None
         })
         
-        # Combine results
-        full_result = {
-            'files_processed': total_in_db,
-            'tracks_added': result.get('files_added', 0),
-            'tracks_updated': result.get('files_updated', 0),
-            'features_analyzed': feature_result.get('analyzed', 0),
-            'errors': feature_result.get('errors', 0),
-            'pending_features': feature_result.get('pending', 0)
-        }
-        
-        logger.info(f"Background analysis complete: {full_result['files_processed']} files processed, {full_result['tracks_added']} tracks added, {full_result['features_analyzed']} features analyzed")
+        # Save database changes if in-memory mode is active
+        if DB_IN_MEMORY and main_thread_conn:
+            from db_utils import trigger_db_save
+            trigger_db_save(main_thread_conn, DB_PATH)
+            
+        logger.info(f"Analysis completed successfully. Total files: {total_in_db}, Processed: {pending_count}")
         
     except Exception as e:
         logger.error(f"Error running analysis: {e}")
@@ -2185,16 +2154,75 @@ def sanitize_artist_name(artist_name):
     return artist_name
 
 @app.route('/api/metadata-update/status')
-def get_metadata_update_status():
-    """Get the current status of the metadata update"""
-    global METADATA_UPDATE_STATUS
-    return jsonify(METADATA_UPDATE_STATUS)
+def metadata_update_status():
+    """Get the current status of a metadata update"""
+    try:
+        is_running = METADATA_UPDATE_STATUS['running']
+        
+        # Calculate elapsed time if running
+        elapsed_seconds = 0
+        if is_running and METADATA_UPDATE_STATUS['start_time']:
+            # Parse the ISO format string back to datetime
+            start_time = datetime.fromisoformat(METADATA_UPDATE_STATUS['start_time'])
+            elapsed = datetime.now() - start_time
+            elapsed_seconds = elapsed.total_seconds()
+            
+        # Calculate estimated time remaining if possible
+        remaining_seconds = 0
+        if is_running and METADATA_UPDATE_STATUS['percent_complete'] > 0:
+            # Avoid division by zero
+            percent = max(0.1, METADATA_UPDATE_STATUS['percent_complete'])
+            remaining_seconds = (elapsed_seconds / percent) * (100 - percent)
+            
+        return jsonify({
+            'running': is_running,
+            'total_tracks': METADATA_UPDATE_STATUS['total_tracks'],
+            'processed_tracks': METADATA_UPDATE_STATUS['processed_tracks'],
+            'updated_tracks': METADATA_UPDATE_STATUS['updated_tracks'],
+            'current_track': METADATA_UPDATE_STATUS['current_track'],
+            'percent_complete': METADATA_UPDATE_STATUS['percent_complete'],
+            'elapsed_seconds': round(elapsed_seconds),
+            'remaining_seconds': round(remaining_seconds),
+            'error': METADATA_UPDATE_STATUS['error']
+        })
+    except Exception as e:
+        logger.error(f"Error getting metadata update status: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/analysis/status')
-def get_analysis_status():
-    """Return the current analysis status"""
-    global ANALYSIS_STATUS
-    return jsonify(ANALYSIS_STATUS)
+def analysis_status():
+    """Get the current status of an analysis"""
+    try:
+        is_running = ANALYSIS_STATUS['running']
+        
+        # Calculate elapsed time if running
+        elapsed_seconds = 0
+        if is_running and ANALYSIS_STATUS['start_time']:
+            # Parse the ISO format string back to datetime
+            start_time = datetime.fromisoformat(ANALYSIS_STATUS['start_time'])
+            elapsed = datetime.now() - start_time
+            elapsed_seconds = elapsed.total_seconds()
+            
+        # Calculate estimated time remaining if possible
+        remaining_seconds = 0
+        if is_running and ANALYSIS_STATUS['percent_complete'] > 0:
+            # Avoid division by zero
+            percent = max(0.1, ANALYSIS_STATUS['percent_complete'])
+            remaining_seconds = (elapsed_seconds / percent) * (100 - percent)
+            
+        return jsonify({
+            'running': is_running,
+            'files_processed': ANALYSIS_STATUS['files_processed'],
+            'total_files': ANALYSIS_STATUS['total_files'],
+            'current_file': ANALYSIS_STATUS['current_file'],
+            'percent_complete': ANALYSIS_STATUS['percent_complete'],
+            'elapsed_seconds': round(elapsed_seconds),
+            'remaining_seconds': round(remaining_seconds),
+            'error': ANALYSIS_STATUS['error']
+        })
+    except Exception as e:
+        logger.error(f"Error getting analysis status: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/test-credentials', methods=['GET'])
 def test_credentials():
@@ -2359,20 +2387,39 @@ def run_quick_scan(folder_path, recursive=True):
 
 @app.route('/api/quick-scan/status')
 def quick_scan_status():
-    """Get the current status of the quick scan process"""
-    global QUICK_SCAN_STATUS
-    
-    # Calculate time elapsed if running
-    if QUICK_SCAN_STATUS['running'] and QUICK_SCAN_STATUS['start_time']:
-        elapsed = datetime.now() - QUICK_SCAN_STATUS['start_time']
-        elapsed_seconds = int(elapsed.total_seconds())
-    else:
-        elapsed_seconds = 0
+    """Get the current status of a quick scan"""
+    try:
+        is_running = QUICK_SCAN_STATUS['running']
         
-    return jsonify({
-        **QUICK_SCAN_STATUS,
-        'elapsed_seconds': elapsed_seconds
-    })
+        # Calculate elapsed time if running
+        elapsed_seconds = 0
+        if is_running and QUICK_SCAN_STATUS['start_time']:
+            # Parse the ISO format string back to datetime
+            start_time = datetime.fromisoformat(QUICK_SCAN_STATUS['start_time'])
+            elapsed = datetime.now() - start_time
+            elapsed_seconds = elapsed.total_seconds()
+            
+        # Calculate estimated time remaining if possible
+        remaining_seconds = 0
+        if is_running and QUICK_SCAN_STATUS['percent_complete'] > 0:
+            # Avoid division by zero
+            percent = max(0.1, QUICK_SCAN_STATUS['percent_complete'])
+            remaining_seconds = (elapsed_seconds / percent) * (100 - percent)
+            
+        return jsonify({
+            'running': is_running,
+            'files_processed': QUICK_SCAN_STATUS['files_processed'],
+            'tracks_added': QUICK_SCAN_STATUS['tracks_added'],
+            'total_files': QUICK_SCAN_STATUS['total_files'],
+            'current_file': QUICK_SCAN_STATUS['current_file'],
+            'percent_complete': QUICK_SCAN_STATUS['percent_complete'],
+            'elapsed_seconds': round(elapsed_seconds),
+            'remaining_seconds': round(remaining_seconds),
+            'error': QUICK_SCAN_STATUS['error']
+        })
+    except Exception as e:
+        logger.error(f"Error getting quick scan status: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 def update_scheduler():
@@ -2780,23 +2827,6 @@ def get_all_status():
     })
 
 
-# Updated run_server function that initializes scheduler and runs startup actions
-def run_server():
-    """Run the Flask server"""
-    logger.info(f"Starting server on {HOST}:{PORT} (debug={DEBUG})")
-    
-    # Initialize the scheduler
-    update_scheduler()
-    
-    # Run startup actions
-    run_startup_actions()
-    
-    try:
-        # Use Werkzeug's run_simple for better error handling
-        run_simple(hostname=HOST, port=PORT, application=app, use_reloader=DEBUG, use_debugger=DEBUG)
-    except Exception as e:
-        logger.error(f"Error running server: {e}")
-
 # Add this function near the end of the file
 
 def create_indexes():
@@ -2866,6 +2896,57 @@ def get_db_status():
     except Exception as e:
         logger.error(f"Error getting DB status: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+
+@app.route('/api/analysis/database-status')
+def analysis_database_status():
+    """Get the analysis status directly from the database"""
+    try:
+        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Get count of analyzed vs non-analyzed tracks - FIXED COLUMN NAME AND NULL HANDLING
+            cursor.execute('''
+                SELECT 
+                    COUNT(*) as total_in_db,
+                    COALESCE(SUM(CASE WHEN analysis_status = 'analyzed' THEN 1 ELSE 0 END), 0) as already_analyzed
+                FROM audio_files
+            ''')
+            result = cursor.fetchone()
+            
+            total_in_db = result['total_in_db'] if result else 0
+            already_analyzed = result['already_analyzed'] if result else 0
+            pending_count = total_in_db - already_analyzed
+            
+            return jsonify({
+                'total': total_in_db,
+                'analyzed': already_analyzed,
+                'pending': pending_count,
+                'percent_complete': round((already_analyzed / total_in_db) * 100, 2) if total_in_db > 0 else 0
+            })
+    except Exception as e:
+        logger.error(f"Error getting database analysis status: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# Updated run_server function that initializes scheduler and runs startup actions
+def run_server():
+    """Run the Flask server"""
+    logger.info(f"Starting server on {HOST}:{PORT} (debug={DEBUG})")
+    
+    # Initialize the scheduler
+    update_scheduler()
+    
+    # Run startup actions
+    run_startup_actions()
+    
+    try:
+        # Use Werkzeug's run_simple for better error handling
+        run_simple(hostname=HOST, port=PORT, application=app, use_reloader=DEBUG, use_debugger=DEBUG)
+    except Exception as e:
+        logger.error(f"Error running server: {e}")
 
 if __name__ == '__main__':
     run_server()

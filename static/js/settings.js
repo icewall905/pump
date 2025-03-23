@@ -937,3 +937,53 @@ window.initSettingsPage = function() {
     // Existing code...
 };
 
+// Add this function to improve analysis status display
+function updateAnalysisDisplay() {
+    // Fetch both statuses
+    Promise.all([
+        fetch('/api/analysis/status').then(r => r.json()),
+        fetch('/api/analysis/database-status').then(r => r.json())
+    ])
+    .then(([status, dbStatus]) => {
+        console.log('Status API:', status);
+        console.log('Database status:', dbStatus);
+        
+        // Use database numbers if API returns lower counts
+        const totalFiles = Math.max(status.total_files, dbStatus.total);
+        const processedFiles = Math.max(status.files_processed, dbStatus.analyzed);
+        
+        // Update UI elements
+        document.getElementById('analysis-status-total').textContent = totalFiles;
+        document.getElementById('analysis-status-processed').textContent = processedFiles;
+        document.getElementById('analysis-status-pending').textContent = totalFiles - processedFiles;
+        
+        // Update progress bar if it exists
+        const progressBar = document.getElementById('analysis-progress-bar');
+        if (progressBar) {
+            const percent = totalFiles > 0 ? (processedFiles / totalFiles) * 100 : 0;
+            progressBar.style.width = `${percent}%`;
+            progressBar.setAttribute('aria-valuenow', percent);
+        }
+        
+        // Update running status
+        if (status.running) {
+            document.getElementById('analysis-status').textContent = 'Running';
+            // Schedule next update
+            setTimeout(updateAnalysisDisplay, 2000);
+        } else {
+            document.getElementById('analysis-status').textContent = 'Idle';
+        }
+    })
+    .catch(error => {
+        console.error('Error updating analysis display:', error);
+    });
+}
+
+// Call this when the page loads
+document.addEventListener('DOMContentLoaded', function() {
+    // Existing code...
+    
+    // Add this line to start the analysis display updates
+    updateAnalysisDisplay();
+});
+
