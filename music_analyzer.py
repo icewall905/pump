@@ -979,20 +979,22 @@ class MusicAnalyzer:
         
         # NOW calculate total_pending
         total_pending = len(pending_files)
+        total_files = already_analyzed + total_pending
         
         if limit:
             pending_files = pending_files[:limit]
         
-        analysis_progress['total_files'] = already_analyzed + total_pending
+        analysis_progress['total_files'] = total_files
         analysis_progress['pending_count'] = total_pending
         
         # NOW update the status dictionary with total_pending
         if status_dict:
             status_dict.update({
                 'running': True,
-                'total_files': total_pending,
+                'total_files': total_files,  # CHANGED: Use total files including already analyzed
+                'files_processed': already_analyzed,  # ADDED: Initialize with already analyzed count
                 'current_file': '',
-                'percent_complete': 0,
+                'percent_complete': int((already_analyzed / total_files) * 100) if total_files > 0 else 0,  # CHANGED: Calculate initial percentage
                 'last_updated': datetime.now().isoformat(),
                 'scan_complete': True  # Add this line to preserve the flag
             })
@@ -1015,9 +1017,9 @@ class MusicAnalyzer:
             # Also update the web status dictionary if provided
             if status_dict:
                 status_dict.update({
-                    'files_processed': i + 1,
+                    'files_processed': already_analyzed + i + 1,  # CHANGED: Include the already analyzed files in count
                     'current_file': os.path.basename(file_path),
-                    'percent_complete': int(((i + 1) / total_pending) * 100) if total_pending > 0 else 100,
+                    'percent_complete': int(((already_analyzed + i + 1) / total_files) * 100) if total_files > 0 else 100,  # CHANGED: Calculate percentage
                     'last_updated': datetime.now().isoformat(),
                     'scan_complete': True  # Add this line to ensure flag stays set
                 })
