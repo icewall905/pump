@@ -496,3 +496,138 @@ class MetadataService:
             if conn:
                 conn.close()
 
+    def _update_track_metadata_with_retry(self, track_id, artist, title, album, metadata):
+        """Update a track's metadata with retry logic for database locks"""
+        from db_utils import with_transaction
+        
+        def do_update(conn, track_id, artist, title, album, metadata):
+            cursor = conn.cursor()
+            
+            # Start with basic fields to update
+            update_fields = []
+            update_values = []
+            
+            # Add metadata fields
+            if 'album_art_url' in metadata and metadata['album_art_url']:
+                update_fields.append('album_art_url = ?')
+                update_values.append(metadata['album_art_url'])
+                
+            if 'artist_image_url' in metadata and metadata['artist_image_url']:
+                update_fields.append('artist_image_url = ?')
+                update_values.append(metadata['artist_image_url'])
+                
+            if 'genre' in metadata and metadata['genre']:
+                update_fields.append('genre = ?')
+                update_values.append(metadata['genre'])
+                
+            # Only update if we have fields to update
+            if update_fields:
+                cursor.execute(
+                    f"UPDATE audio_files SET {', '.join(update_fields)} WHERE id = ?",
+                    update_values + [track_id]
+                )
+                
+            return cursor.rowcount > 0
+        
+        with optimized_connection(self.db_path, self.in_memory, self.cache_size_mb) as conn:
+            return with_transaction(conn, do_update, track_id, artist, title, album, metadata)
+
+    def _update_track_metadata(self, track_id, artist, title, album, metadata):
+        """Update a track's metadata in the database"""
+        try:
+            # Mark the connection as modified so it gets saved to disk
+            from flask import g
+            if hasattr(g, 'db_modified'):
+                g.db_modified = True
+                
+            # Create direct DB connection instead of using optimized_connection
+            # which creates circular import problems
+            import sqlite3
+            db_path = self.config_file.replace('pump.conf', 'pump.db')
+            
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Start with basic fields to update
+                update_fields = []
+                update_values = []
+                
+                # Add metadata fields that need updating
+                if 'album_art_url' in metadata and metadata['album_art_url']:
+                    update_fields.append('album_art_url = ?')
+                    update_values.append(metadata['album_art_url'])
+                    
+                if 'artist_image_url' in metadata and metadata['artist_image_url']:
+                    update_fields.append('artist_image_url = ?')
+                    update_values.append(metadata['artist_image_url'])
+                    
+                if 'genre' in metadata and metadata['genre']:
+                    update_fields.append('genre = ?')
+                    update_values.append(metadata['genre'])
+                    
+                # Only update if we have fields to update
+                if update_fields:
+                    query = f"UPDATE audio_files SET {', '.join(update_fields)} WHERE id = ?"
+                    cursor.execute(query, update_values + [track_id])
+                    conn.commit()  # Add explicit commit
+                    
+                    # Log the update for debugging
+                    if cursor.rowcount > 0:
+                        logger.info(f"Updated metadata for track {track_id}: {', '.join(update_fields)}")
+                    else:
+                        logger.warning(f"No rows updated for track {track_id}")
+                    
+                return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error updating track metadata: {e}")
+            return False
+
+    def get_track_metadata(self, artist, title, album=''):
+        """Get metadata for a track from external services"""
+        metadata = {}
+        
+        # Try LastFM first if available
+        if self.lastfm_service:
+            try:
+                lastfm_data = self.lastfm_service.get_track_info(artist, title)
+                if lastfm_data:
+                    # Extract album art URL
+                    if 'album_art_url' in lastfm_data and lastfm_data['album_art_url']:
+                        metadata['album_art_url'] = lastfm_data['album_art_url']
+                    
+                    # Extract artist image URL
+                    if 'artist_image_url' in lastfm_data and lastfm_data['artist_image_url']:
+                        metadata['artist_image_url'] = lastfm_data['artist_image_url']
+                    
+                    # Extract genre if available
+                    if 'genre' in lastfm_data and lastfm_data['genre']:
+                        metadata['genre'] = lastfm_data['genre']
+                        
+                    metadata['metadata_source'] = 'lastfm'
+            except Exception as e:
+                logger.error(f"Error getting LastFM metadata for {artist} - {title}: {e}")
+        
+        # Try Spotify if available and LastFM didn't provide what we need
+        if self.spotify_service and (not metadata.get('album_art_url') or not metadata.get('genre')):
+            try:
+                spotify_data = self.spotify_service.get_track_info(artist, title, album)
+                if spotify_data:
+                    # Only add fields that LastFM didn't provide
+                    if 'album_art_url' not in metadata and 'album_art_url' in spotify_data:
+                        metadata['album_art_url'] = spotify_data['album_art_url']
+                        
+                    if 'artist_image_url' not in metadata and 'artist_image_url' in spotify_data:
+                        metadata['artist_image_url'] = spotify_data['artist_image_url']
+                        
+                    if 'genre' not in metadata and 'genre' in spotify_data:
+                        metadata['genre'] = spotify_data['genre']
+                        
+                    if 'metadata_source' not in metadata:
+                        metadata['metadata_source'] = 'spotify'
+                    else:
+                        metadata['metadata_source'] += '+spotify'
+            except Exception as e:
+                logger.error(f"Error getting Spotify metadata for {artist} - {title}: {e}")
+        
+        return metadata
+

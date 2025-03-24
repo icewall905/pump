@@ -4,6 +4,7 @@ import random
 import configparser
 import logging
 import hashlib
+import atexit  # Add this import
 from flask import Flask, render_template, request, jsonify, Response, send_file
 from music_analyzer import MusicAnalyzer
 from werkzeug.serving import run_simple
@@ -20,6 +21,99 @@ import threading  # Add this import
 from flask import jsonify, request  # Add this import
 import re
 from db_utils import get_optimized_connection, optimized_connection
+from flask import g
+import queue
+import random
+import time
+import sys
+import signal
+import functools
+
+# Global save lock to prevent multiple saves at once
+DB_SAVE_LOCK = threading.Lock()
+DB_SAVE_IN_PROGRESS = False
+LAST_SAVE_TIME = 0
+MIN_SAVE_INTERVAL = 30  # Minimum seconds between saves
+
+def ensure_single_instance(process_name):
+    """Prevent duplicate background processes"""
+    lock_file = os.path.join(os.path.dirname(DB_PATH), f'.{process_name}_lock')
+    
+    # Check if lock exists
+    if os.path.exists(lock_file):
+        logger.warning(f"Another {process_name} process is already running")
+        return False
+        
+    # Create lock
+    with open(lock_file, 'w') as f:
+        f.write(str(os.getpid()))
+        
+    # Register cleanup
+    @atexit.register
+    def remove_lock():
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
+            
+    return True
+
+def throttled_save_to_disk(force=False):
+    """Save in-memory database to disk with throttling to prevent lock contention"""
+    global DB_SAVE_IN_PROGRESS, LAST_SAVE_TIME
+    
+    # Skip if not using in-memory or no connection
+    if not DB_IN_MEMORY or not main_thread_conn:
+        return False
+        
+    # Check if we've saved recently
+    current_time = time.time()
+    if not force and (current_time - LAST_SAVE_TIME) < MIN_SAVE_INTERVAL:
+        logger.debug("Skipping save - throttled (last save was less than 30 seconds ago)")
+        return False
+    
+    # Try to acquire lock without blocking
+    if not DB_SAVE_LOCK.acquire(blocking=False):
+        logger.debug("Skipping save - another save operation in progress")
+        return False
+        
+    try:
+        DB_SAVE_IN_PROGRESS = True
+        logger.info("Saving in-memory database to disk (throttled)...")
+        
+        # Perform the actual save
+        from db_utils import save_memory_db_to_disk
+        success = save_memory_db_to_disk(main_thread_conn, DB_PATH)
+        
+        if success:
+            LAST_SAVE_TIME = current_time
+            
+        return success
+            
+    except Exception as e:
+        logger.error(f"Error in throttled database save: {e}")
+        return False
+    finally:
+        DB_SAVE_IN_PROGRESS = False
+        DB_SAVE_LOCK.release()
+
+def wait_for_db_saves():
+    """Wait for any DB saves to complete before continuing"""
+    start_time = time.time()
+    max_wait = 10  # Max seconds to wait
+    
+    while DB_SAVE_IN_PROGRESS and (time.time() - start_time) < max_wait:
+        logger.debug("Waiting for database save to complete...")
+        time.sleep(0.5)
+        
+    if DB_SAVE_IN_PROGRESS:
+        logger.warning("Database save is taking too long, proceeding anyway")
+
+# Database queue for serializing write operations
+DB_WRITE_QUEUE = queue.Queue()
+DB_WRITE_THREAD = None
+DB_WRITE_RUNNING = False
+ANALYSIS_LOCK = threading.Lock()  # Lock to ensure only one analysis runs at a time
+
+
 
 # Import logging configuration
 try:
@@ -32,6 +126,73 @@ except ImportError:
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[logging.StreamHandler()]
     )
+
+
+# Add this function to check if analysis is already running
+def is_analysis_running():
+    """Check if an analysis is already running based on status"""
+    # First, check the status object
+    if ANALYSIS_STATUS['running']:
+        return True
+        
+    # Second, check if the lock file exists
+    lock_file = os.path.join(os.path.dirname(DB_PATH), '.analysis_lock')
+    if os.path.exists(lock_file):
+        try:
+            with open(lock_file, 'r') as f:
+                pid = int(f.read().strip())
+            
+            # Try to check if process exists
+            try:
+                os.kill(pid, 0)  # This will raise an exception if process doesn't exist
+                return True
+            except OSError:
+                # Process doesn't exist, remove stale lock
+                os.remove(lock_file)
+                return False
+        except:
+            # Invalid lock file, remove it
+            os.remove(lock_file)
+            return False
+            
+    return False
+
+
+def check_database_stats(db_path, in_memory=False, memory_conn=None):
+    """Check database statistics to verify data existence"""
+    try:
+        if in_memory and memory_conn:
+            conn = memory_conn
+        else:
+            conn = sqlite3.connect(db_path)
+        
+        cursor = conn.cursor()
+        
+        # Get table counts
+        cursor.execute("SELECT COUNT(*) FROM audio_files")
+        audio_files_count = cursor.fetchone()[0]
+        
+        try:
+            cursor.execute("SELECT COUNT(*) FROM audio_features")
+            features_count = cursor.fetchone()[0]
+        except:
+            features_count = 0
+        
+        # Get storage info if it's a disk DB
+        if not in_memory:
+            file_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+            logger.info(f"Database stats: {db_path}, Size: {file_size/1024:.1f} KB, Audio files: {audio_files_count}, Features: {features_count}")
+        else:
+            logger.info(f"In-memory database stats: Audio files: {audio_files_count}, Features: {features_count}")
+        
+        if not in_memory:
+            conn.close()
+            
+        return audio_files_count
+    except Exception as e:
+        logger.error(f"Error checking database stats: {e}")
+        return 0
+   
 
 # Initialize logging with settings from config.ini if available
 def init_logging(config):
@@ -144,6 +305,7 @@ if not config.has_section('database_performance'):
     config.set('database_performance', 'optimize_connections', 'true')  # Apply optimizations?
     config_updated = True
 
+
 # Write config file only if it was changed or didn't exist
 if config_updated or not os.path.exists(config_file):
     logger.info(f"Writing updated configuration to {config_file}")
@@ -199,6 +361,97 @@ try:
 except Exception as e:
     logger.error(f"Error initializing metadata service: {e}")
     metadata_service = None
+
+
+
+def db_write_worker():
+    """Worker thread that processes database write operations serially"""
+    global DB_WRITE_RUNNING
+    
+    DB_WRITE_RUNNING = True
+    logger.info("Database write worker started")
+    
+    try:
+        while DB_WRITE_RUNNING:
+            try:
+                # Get next write operation with timeout
+                operation = DB_WRITE_QUEUE.get(timeout=5)
+                
+                if operation is None:  # None is a signal to stop
+                    logger.info("Received stop signal for DB write worker")
+                    break
+                    
+                # Unpack the operation
+                sql, params, callback = operation
+                
+                # Execute with retries
+                for attempt in range(1, 6):  # 5 attempts max
+                    try:
+                        # Important: Create a NEW connection for each operation
+                        with sqlite3.connect(DB_PATH) as conn:
+                            cursor = conn.cursor()
+                            if params:
+                                cursor.execute(sql, params)
+                            else:
+                                cursor.execute(sql)
+                            conn.commit()
+                            
+                            # If there's a callback with results
+                            if callback:
+                                callback(cursor)
+                                
+                            # Successfully completed
+                            break
+                            
+                    except sqlite3.OperationalError as e:
+                        # Only retry on database locks
+                        if "database is locked" in str(e) and attempt < 5:
+                            sleep_time = (2 ** attempt) * 0.1 + (random.random() * 0.1)
+                            logger.warning(f"Database locked, retry {attempt}/5 after {sleep_time:.2f}s")
+                            time.sleep(sleep_time)
+                        else:
+                            logger.error(f"Database error after {attempt} attempts: {e}")
+                            if callback:
+                                callback(None, error=str(e))
+                            break
+                            
+                    except Exception as e:
+                        logger.error(f"Error in database operation: {e}")
+                        if callback:
+                            callback(None, error=str(e))
+                        break
+                        
+                # Mark task as done
+                DB_WRITE_QUEUE.task_done()
+                
+                # Occasionally save memory DB to disk if needed
+                if random.random() < 0.01 and DB_IN_MEMORY:  # Reduced from 5% to 1% chance
+                    throttled_save_to_disk()
+                
+            except queue.Empty:
+                # Queue timeout, just continue waiting
+                pass
+                
+    except Exception as e:
+        logger.error(f"Error in DB write worker: {e}")
+    finally:
+        DB_WRITE_RUNNING = False
+        logger.info("Database write worker stopped")
+
+
+# Start DB write worker
+def start_db_write_worker():
+    global DB_WRITE_THREAD, DB_WRITE_RUNNING
+    
+    if DB_WRITE_THREAD is None or not DB_WRITE_THREAD.is_alive():
+        DB_WRITE_RUNNING = True
+        DB_WRITE_THREAD = threading.Thread(target=db_write_worker)
+        DB_WRITE_THREAD.daemon = True
+        DB_WRITE_THREAD.start()
+        logger.info("Started database write worker thread")
+
+# Call near the end of initialization
+start_db_write_worker()
 
 # Analysis status tracking
 ANALYSIS_STATUS = {
@@ -265,31 +518,40 @@ DB_IN_MEMORY = config.getboolean('database_performance', 'in_memory', fallback=F
 DB_CACHE_SIZE_MB = config.getint('database_performance', 'cache_size_mb', fallback=75)
 DB_OPTIMIZE = config.getboolean('database_performance', 'optimize_connections', fallback=True)
 
-# Add this code after your DB performance settings, around line 175-200
+# Set main_thread_conn to None by default
+main_thread_conn = None
 
 # Create a global connection for in-memory mode
 if DB_IN_MEMORY:
     try:
-        # Instead of creating a global connection object directly,
-        # we'll use a thread-specific connection store
-        from db_utils import get_optimized_connection, save_memory_db_to_disk
-        import atexit
+        from db_utils import get_optimized_connection, save_memory_db_to_disk, import_disk_db_to_memory
         
-        # Create connection in main thread
+        # Create connection in main thread (initially empty)
         main_thread_conn = get_optimized_connection(
             DB_PATH, in_memory=True, cache_size_mb=DB_CACHE_SIZE_MB, check_same_thread=False)
+        
+        # Import existing data from disk if available
+        if os.path.exists(DB_PATH):
+            logger.info(f"Importing existing database {DB_PATH} into memory")
+            import_disk_db_to_memory(main_thread_conn, DB_PATH)
+        else:
+            logger.info(f"No existing database to import, creating new in-memory database")
+        
+        # Add to the DB initialization section
+        if DB_IN_MEMORY and main_thread_conn:
+            main_thread_conn.execute("PRAGMA journal_mode=WAL")
         
         # Register function to save at exit
         def save_db_at_exit():
             logger.info("Application shutting down. Saving in-memory database to disk...")
-            save_memory_db_to_disk(main_thread_conn, DB_PATH)
+            check_database_stats(DB_PATH, DB_IN_MEMORY, main_thread_conn)
+            # Force save on exit to ensure no data loss
+            throttled_save_to_disk(force=True)
+            check_database_stats(DB_PATH)
         
         atexit.register(save_db_at_exit)
         
-        # Use a different approach for request teardown - use a hook function
-        # that saves after each request completes (only if changes were made)
-        from flask import g
-        
+       
         @app.before_request
         def setup_db_connection():
             g.db_modified = False
@@ -299,9 +561,8 @@ if DB_IN_MEMORY:
             """Save in-memory database to disk if modified during request"""
             if hasattr(g, 'db_modified') and g.db_modified and DB_IN_MEMORY and main_thread_conn:
                 try:
-                    logger.info("Saving in-memory database to disk after request...")
-                    from db_utils import save_memory_db_to_disk
-                    save_memory_db_to_disk(main_thread_conn, DB_PATH)
+                    # Use throttled save instead of direct save
+                    throttled_save_to_disk()
                 except Exception as e:
                     logger.error(f"Error saving in-memory database to disk: {e}")
         
@@ -309,8 +570,13 @@ if DB_IN_MEMORY:
     except Exception as e:
         logger.error(f"Failed to initialize in-memory database: {e}")
         DB_IN_MEMORY = False
-else:
-    main_thread_conn = None
+
+# Now check the database after the connection is established
+logger.info("Checking database stats at startup...")
+try:
+    check_database_stats(DB_PATH, DB_IN_MEMORY, main_thread_conn if DB_IN_MEMORY else None)
+except Exception as e:
+    logger.error(f"Error checking database stats at startup: {e}")
 
 @app.route('/')
 def index():
@@ -318,7 +584,7 @@ def index():
     view = request.args.get('view', '')
     return render_template('index.html', view=view)
 
-@app.route('/search')
+@app.route('/search')  # Missing route decorator
 def search():
     """Search for tracks in the database"""
     query = request.args.get('query', '')
@@ -328,7 +594,8 @@ def search():
     
     try:
         # Use optimized connection instead of direct sqlite3.connect
-        if DB_IN_MEMORY and main_thread_conn:  # Changed global_db_conn to main_thread_conn
+        if DB_IN_MEMORY and main_thread_conn:
+            main_thread_conn.execute("PRAGMA journal_mode=WAL") 
             conn = main_thread_conn  # Changed global_db_conn to main_thread_conn
         else:
             conn = get_optimized_connection(DB_PATH, cache_size_mb=DB_CACHE_SIZE_MB)
@@ -357,6 +624,204 @@ def search():
     except Exception as e:
         logger.error(f"Error searching tracks: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+def analyze_directory_worker(folder_path, recursive):
+    """Worker thread that performs analysis with thread-safe DB access"""
+    
+    # Acquire lock to ensure only one analysis runs at a time
+    if not ANALYSIS_LOCK.acquire(blocking=False):
+        logger.warning("Another analysis is already running, canceling this request")
+        ANALYSIS_STATUS.update({
+            'running': False,
+            'error': "Another analysis is already running",
+            'last_updated': datetime.datetime.now().isoformat()
+        })
+        return
+        
+    try:
+        import sqlite3
+        import datetime
+        import os
+        import numpy as np
+        import librosa
+        import random  # Add this for jitter in retry logic
+        
+        logger.info(f"Starting analysis of {folder_path} (recursive={recursive})")
+        
+        # Make sure DB write worker is running
+        start_db_write_worker()
+        
+        # Update status
+        ANALYSIS_STATUS.update({
+            'running': True,
+            'start_time': datetime.datetime.now().isoformat()
+        })
+        
+        # Use a dedicated read-only connection for fetching data
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        try:
+            # Find files to analyze - read-only operation
+            if recursive:
+                query = "SELECT id, file_path FROM audio_files WHERE analysis_status = 'pending' AND file_path LIKE ?"
+                cursor.execute(query, (f"{folder_path}%",))
+            else:
+                query = "SELECT id, file_path FROM audio_files WHERE analysis_status = 'pending' AND file_path LIKE ? AND file_path NOT LIKE ?"
+                cursor.execute(query, (f"{folder_path}/%", f"{folder_path}/%/%"))
+                
+            files = cursor.fetchall()
+            total = len(files)
+            logger.info(f"Found {total} files pending analysis")
+            
+            # Close read-only connection when done fetching
+            conn.close()
+            
+            # Update status
+            ANALYSIS_STATUS.update({
+                'total_files': total,
+                'files_processed': 0,
+                'current_file': '',
+                'percent_complete': 0  # Fixed: set to 0 initially
+            })
+            
+            # Process each file
+            for i, file in enumerate(files):
+                file_id = file['id']
+                file_path = file['file_path']
+                
+                # Update status
+                ANALYSIS_STATUS.update({
+                    'current_file': os.path.basename(file_path),
+                    'files_processed': i,
+                    'percent_complete': (i / total * 100) if total > 0 else 100
+                })
+                
+                # Log progress
+                if i % 10 == 0:
+                    logger.info(f"Analyzing file {i+1}/{total}: {os.path.basename(file_path)}")
+                
+                try:
+                    # Check if file exists
+                    if not os.path.exists(file_path):
+                        logger.warning(f"File not found: {file_path}")
+                        # Queue database update for missing file
+                        DB_WRITE_QUEUE.put((
+                            "UPDATE audio_files SET analysis_status = 'missing' WHERE id = ?", 
+                            (file_id,), 
+                            None
+                        ))
+                        continue
+                        
+                    # Extract audio features (CPU-intensive but no DB access)
+                    y, sr = librosa.load(file_path, duration=30)
+                    
+                    # Calculate tempo
+                    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+                    
+                    # Calculate key
+                    chroma = librosa.feature.chroma_stft(y=y, sr=sr)
+                    key = int(np.argmax(np.mean(chroma, axis=1)))
+                    
+                    # Determine mode (major=1, minor=0)
+                    minor_template = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
+                    major_template = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1])
+                    
+                    # Rotate templates to match the key
+                    minor_template = np.roll(minor_template, key)
+                    major_template = np.roll(major_template, key)
+                    
+                    # Correlate with chroma
+                    minor_corr = np.corrcoef(minor_template, np.mean(chroma, axis=1))[0, 1]
+                    major_corr = np.corrcoef(major_template, np.mean(chroma, axis=1))[0, 1]
+                    
+                    mode = 1 if major_corr > minor_corr else 0
+                    
+                    # Calculate energy
+                    rms = librosa.feature.rms(y=y)
+                    energy = float(np.mean(rms))
+                    
+                    # Calculate spectral centroid for brightness
+                    cent = librosa.feature.spectral_centroid(y=y, sr=sr)
+                    brightness = float(np.mean(cent))
+                    
+                    # Calculate zero crossing rate for noisiness
+                    zcr = librosa.feature.zero_crossing_rate(y=y)
+                    noisiness = float(np.mean(zcr))
+                    
+                    # Calculate loudness
+                    loudness = float(librosa.amplitude_to_db(np.mean(rms)))
+                    
+                    # Calculate danceability (approximation)
+                    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+                    danceability = float(np.mean(onset_env))
+                    
+                    # Normalize between 0 and 1
+                    danceability = min(1.0, danceability / 5.0)
+                    
+                    # Queue the feature insert
+                    DB_WRITE_QUEUE.put((
+                        '''
+                        INSERT INTO audio_features
+                        (file_id, tempo, key, mode, time_signature, 
+                        energy, danceability, brightness, noisiness, loudness)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''',
+                        (
+                            file_id, tempo, key, mode, 4,  # time_signature=4 is default
+                            energy, danceability, brightness, noisiness, loudness
+                        ),
+                        None
+                    ))
+                    
+                    # Queue the status update
+                    DB_WRITE_QUEUE.put((
+                        "UPDATE audio_files SET analysis_status = 'analyzed' WHERE id = ?", 
+                        (file_id,),
+                        None
+                    ))
+                    
+                except Exception as e:
+                    logger.error(f"Error analyzing file {file_path}: {e}")
+                    
+                    # Queue marking as failed
+                    DB_WRITE_QUEUE.put((
+                        "UPDATE audio_files SET analysis_status = 'failed' WHERE id = ?", 
+                        (file_id,),
+                        None
+                    ))
+            
+            # Wait for all DB operations to complete
+            DB_WRITE_QUEUE.join()
+            
+            # Update final status
+            ANALYSIS_STATUS.update({
+                'running': False,
+                'percent_complete': 100,
+                'last_updated': datetime.datetime.now().isoformat()
+            })
+            
+            logger.info(f"Analysis completed for {folder_path}")
+            
+        finally:
+            # Ensure connection is closed
+            try:
+                conn.close()
+            except:
+                pass
+            
+    except Exception as e:
+        logger.error(f"Error in analysis worker thread: {e}")
+        ANALYSIS_STATUS.update({
+            'running': False,
+            'error': str(e),
+            'last_updated': datetime.datetime.now().isoformat()
+        })
+    finally:
+        # Release the lock
+        ANALYSIS_LOCK.release()
 
 @app.route('/playlist')
 def create_playlist():
@@ -410,6 +875,28 @@ def create_playlist():
         logger.error(f"Error creating playlist: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/db-schema')
+def get_db_schema():
+    """Get the actual schema of database tables"""
+    try:
+        schema = {}
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            
+            # Get list of tables
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [row[0] for row in cursor.fetchall()]
+            
+            # Get schema for each table
+            for table in tables:
+                cursor.execute(f"PRAGMA table_info({table})")
+                columns = [{"name": row[1], "type": row[2]} for row in cursor.fetchall()]
+                schema[table] = columns
+                
+        return jsonify(schema)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/explore')
 def explore():
     """Get random tracks for exploration"""
@@ -449,6 +936,34 @@ def explore():
 def analyze_music():
     """Analyze music directory - Step 1: Quick scan, Step 2: Feature extraction"""
     global analyzer, ANALYSIS_STATUS
+    
+    # Check for running analysis using a file-based lock
+    lock_file = os.path.join(os.path.dirname(DB_PATH), '.analysis_lock')
+    
+    if os.path.exists(lock_file):
+        # Check if the process is actually running
+        try:
+            with open(lock_file, 'r') as f:
+                pid = int(f.read().strip())
+            
+            # Try to check if process exists
+            try:
+                os.kill(pid, 0)  # This will raise an exception if process doesn't exist
+                # Process exists, analysis is running
+                return jsonify({
+                    'success': False,
+                    'message': 'Analysis is already running in another process'
+                })
+            except OSError:
+                # Process doesn't exist, remove stale lock
+                os.remove(lock_file)
+        except:
+            # Invalid lock file, remove it
+            os.remove(lock_file)
+    
+    # Create lock file
+    with open(lock_file, 'w') as f:
+        f.write(str(os.getpid()))
     
     if not analyzer:
         return jsonify({"success": False, "error": "Analyzer not initialized"})
@@ -510,7 +1025,7 @@ def analyze_music():
 
 def run_analysis(folder_path, recursive):
     """Run full analysis in a background thread"""
-    global analysis_thread
+    global analysis_thread, ANALYSIS_STATUS
     
     try:
         # Make sure analyzer exists
@@ -519,11 +1034,11 @@ def run_analysis(folder_path, recursive):
             return
             
         # First count the total number of files to be analyzed
-        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+        with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             
-            # Get count of analyzed vs non-analyzed tracks - FIXED NULL HANDLING
+            # Get count of analyzed vs non-analyzed tracks
             cursor.execute('''
                 SELECT 
                     COUNT(*) as total_in_db,
@@ -544,36 +1059,22 @@ def run_analysis(folder_path, recursive):
             'running': True,
             'start_time': datetime.now().isoformat(),
             'files_processed': already_analyzed,
-            'total_files': total_in_db,  # Set the total files here
+            'total_files': total_in_db,
             'current_file': '',
             'percent_complete': 0 if total_in_db > 0 else 100,
             'last_updated': datetime.now().isoformat(),
             'error': None
         })
         
-        # Run analysis
-        logger.info(f"Starting full analysis of {folder_path} (recursive={recursive})")
+        # Create and start a new worker thread that creates its own connection
+        analysis_thread = threading.Thread(
+            target=analyze_directory_worker,
+            args=(folder_path, recursive)
+        )
+        analysis_thread.daemon = True
+        analysis_thread.start()
         
-        # Store the start time to calculate progress accurately
-        start_time = time.time()
-        
-        # Run the actual analysis
-        analyzer.analyze_directory(folder_path, recursive=recursive)
-        
-        # Update final status
-        ANALYSIS_STATUS.update({
-            'running': False,
-            'percent_complete': 100,
-            'last_updated': datetime.now().isoformat(),
-            'error': None
-        })
-        
-        # Save database changes if in-memory mode is active
-        if DB_IN_MEMORY and main_thread_conn:
-            from db_utils import trigger_db_save
-            trigger_db_save(main_thread_conn, DB_PATH)
-            
-        logger.info(f"Analysis completed successfully. Total files: {total_in_db}, Processed: {pending_count}")
+        logger.info(f"Analysis thread started for {folder_path}")
         
     except Exception as e:
         logger.error(f"Error running analysis: {e}")
@@ -583,11 +1084,6 @@ def run_analysis(folder_path, recursive):
             'error': str(e),
             'last_updated': datetime.now().isoformat()
         })
-        
-        # Save any partial changes to database
-        if DB_IN_MEMORY and main_thread_conn:
-            from db_utils import trigger_db_save
-            trigger_db_save(main_thread_conn, DB_PATH)
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
@@ -972,22 +1468,22 @@ def clear_cache():
 def get_playlists():
     """Get all saved playlists"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        from db_utils import execute_with_retry
         
-        # Get all playlists with track count
-        cursor.execute('''
-            SELECT p.id, p.name, p.description, p.created_at, p.updated_at,
-                   COUNT(pi.id) as track_count
-            FROM playlists p
-            LEFT JOIN playlist_items pi ON p.id = pi.playlist_id
-            GROUP BY p.id
-            ORDER BY p.updated_at DESC
-        ''')
-        
-        playlists = [dict(row) for row in cursor.fetchall()]
-        conn.close()
+        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            # Use retry logic for the query
+            cursor = execute_with_retry(conn, '''
+                SELECT p.id, p.name, p.description, p.created_at, p.updated_at,
+                       COUNT(pi.id) as track_count
+                FROM playlists p
+                LEFT JOIN playlist_items pi ON p.id = pi.playlist_id
+                GROUP BY p.id
+                ORDER BY p.updated_at DESC
+            ''')
+            
+            playlists = [dict(row) for row in cursor.fetchall()]
         
         return jsonify(playlists)
         
@@ -2089,8 +2585,7 @@ def run_metadata_update(skip_existing=False):
         
         # Save database changes if in-memory mode is active
         if DB_IN_MEMORY and main_thread_conn:
-            from db_utils import trigger_db_save
-            trigger_db_save(main_thread_conn, DB_PATH)
+            throttled_save_to_disk(force=True)
         
         logger.info("Metadata update completed successfully")
         
@@ -2105,8 +2600,7 @@ def run_metadata_update(skip_existing=False):
         
         # Save any partial changes to database
         if DB_IN_MEMORY and main_thread_conn:
-            from db_utils import trigger_db_save
-            trigger_db_save(main_thread_conn, DB_PATH)
+            throttled_save_to_disk(force=True)
 
 # Add this helper function to check if an artist already has an image
 def artist_has_image(artist_name):
@@ -2162,12 +2656,19 @@ def metadata_update_status():
         # Calculate elapsed time if running
         elapsed_seconds = 0
         if is_running and METADATA_UPDATE_STATUS['start_time']:
-            # Parse the ISO format string back to datetime
-            start_time = datetime.fromisoformat(METADATA_UPDATE_STATUS['start_time'])
-            elapsed = datetime.now() - start_time
-            elapsed_seconds = elapsed.total_seconds()
+            try:
+                # Handle both string and datetime start_time
+                if isinstance(METADATA_UPDATE_STATUS['start_time'], str):
+                    start_time = datetime.fromisoformat(METADATA_UPDATE_STATUS['start_time'])
+                else:
+                    start_time = METADATA_UPDATE_STATUS['start_time']
+                    
+                elapsed = datetime.now() - start_time
+                elapsed_seconds = elapsed.total_seconds()
+            except Exception as e:
+                logger.error(f"Error calculating elapsed time: {e}")
             
-        # Calculate estimated time remaining if possible
+        # Calculate estimated time remaining
         remaining_seconds = 0
         if is_running and METADATA_UPDATE_STATUS['percent_complete'] > 0:
             # Avoid division by zero
@@ -2543,6 +3044,8 @@ def run_scheduled_tasks():
         # Reschedule for next time
         update_scheduler()
 
+
+
 def run_quick_scan_task():
     """Run quick scan as a scheduled task"""
     logger.info("Running scheduled quick scan")
@@ -2565,8 +3068,7 @@ def run_quick_scan_task():
         
         # Add this line to save changes if in-memory mode is active
         if DB_IN_MEMORY and main_thread_conn:
-            from db_utils import trigger_db_save
-            trigger_db_save(main_thread_conn, DB_PATH)
+            throttled_save_to_disk()
             
         return result
     except Exception as e:
@@ -2627,8 +3129,7 @@ def run_full_analysis_task():
         
         # Add this line to save changes if in-memory mode is active
         if DB_IN_MEMORY and main_thread_conn:
-            from db_utils import trigger_db_save
-            trigger_db_save(main_thread_conn, DB_PATH)
+            throttled_save_to_disk()
             
         return True
     except Exception as e:
@@ -2637,9 +3138,18 @@ def run_full_analysis_task():
 
 def run_startup_actions():
     """Run configured startup actions when the app starts"""
+    if not ensure_single_instance('startup_actions'):
+        logger.warning("Another startup process is running, skipping")
+        return
+        
+    # Prevent duplicate startup actions
+    if is_analysis_running() or QUICK_SCAN_STATUS['running'] or METADATA_UPDATE_STATUS['running']:
+        logger.warning("Background tasks already running, skipping startup actions")
+        return
+        
     action = config.get('scheduler', 'startup_action', fallback='nothing')
     
-    if action == 'nothing':
+    if (action == 'nothing'):
         logger.info("No startup actions configured")
         return
     
@@ -2797,7 +3307,8 @@ def is_track_liked(track_id):
     except Exception as e:
         logger.error(f"Error checking liked status for track {track_id}: {e}")
         return jsonify({"error": str(e)}), 500
-    
+
+
 @app.route('/api/all-status')
 def get_all_status():
     """Single endpoint to get all statuses at once to reduce API calls"""
@@ -2931,6 +3442,141 @@ def analysis_database_status():
         return jsonify({'error': str(e)}), 500
 
 
+
+def run_full_analysis_workflow():
+    """Run the full analysis workflow: quick scan, metadata update, and audio analysis"""
+    logger.info("Starting full analysis workflow as startup action")
+    
+    # Step 1: Quick scan
+    run_quick_scan_task()
+    
+    # Save database before next step
+    if DB_IN_MEMORY and main_thread_conn:
+        throttled_save_to_disk(force=True)
+    
+    # Step 2: Metadata and analysis
+    logger.info("Starting both metadata update and analysis concurrently")
+    
+    # Run metadata update
+    logger.info("Running scheduled metadata update")
+    run_metadata_update_task()
+    
+    # Run analysis (use a delay to prevent thread contention)
+    time.sleep(5)  # Short delay to prevent database contention
+    
+    # Get folder path from config
+    folder_path = config.get('music', 'folder_path', fallback='./music')
+    recursive = config.getboolean('music', 'recursive', fallback=True)
+    
+    logger.info("Running scheduled full analysis")
+    run_analysis(folder_path, recursive)
+    
+    # Save after all operations
+    if DB_IN_MEMORY and main_thread_conn:
+        throttled_save_to_disk(force=True)
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Handle all uncaught exceptions"""
+    logger.error(f"Unhandled exception: {str(e)}", exc_info=True)
+    return jsonify({
+        "error": "Internal server error",
+        "message": str(e)
+    }), 500
+
+@app.route('/debug')
+def debug_info():
+    """Return debugging information"""
+    try:
+        import sqlite3
+        import os
+        
+        # Get database info
+        db_info = {
+            'exists': os.path.exists(DB_PATH),
+            'size': os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0,
+            'readable': os.access(DB_PATH, os.R_OK) if os.path.exists(DB_PATH) else False,
+            'writable': os.access(DB_PATH, os.W_OK) if os.path.exists(DB_PATH) else False
+        }
+        
+        # Get table info
+        tables = []
+        if os.path.exists(DB_PATH):
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = [row[0] for row in cursor.fetchall()]
+                
+                # Get row counts
+                counts = {}
+                for table in tables:
+                    cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                    counts[table] = cursor.fetchone()[0]
+        
+        return jsonify({
+            'database': db_info,
+            'tables': tables,
+            'counts': counts if 'counts' in locals() else {},
+            'environment': {
+                'in_memory': DB_IN_MEMORY,
+                'cache_size': DB_CACHE_SIZE_MB,
+                'python_version': sys.version,
+                'working_directory': os.getcwd()
+            }
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+
+@app.route('/api/db-diagnostic')
+def db_diagnostic():
+    """Return database diagnostics"""
+    try:
+        # Check disk database
+        disk_size = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+        
+        with optimized_connection(DB_PATH, False, cache_size_mb=10) as disk_conn:
+            disk_conn.row_factory = sqlite3.Row
+            cursor = disk_conn.cursor()
+            
+            # Count tables
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [row[0] for row in cursor.fetchall()]
+            
+            # Count rows in each table
+            counts = {}
+            for table in tables:
+                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                counts[table] = cursor.fetchone()[0]
+        
+        # Check in-memory database if active
+        memory_counts = {}
+        if DB_IN_MEMORY and main_thread_conn:
+            main_thread_conn.row_factory = sqlite3.Row
+            cursor = main_thread_conn.cursor()
+            
+            for table in tables:
+                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                memory_counts[table] = cursor.fetchone()[0]
+        
+        return jsonify({
+            'disk_database': {
+                'exists': os.path.exists(DB_PATH),
+                'size_kb': round(disk_size / 1024, 2),
+                'tables': tables,
+                'counts': counts
+            },
+            'memory_database': {
+                'active': bool(DB_IN_MEMORY and main_thread_conn),
+                'counts': memory_counts
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error in db diagnostic: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 # Updated run_server function that initializes scheduler and runs startup actions
 def run_server():
     """Run the Flask server"""
@@ -2947,6 +3593,66 @@ def run_server():
         run_simple(hostname=HOST, port=PORT, application=app, use_reloader=DEBUG, use_debugger=DEBUG)
     except Exception as e:
         logger.error(f"Error running server: {e}")
+
+
+@app.route('/api/reset-locks', methods=['POST'])
+def reset_database_locks():
+    """Emergency endpoint to reset all locks and stop background processes"""
+    global ANALYSIS_STATUS, METADATA_UPDATE_STATUS, QUICK_SCAN_STATUS
+    global analysis_thread, DB_WRITE_RUNNING, DB_SAVE_IN_PROGRESS
+    
+    try:
+        # 1. Stop all running processes
+        ANALYSIS_STATUS.update({
+            'running': False,
+            'error': 'Manually stopped',
+            'last_updated': datetime.now().isoformat()
+        })
+        
+        METADATA_UPDATE_STATUS.update({
+            'running': False, 
+            'error': 'Manually stopped',
+            'last_updated': datetime.now().isoformat()
+        })
+        
+        QUICK_SCAN_STATUS.update({
+            'running': False,
+            'error': 'Manually stopped',
+            'last_updated': datetime.now().isoformat()
+        })
+        
+        # 2. Release locks
+        if DB_SAVE_LOCK.locked():
+            DB_SAVE_LOCK.release()
+        DB_SAVE_IN_PROGRESS = False
+        
+        # 3. Clear DB write queue and restart worker
+        DB_WRITE_RUNNING = False
+        while not DB_WRITE_QUEUE.empty():
+            try:
+                DB_WRITE_QUEUE.get_nowait()
+                DB_WRITE_QUEUE.task_done()
+            except:
+                pass
+                
+        if ANALYSIS_LOCK.locked():
+            ANALYSIS_LOCK.release()
+            
+        # 4. Remove lock files
+        lock_file = os.path.join(os.path.dirname(DB_PATH), '.analysis_lock')
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
+            
+        # 5. Restart DB writer
+        time.sleep(1)
+        start_db_write_worker()
+        
+        return jsonify({"status": "success", "message": "All locks reset"})
+    except Exception as e:
+        logger.error(f"Error resetting locks: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 
 if __name__ == '__main__':
     run_server()
