@@ -21,103 +21,7 @@ import threading  # Add this import
 from flask import jsonify, request, g  # Add this import
 import re
 from db_utils import get_optimized_connection, optimized_connection
-<<<<<<< HEAD
-from flask import g
-import queue
-import random
-import time
-import sys
-import signal
-import functools
-
-# Global save lock to prevent multiple saves at once
-DB_SAVE_LOCK = threading.Lock()
-DB_SAVE_IN_PROGRESS = False
-LAST_SAVE_TIME = 0
-MIN_SAVE_INTERVAL = 30  # Minimum seconds between saves
-
-def ensure_single_instance(process_name):
-    """Prevent duplicate background processes"""
-    lock_file = os.path.join(os.path.dirname(DB_PATH), f'.{process_name}_lock')
-    
-    # Check if lock exists
-    if os.path.exists(lock_file):
-        logger.warning(f"Another {process_name} process is already running")
-        return False
-        
-    # Create lock
-    with open(lock_file, 'w') as f:
-        f.write(str(os.getpid()))
-        
-    # Register cleanup
-    @atexit.register
-    def remove_lock():
-        if os.path.exists(lock_file):
-            os.remove(lock_file)
-            
-    return True
-
-def throttled_save_to_disk(force=False):
-    """Save in-memory database to disk with throttling to prevent lock contention"""
-    global DB_SAVE_IN_PROGRESS, LAST_SAVE_TIME
-    
-    # Skip if not using in-memory or no connection
-    if not DB_IN_MEMORY or not main_thread_conn:
-        return False
-        
-    # Check if we've saved recently
-    current_time = time.time()
-    if not force and (current_time - LAST_SAVE_TIME) < MIN_SAVE_INTERVAL:
-        logger.debug("Skipping save - throttled (last save was less than 30 seconds ago)")
-        return False
-    
-    # Try to acquire lock without blocking
-    if not DB_SAVE_LOCK.acquire(blocking=False):
-        logger.debug("Skipping save - another save operation in progress")
-        return False
-        
-    try:
-        DB_SAVE_IN_PROGRESS = True
-        logger.info("Saving in-memory database to disk (throttled)...")
-        
-        # Perform the actual save
-        from db_utils import save_memory_db_to_disk
-        success = save_memory_db_to_disk(main_thread_conn, DB_PATH)
-        
-        if success:
-            LAST_SAVE_TIME = current_time
-            
-        return success
-            
-    except Exception as e:
-        logger.error(f"Error in throttled database save: {e}")
-        return False
-    finally:
-        DB_SAVE_IN_PROGRESS = False
-        DB_SAVE_LOCK.release()
-
-def wait_for_db_saves():
-    """Wait for any DB saves to complete before continuing"""
-    start_time = time.time()
-    max_wait = 10  # Max seconds to wait
-    
-    while DB_SAVE_IN_PROGRESS and (time.time() - start_time) < max_wait:
-        logger.debug("Waiting for database save to complete...")
-        time.sleep(0.5)
-        
-    if DB_SAVE_IN_PROGRESS:
-        logger.warning("Database save is taking too long, proceeding anyway")
-
-# Database queue for serializing write operations
-DB_WRITE_QUEUE = queue.Queue()
-DB_WRITE_THREAD = None
-DB_WRITE_RUNNING = False
-ANALYSIS_LOCK = threading.Lock()  # Lock to ensure only one analysis runs at a time
-
-
-=======
 from db_operations import execute_query_dict, execute_query_row, execute_write, execute_batch
->>>>>>> b7563440ace559a7a70371559939ee5745a43cbe
 
 # Import logging configuration
 try:
@@ -638,32 +542,6 @@ def search():
         return jsonify([])
     
     try:
-<<<<<<< HEAD
-        # Use optimized connection instead of direct sqlite3.connect
-        if DB_IN_MEMORY and main_thread_conn:
-            main_thread_conn.execute("PRAGMA journal_mode=WAL") 
-            conn = main_thread_conn  # Changed global_db_conn to main_thread_conn
-        else:
-            conn = get_optimized_connection(DB_PATH, cache_size_mb=DB_CACHE_SIZE_MB)
-            
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        # Use LIKE for case-insensitive search across multiple fields
-        cursor.execute('''
-            SELECT id, file_path, title, artist, album, album_art_url, duration
-            FROM audio_files 
-            WHERE title LIKE ? OR artist LIKE ? OR album LIKE ? 
-            ORDER BY artist, album, title
-            LIMIT ?
-        ''', (f'%{query}%', f'%{query}%', f'%{query}%', MAX_SEARCH_RESULTS))
-        
-        tracks = [dict(row) for row in cursor.fetchall()]
-        
-        # Only close if not using in-memory mode
-        if not (DB_IN_MEMORY and main_thread_conn):  # Changed global_db_conn to main_thread_conn
-            conn.close()
-=======
         # Use execute_query_dict instead of direct connection handling
         tracks = execute_query_dict(
             DB_PATH,
@@ -676,7 +554,6 @@ def search():
             in_memory=DB_IN_MEMORY,
             cache_size_mb=DB_CACHE_SIZE_MB
         )
->>>>>>> b7563440ace559a7a70371559939ee5745a43cbe
         
         logger.info(f"Search for '{query}' returned {len(tracks)} results")
         return jsonify(tracks)
@@ -1141,27 +1018,6 @@ def run_analysis(folder_path, recursive):
         analyzer._fix_database_inconsistencies()    
         
         # First count the total number of files to be analyzed
-<<<<<<< HEAD
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            # Get count of analyzed vs non-analyzed tracks
-            cursor.execute('''
-                SELECT 
-                    COUNT(*) as total_in_db,
-                    COALESCE(SUM(CASE WHEN analysis_status = 'analyzed' THEN 1 ELSE 0 END), 0) as already_analyzed
-                FROM audio_files
-            ''')
-            result = cursor.fetchone()
-            
-            total_in_db = result['total_in_db'] if result else 0
-            already_analyzed = result['already_analyzed'] if result else 0
-            pending_count = total_in_db - already_analyzed
-            
-            # Log counts
-            logger.info(f"Database status: {total_in_db} total files, {already_analyzed} already analyzed, {pending_count} pending analysis")
-=======
         db_stats = execute_query_row(
             DB_PATH,
             '''SELECT 
@@ -1178,7 +1034,6 @@ def run_analysis(folder_path, recursive):
             
         # Log counts
         logger.info(f"Database status: {total_in_db} total files, {already_analyzed} already analyzed, {pending_count} pending analysis")
->>>>>>> b7563440ace559a7a70371559939ee5745a43cbe
             
         # Update status with these counts *before* starting analysis
         ANALYSIS_STATUS.update({
@@ -1193,17 +1048,6 @@ def run_analysis(folder_path, recursive):
             'scan_complete': True  # ADD THIS LINE to change the display text
         })
         
-<<<<<<< HEAD
-        # Create and start a new worker thread that creates its own connection
-        analysis_thread = threading.Thread(
-            target=analyze_directory_worker,
-            args=(folder_path, recursive)
-        )
-        analysis_thread.daemon = True
-        analysis_thread.start()
-        
-        logger.info(f"Analysis thread started for {folder_path}")
-=======
         # Run analysis, passing the ANALYSIS_STATUS dictionary
         logger.info(f"Starting full analysis of pending files...")
         
@@ -1227,7 +1071,6 @@ def run_analysis(folder_path, recursive):
             trigger_db_save(main_thread_conn, DB_PATH)
             
         logger.info(f"Analysis completed successfully. Total files: {total_in_db}, Analyzed: {result.get('analyzed', 0)}, Errors: {result.get('errors', 0)}, Pending: {result.get('pending', 0)}")
->>>>>>> b7563440ace559a7a70371559939ee5745a43cbe
         
     except Exception as e:
         logger.error(f"Error running analysis: {e}")
@@ -2736,9 +2579,6 @@ def run_metadata_update(skip_existing=False):
         
         # Save database changes if in-memory mode is active
         if DB_IN_MEMORY and main_thread_conn:
-<<<<<<< HEAD
-            throttled_save_to_disk(force=True)
-=======
             try:
                 from db_utils import trigger_db_save
                 trigger_db_save(main_thread_conn, DB_PATH)
@@ -2746,7 +2586,6 @@ def run_metadata_update(skip_existing=False):
             except Exception as e:
                 logger.error(f"Error saving database after metadata update: {e}")
                 # Log error but don't re-raise to prevent thread termination
->>>>>>> b7563440ace559a7a70371559939ee5745a43cbe
         
         logger.info(f"Metadata update completed successfully: {result.get('processed', 0)} processed, {result.get('updated', 0)} updated")
         
@@ -2758,13 +2597,6 @@ def run_metadata_update(skip_existing=False):
             'error': str(e),
             'last_updated': datetime.now().isoformat()
         })
-<<<<<<< HEAD
-        
-        # Save any partial changes to database
-        if DB_IN_MEMORY and main_thread_conn:
-            throttled_save_to_disk(force=True)
-=======
->>>>>>> b7563440ace559a7a70371559939ee5745a43cbe
 
 # Add this helper function to check if an artist already has an image
 def artist_has_image(artist_name):

@@ -14,12 +14,8 @@ from datetime import datetime  # Add this missing import
 from lastfm_service import LastFMService
 from spotify_service import SpotifyService
 from metadata_service import MetadataService
-<<<<<<< HEAD
-from db_utils import get_optimized_connection, optimized_connection, trigger_db_save
-=======
 from db_utils import get_optimized_connection, optimized_connection
 from db_operations import execute_query, execute_query_dict, execute_query_row, execute_write, execute_batch, transaction_context
->>>>>>> b7563440ace559a7a70371559939ee5745a43cbe
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -37,12 +33,9 @@ analysis_progress = {
     'stop_requested': False
 }
 
-<<<<<<< HEAD
-=======
 # Add near other global variables
 scan_mutex = threading.Lock()
 
->>>>>>> b7563440ace559a7a70371559939ee5745a43cbe
 class MusicAnalyzer:
     """Class for analyzing audio files and extracting features"""
     
@@ -83,64 +76,6 @@ class MusicAnalyzer:
                 # Metadata service for getting album art, etc.
                 self.metadata_service = MetadataService(config_file='pump.conf')
         except Exception as e:
-<<<<<<< HEAD
-            logger.error(f"Error initializing services: {e}")
-    
-    def _ensure_tables_exist(self):
-        """Make sure the database tables for analysis exist"""
-        try:
-            cursor = self.db_conn.cursor()
-            
-            # Table for audio files
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS audio_files (
-                id INTEGER PRIMARY KEY,
-                file_path TEXT UNIQUE,
-                title TEXT,
-                artist TEXT,
-                album TEXT,
-                genre TEXT,
-                duration REAL,
-                date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_played TIMESTAMP,
-                play_count INTEGER DEFAULT 0,
-                album_art_url TEXT,
-                artist_image_url TEXT,
-                metadata_source TEXT,
-                analysis_status TEXT DEFAULT 'pending', 
-                liked INTEGER DEFAULT 0
-            )
-            ''')
-            
-            # Table for audio features
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS audio_features (
-                id INTEGER PRIMARY KEY,
-                file_id INTEGER,
-                file_path TEXT,
-                tempo REAL,
-                key INTEGER,
-                mode INTEGER,
-                time_signature INTEGER,
-                acousticness REAL,
-                danceability REAL,
-                energy REAL,
-                instrumentalness REAL,
-                loudness REAL,
-                speechiness REAL,
-                valence REAL,
-                date_analyzed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (file_id) REFERENCES audio_files(id)
-            )
-            ''')
-            
-            # Indexes for performance
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_path ON audio_files(file_path)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_analysis_status ON audio_files(analysis_status)")
-            
-            self.db_conn.commit()
-            logger.info("Database tables initialized successfully")
-=======
             print(f"Error in _initialize_services: {e}")
             logging.error(f"Error initializing services: {e}")
         
@@ -288,23 +223,11 @@ class MusicAnalyzer:
 
             return features
 
->>>>>>> b7563440ace559a7a70371559939ee5745a43cbe
         except Exception as e:
             logger.error(f"Error initializing database tables: {e}")
     
     def scan_library(self, directory: str, recursive: bool = True) -> Dict:
         """
-<<<<<<< HEAD
-        Scan a directory for audio files and add them to the database.
-        Only detects files, does not perform full analysis.
-        
-        Args:
-            directory: Path to the music directory
-            recursive: Whether to scan recursively
-            
-        Returns:
-            Dict with results: {processed: int, added: int}
-=======
         Estimate danceability based on rhythm regularity and energy.
         
         This is a simplified implementation - commercial services use more complex algorithms.
@@ -389,146 +312,9 @@ class MusicAnalyzer:
     def analyze_directory(self, directory: str, recursive: bool = True, extensions: List[str] = ['.mp3', '.wav', '.flac', '.ogg'], batch_size: int = 100):
         """
         Analyze audio files in a directory using batch processing for DB checks.
->>>>>>> b7563440ace559a7a70371559939ee5745a43cbe
         """
         logger.info(f"Starting quick scan of {directory} (recursive={recursive})")
         
-<<<<<<< HEAD
-        processed = 0
-        added = 0
-        
-        supported_extensions = ['.mp3', '.flac', '.wav', '.ogg', '.m4a', '.aac']
-        
-        # Update scan status
-        from web_player import QUICK_SCAN_STATUS
-        QUICK_SCAN_STATUS.update({
-            'running': True,
-            'files_processed': 0,
-            'tracks_added': 0,
-            'total_files': 0,
-            'current_file': '',
-            'percent_complete': 0
-        })
-        
-        try:
-            # Count files first to give accurate progress
-            total_files = 0
-            
-            if recursive:
-                for root, _, files in os.walk(directory):
-                    for file in files:
-                        if os.path.splitext(file)[1].lower() in supported_extensions:
-                            total_files += 1
-            else:
-                for file in os.listdir(directory):
-                    if os.path.isfile(os.path.join(directory, file)) and \
-                       os.path.splitext(file)[1].lower() in supported_extensions:
-                        total_files += 1
-            
-            # Update status with total files
-            QUICK_SCAN_STATUS.update({
-                'total_files': total_files
-            })
-            
-            # Process files
-            def process_file(file_path):
-                nonlocal processed, added
-                nonlocal QUICK_SCAN_STATUS
-                
-                # Update status with current file
-                file_name = os.path.basename(file_path)
-                QUICK_SCAN_STATUS.update({
-                    'current_file': file_name,
-                    'files_processed': processed
-                })
-                
-                # Check if file is already in database
-                cursor = self.db_conn.cursor()
-                cursor.execute("SELECT id FROM audio_files WHERE file_path = ?", (file_path,))
-                if cursor.fetchone():
-                    processed += 1
-                    return
-                
-                try:
-                    # Basic info from file path
-                    file_name = os.path.basename(file_path)
-                    file_name_no_ext = os.path.splitext(file_name)[0]
-                    
-                    # Get metadata from file
-                    metadata = self._get_basic_metadata(file_path)
-                    
-                    # Insert into database
-                    cursor.execute('''
-                    INSERT INTO audio_files 
-                    (file_path, title, artist, album, genre, duration, analysis_status)
-                    VALUES (?, ?, ?, ?, ?, ?, 'pending')
-                    ''', (
-                        file_path,
-                        metadata.get('title', file_name_no_ext),
-                        metadata.get('artist', ''),
-                        metadata.get('album', ''),
-                        metadata.get('genre', ''),
-                        metadata.get('duration', 0)
-                    ))
-                    
-                    processed += 1
-                    added += 1
-                    
-                    # Update status with progress
-                    if total_files > 0:
-                        percent = (processed / total_files) * 100
-                    else:
-                        percent = 100
-                        
-                    QUICK_SCAN_STATUS.update({
-                        'files_processed': processed,
-                        'tracks_added': added,
-                        'percent_complete': percent
-                    })
-                    
-                except Exception as e:
-                    logger.error(f"Error processing file {file_path}: {e}")
-                    processed += 1
-            
-            # Walk directory and process files
-            if recursive:
-                for root, _, files in os.walk(directory):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        if os.path.splitext(file)[1].lower() in supported_extensions:
-                            process_file(file_path)
-                            
-                            # Save changes periodically
-                            if processed % 10 == 0 and self.in_memory:
-                                trigger_db_save(self.db_conn, self.db_path)
-            else:
-                for file in os.listdir(directory):
-                    file_path = os.path.join(directory, file)
-                    if os.path.isfile(file_path) and \
-                       os.path.splitext(file)[1].lower() in supported_extensions:
-                        process_file(file_path)
-                        
-                        # Save changes periodically
-                        if processed % 10 == 0 and self.in_memory:
-                            trigger_db_save(self.db_conn, self.db_path)
-            
-            # Commit changes
-            self.db_conn.commit()
-            
-            # Update final status
-            QUICK_SCAN_STATUS.update({
-                'running': False,
-                'files_processed': processed,
-                'tracks_added': added,
-                'percent_complete': 100
-            })
-            
-            logger.info(f"Quick scan completed. Processed {processed} files, added {added} tracks to database.")
-            
-            return {
-                'processed': processed,
-                'added': added
-=======
         # Collect audio files
         audio_files = []
         
@@ -715,7 +501,6 @@ class MusicAnalyzer:
                 **self._extract_frequency_domain_features(y, sr),
                 **self._extract_rhythm_features(y, sr),
                 **self._extract_harmonic_features(y, sr)
->>>>>>> b7563440ace559a7a70371559939ee5745a43cbe
             }
             
         except Exception as e:
@@ -1143,18 +928,6 @@ class MusicAnalyzer:
             return features
             
         except Exception as e:
-<<<<<<< HEAD
-            logger.error(f"Error extracting audio features from {file_path}: {e}")
-            return None
-    
-    def _extract_spectral_features(self, y, sr) -> Dict:
-        """Extract spectral features from audio signal"""
-        features = {}
-        
-        try:
-            # Chromagram
-            chroma = librosa.feature.chroma_stft(y=y, sr=sr)
-=======
             print(f"Error analyzing {file_path}: {e}")
             return {"error": str(e)}
 
@@ -1752,7 +1525,6 @@ class MusicAnalyzer:
                 
         except Exception as e:
             logger.error(f"Error extracting metadata from {file_path}: {e}")
->>>>>>> b7563440ace559a7a70371559939ee5745a43cbe
             
             # Estimate key
             chroma_avg = np.mean(chroma, axis=1)
