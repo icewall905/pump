@@ -14,9 +14,10 @@ from datetime import datetime  # Add this missing import
 from lastfm_service import LastFMService
 from spotify_service import SpotifyService
 from metadata_service import MetadataService
-from db_utils import get_optimized_connection, optimized_connection
-from db_operations import execute_query, execute_query_dict, execute_query_row, execute_write, execute_batch, transaction_context
-
+from db_operations import (
+    save_memory_db_to_disk, import_disk_db_to_memory, 
+    execute_query_dict, execute_with_retry
+)
 # Initialize logger
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,43 @@ class MusicAnalyzer:
         except Exception as e:
             logger.error(f"Error initializing database: {e}")
             raise
+
+    def _ensure_tables_exist(self):
+        """Ensure all required tables exist in the database"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Create audio_features table if it doesn't exist
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS audio_features (
+                id INTEGER PRIMARY KEY,
+                file_id INTEGER,
+                tempo REAL,
+                key INTEGER,
+                mode INTEGER,
+                time_signature INTEGER,
+                energy REAL,
+                danceability REAL,
+                brightness REAL,
+                noisiness REAL,
+                loudness REAL,
+                date_analyzed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (file_id) REFERENCES audio_files(id)
+            )
+            ''')
+            
+            # Create indexes for faster lookups
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_id ON audio_features(file_id)")
+            
+            # Confirm audio_files table exists and has required columns
+            cursor.execute("PRAGMA table_info(audio_files)")
+            columns = [row[1] for row in cursor.fetchall()]
+            
+            # Make sure analysis_status column exists
+            if 'analysis_status' not in columns:
+                cursor.execute("ALTER TABLE audio_files ADD COLUMN analysis_status TEXT DEFAULT 'pending'")
+                
+            conn.commit()
         
     def analyze_file(self, file_path: str, save_to_db: bool = True) -> Dict:
         """
@@ -1449,7 +1487,9 @@ class MusicAnalyzer:
     def _fix_database_inconsistencies(self):
         """Fix any inconsistencies between audio_files and audio_features tables"""
         try:
-            with transaction_context(self.db_path, self.in_memory, self.cache_size_mb) as (conn, cursor):
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
                 # Get count before fix
                 cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
                 before_count = cursor.fetchone()[0]
@@ -1467,22 +1507,18 @@ class MusicAnalyzer:
                     UPDATE audio_files 
                     SET analysis_status = 'analyzed'
                     WHERE analysis_status = 'pending' 
-                    AND id IN (SELECT file_id FROM audio_features WHERE 
-                               tempo > 0 OR energy > 0 OR danceability > 0)
+                    AND id IN (SELECT file_id FROM audio_features)
                 ''')
+                
+                conn.commit()
                 
                 # Get count after fix
                 cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
                 after_count = cursor.fetchone()[0]
                 
-                logger.info(f"Database consistency check: {before_count} pending files before, {after_count} after fix")
-                
-                # Save changes immediately if in-memory
-                if self.in_memory:
-                    from db_utils import trigger_db_save
-                    trigger_db_save(conn, self.db_path)
+                print(f"Database consistency check: {before_count} pending files before, {after_count} after fix")
         except Exception as e:
-            logger.error(f"Error fixing database inconsistencies: {e}")
+            print(f"Error fixing database inconsistencies: {e}")
 
     def _extract_metadata(self, audio, file_path):
         """Extract basic metadata from an audio file."""

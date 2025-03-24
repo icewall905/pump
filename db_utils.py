@@ -173,3 +173,68 @@ def trigger_db_save(conn, db_path):
     except Exception as e:
         logger.error(f"Error saving in-memory database to disk: {e}")
         return False
+
+def import_disk_db_to_memory(memory_conn, db_path):
+    """Import a disk database into an in-memory database"""
+    try:
+        # Check if memory_conn is valid
+        if not memory_conn:
+            logger.error("Memory connection is None")
+            return False
+            
+        # Check if disk database exists
+        if not os.path.exists(db_path):
+            logger.error(f"Disk database does not exist: {db_path}")
+            return False
+            
+        # Create a new disk connection
+        disk_conn = sqlite3.connect(db_path)
+        
+        try:
+            # Copy all data from disk to memory
+            disk_conn.backup(memory_conn)
+            logger.info(f"Loaded database {db_path} into memory")
+            return True
+        finally:
+            disk_conn.close()
+    except Exception as e:
+        logger.error(f"Error importing disk database to memory: {e}")
+        return False
+
+def execute_with_retry(db_path, query, params=(), max_attempts=5, in_memory=False, cache_size_mb=75, return_results=False):
+    """Execute a database query with retry logic for handling locks"""
+    import time
+    import random
+    
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with optimized_connection(db_path, in_memory=in_memory, cache_size_mb=cache_size_mb) as conn:
+                conn.row_factory = sqlite3.Row if return_results else None
+                cursor = conn.cursor()
+                cursor.execute(query, params)
+                
+                # Handle different return types based on the operation
+                if return_results:
+                    results = cursor.fetchall()
+                    conn.commit()
+                    return [dict(row) for row in results]
+                else:
+                    conn.commit()
+                    return cursor.rowcount
+                
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < max_attempts:
+                # Calculate backoff with jitter
+                sleep_time = (2 ** attempt) * 0.1 + (random.random() * 0.1)
+                logger.warning(f"Database locked, retry {attempt}/{max_attempts} after {sleep_time:.2f}s")
+                time.sleep(sleep_time)
+            else:
+                logger.error(f"Database error after {attempt} attempts: {e}")
+                raise
+                
+        except Exception as e:
+            logger.error(f"Error executing query: {e}")
+            raise
+    
+    # If we get here, all retries failed
+    raise sqlite3.OperationalError(f"Failed to execute query after {max_attempts} attempts")

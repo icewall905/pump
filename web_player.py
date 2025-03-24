@@ -20,8 +20,29 @@ import time  # For sleep between API calls
 import threading  # Add this import
 from flask import jsonify, request, g  # Add this import
 import re
-from db_utils import get_optimized_connection, optimized_connection
-from db_operations import execute_query_dict, execute_query_row, execute_write, execute_batch
+from db_operations import (
+    save_memory_db_to_disk, import_disk_db_to_memory, 
+    execute_query_dict, execute_with_retry
+)
+# Add after your imports
+import queue
+import random
+import time
+
+# Database queue and thread management
+DB_WRITE_QUEUE = queue.Queue()
+DB_WRITE_THREAD = None
+DB_WRITE_RUNNING = False
+
+# Lock for analysis operations
+ANALYSIS_LOCK = threading.Lock()
+
+# Variables for database saving
+DB_SAVE_LOCK = threading.Lock()
+DB_SAVE_IN_PROGRESS = False
+LAST_SAVE_TIME = 0
+MIN_SAVE_INTERVAL = 60  # Seconds between saves
+
 
 # Import logging configuration
 try:
@@ -271,6 +292,54 @@ except Exception as e:
     metadata_service = None
 
 
+# Add this function to coordinate database saves using your existing functions
+def throttled_save_to_disk(force=False):
+    """Throttled version of save_memory_db_to_disk that prevents frequent saves"""
+    global DB_SAVE_IN_PROGRESS, LAST_SAVE_TIME
+    
+    # Only proceed if we're using in-memory mode
+    if not DB_IN_MEMORY or not main_thread_conn:
+        return False
+        
+    # Check if a save is already in progress
+    if DB_SAVE_IN_PROGRESS:
+        logger.debug("Skipping save - another save is already in progress")
+        return False
+        
+    # Check if we've saved recently (unless forced)
+    current_time = time.time()
+    if not force and (current_time - LAST_SAVE_TIME) < MIN_SAVE_INTERVAL:
+        logger.debug("Skipping save - throttled (last save was less than 60 seconds ago)")
+        return False
+    
+    # Try to acquire lock without blocking
+    if not DB_SAVE_LOCK.acquire(blocking=False):
+        logger.debug("Skipping save - couldn't acquire lock")
+        return False
+        
+    try:
+        DB_SAVE_IN_PROGRESS = True
+        logger.info("Saving in-memory database to disk (throttled)...")
+        
+        # Use your existing function from db_utils
+        from db_utils import save_memory_db_to_disk
+        success = save_memory_db_to_disk(main_thread_conn, DB_PATH)
+        
+        if success:
+            LAST_SAVE_TIME = current_time
+            logger.info("Throttled database save completed successfully")
+        else:
+            logger.warning("Throttled database save failed")
+            
+        return success
+            
+    except Exception as e:
+        logger.error(f"Error in throttled database save: {e}")
+        return False
+    finally:
+        DB_SAVE_IN_PROGRESS = False
+        DB_SAVE_LOCK.release()
+
 
 def db_write_worker():
     """Worker thread that processes database write operations serially"""
@@ -292,48 +361,25 @@ def db_write_worker():
                 # Unpack the operation
                 sql, params, callback = operation
                 
-                # Execute with retries
-                for attempt in range(1, 6):  # 5 attempts max
-                    try:
-                        # Important: Create a NEW connection for each operation
-                        with sqlite3.connect(DB_PATH) as conn:
-                            cursor = conn.cursor()
-                            if params:
-                                cursor.execute(sql, params)
-                            else:
-                                cursor.execute(sql)
-                            conn.commit()
-                            
-                            # If there's a callback with results
-                            if callback:
-                                callback(cursor)
-                                
-                            # Successfully completed
-                            break
-                            
-                    except sqlite3.OperationalError as e:
-                        # Only retry on database locks
-                        if "database is locked" in str(e) and attempt < 5:
-                            sleep_time = (2 ** attempt) * 0.1 + (random.random() * 0.1)
-                            logger.warning(f"Database locked, retry {attempt}/5 after {sleep_time:.2f}s")
-                            time.sleep(sleep_time)
-                        else:
-                            logger.error(f"Database error after {attempt} attempts: {e}")
-                            if callback:
-                                callback(None, error=str(e))
-                            break
-                            
-                    except Exception as e:
-                        logger.error(f"Error in database operation: {e}")
-                        if callback:
-                            callback(None, error=str(e))
-                        break
-                        
+                # Use the enhanced function with retries
+                from db_operations import execute_with_retry
+                result = execute_with_retry(
+                    DB_PATH, 
+                    sql, 
+                    params, 
+                    in_memory=DB_IN_MEMORY,
+                    cache_size_mb=DB_CACHE_SIZE_MB
+                )
+                
+                # If there's a callback with results
+                if callback:
+                    callback(result)
+                    
                 # Mark task as done
                 DB_WRITE_QUEUE.task_done()
                 
                 # Occasionally save memory DB to disk if needed
-                if random.random() < 0.01 and DB_IN_MEMORY:  # Reduced from 5% to 1% chance
+                if random.random() < 0.01 and DB_IN_MEMORY:  # 1% chance per operation
                     throttled_save_to_disk()
                 
             except queue.Empty:
@@ -494,6 +540,40 @@ import sys
 _is_shutting_down = False
 main_thread_conn = None
 
+def ensure_single_instance(process_name):
+    """Prevent duplicate background processes"""
+    lock_file = os.path.join(os.path.dirname(DB_PATH), f'.{process_name}_lock')
+    
+    # Check if lock exists
+    if os.path.exists(lock_file):
+        try:
+            with open(lock_file, 'r') as f:
+                pid = int(f.read().strip())
+            
+            # Try to check if process exists
+            try:
+                os.kill(pid, 0)  # This will raise an exception if process doesn't exist
+                logger.warning(f"Another {process_name} process is already running")
+                return False
+            except OSError:
+                # Process doesn't exist, remove stale lock
+                os.remove(lock_file)
+        except:
+            # Invalid lock file, remove it
+            os.remove(lock_file)
+            
+    # Create lock
+    with open(lock_file, 'w') as f:
+        f.write(str(os.getpid()))
+        
+    # Register cleanup
+    @atexit.register
+    def remove_lock():
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
+            
+    return True
+
 def save_db_before_exit(signum=None, frame=None):
     """Save in-memory database to disk before application exits"""
     global _is_shutting_down, main_thread_conn
@@ -507,8 +587,8 @@ def save_db_before_exit(signum=None, frame=None):
     if DB_IN_MEMORY and main_thread_conn:
         try:
             logger.info("Saving in-memory database to disk before exit...")
-            from db_utils import trigger_db_save
-            trigger_db_save(main_thread_conn, DB_PATH)
+            # Use throttled_save_to_disk with force=True to ensure it runs
+            throttled_save_to_disk(force=True)
             logger.info("Database saved successfully before exit")
         except Exception as e:
             logger.error(f"Error saving database before exit: {e}")
@@ -1012,10 +1092,18 @@ def run_analysis(folder_path, recursive):
         # Make sure analyzer exists
         if not analyzer:
             logger.error("Cannot run analysis: Music analyzer not available")
+            ANALYSIS_STATUS.update({
+                'running': False,
+                'error': "Music analyzer not available",
+                'last_updated': datetime.now().isoformat()
+            })
             return
 
-        # CRITICAL FIX: Check and fix database consistency first
-        analyzer._fix_database_inconsistencies()    
+        # CRITICAL FIX: Check if the method exists before calling it
+        if hasattr(analyzer, '_fix_database_inconsistencies'):
+            analyzer._fix_database_inconsistencies()
+        else:
+            logger.warning("Analyzer missing _fix_database_inconsistencies method")
         
         # First count the total number of files to be analyzed
         db_stats = execute_query_row(
@@ -3692,3 +3780,9 @@ def reset_database_locks():
 
 if __name__ == '__main__':
     run_server()
+
+# After creating the database path, set it in db_operations
+from db_operations import DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB
+DB_PATH = db_path  # Your database path
+DB_IN_MEMORY = config.getboolean('database', 'in_memory', fallback=False)
+DB_CACHE_SIZE_MB = config.getint('database', 'cache_size_mb', fallback=75)

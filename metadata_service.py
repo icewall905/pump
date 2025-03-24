@@ -14,8 +14,10 @@ from io import BytesIO
 from PIL import Image
 import sqlite3  # Add this import
 from datetime import datetime  # Add this import
-from db_utils import get_optimized_connection, optimized_connection
-from db_operations import execute_query, execute_query_dict, execute_query_row, execute_write, execute_batch, transaction_context
+from db_operations import (
+    save_memory_db_to_disk, import_disk_db_to_memory, 
+    execute_query_dict, execute_with_retry
+)
 
 logger = logging.getLogger('metadata_service')
 
