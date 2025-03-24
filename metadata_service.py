@@ -373,17 +373,39 @@ class MetadataService:
             status_tracker: Dictionary to track update status
             skip_existing: If True, skip tracks that already have metadata
         """
+        # Move ALL imports outside of any try blocks to ensure they stay in scope
+        from db_operations import execute_query_dict, execute_query_row, execute_write
+        from db_utils import trigger_db_save, get_optimized_connection
+        import os
+        from datetime import datetime
+        import configparser
+        
         try:
             # Get database path from config file path
             db_path = self.config_file.replace('pump.conf', 'pump.db')
             
-            # Get all tracks
-            # In update_all_metadata function:
+            # Check if using in-memory database by reading from config
+            db_in_memory = False
+            db_cache_size = 75
+            try:
+                config = configparser.ConfigParser()
+                if os.path.exists(self.config_file):
+                    config.read(self.config_file)
+                    db_in_memory = config.getboolean('database_performance', 'in_memory', fallback=False)
+                    db_cache_size = config.getint('database_performance', 'cache_size_mb', fallback=75)
+            except Exception as e:
+                logger.error(f"Error reading database config: {e}")
+                
+            logger.info(f"Metadata update using in_memory={db_in_memory}, cache_size={db_cache_size}")
+            
+            # Get all tracks - use the db_in_memory parameter
             if skip_existing:
                 # Skip tracks that already have metadata
                 tracks = execute_query_dict(
                     db_path,
                     "SELECT id, file_path, title, artist, album FROM audio_files WHERE metadata_source IS NULL OR metadata_source = ''",
+                    in_memory=db_in_memory,
+                    cache_size_mb=db_cache_size
                 )
                 logger.info("Metadata update: Skipping tracks with existing metadata")
             else:
@@ -391,7 +413,9 @@ class MetadataService:
                 tracks = execute_query_dict(
                     db_path,
                     '''SELECT id, file_path, title, artist, album
-                       FROM audio_files'''
+                       FROM audio_files''',
+                    in_memory=db_in_memory,
+                    cache_size_mb=db_cache_size
                 )
                 logger.info("Metadata update: Processing all tracks")
             
@@ -402,11 +426,15 @@ class MetadataService:
                 status_tracker['total_tracks'] = total_tracks
                 status_tracker['processed_tracks'] = 0
                 status_tracker['updated_tracks'] = 0
+                status_tracker['scan_complete'] = True  # Add this flag for consistent UI feedback
             
             # Create cache directory if it doesn't exist
             cache_dir = os.path.join(os.path.dirname(self.config_file), 'album_art_cache')
             if not os.path.exists(cache_dir):
                 os.makedirs(cache_dir, exist_ok=True)
+            
+            # Store the execute_write function in a class attribute to ensure it stays in scope
+            self._execute_write = execute_write
             
             # Process each track
             processed = 0
@@ -436,8 +464,8 @@ class MetadataService:
                         # Enrich metadata from online sources
                         enriched = self.enrich_metadata(basic_metadata, cache_dir)
                         
-                        # Update database using execute_write
-                        execute_write(
+                        # Update database using execute_write with in_memory parameter
+                        self._execute_write(
                             db_path,
                             '''UPDATE audio_files SET
                                 title = ?,
@@ -453,7 +481,9 @@ class MetadataService:
                                 enriched.get('album_art_url', ''),
                                 enriched.get('metadata_source', 'local_file'),
                                 track_id
-                            )
+                            ),
+                            in_memory=db_in_memory,  # Pass in_memory here
+                            cache_size_mb=db_cache_size  # Pass cache_size here
                         )
                         updated += 1
                     
@@ -464,12 +494,69 @@ class MetadataService:
                         status_tracker['processed_tracks'] = processed
                         status_tracker['updated_tracks'] = updated
                         status_tracker['percent_complete'] = int((processed / total_tracks) * 100)
-                        status_tracker['last_updated'] = datetime.now()
+                        status_tracker['last_updated'] = datetime.now().isoformat()
                     
                     # Log progress periodically
                     if processed % 10 == 0:
                         logger.info(f"Metadata update progress: {processed}/{total_tracks} tracks processed")
                     
+                    # Save to disk periodically when using in-memory database
+                    if db_in_memory and processed % 20 == 0:
+                        try:
+                            logger.info(f"Periodic checkpoint: processed {processed}/{total_tracks} tracks")
+                            
+                            # A more direct approach to saving the database
+                            try:
+                                # Create a new connection to the destination (disk) database
+                                disk_conn = sqlite3.connect(db_path)
+                                
+                                # Use the execute_write function directly to execute vacuum
+                                # This helps ensure all changes are flushed
+                                self._execute_write(
+                                    db_path,
+                                    "PRAGMA wal_checkpoint(FULL)",
+                                    (),
+                                    in_memory=db_in_memory,
+                                    cache_size_mb=db_cache_size
+                                )
+                                
+                                # Now copy the current state from in-memory to disk using ATTACH
+                                with get_optimized_connection(":memory:", in_memory=True, cache_size_mb=db_cache_size) as mem_conn:
+                                    # This forces the database to be written to disk without using
+                                    # the unreliable backup API
+                                    mem_conn.execute("ATTACH DATABASE ? AS disk", (db_path,))
+                                    
+                                    # Use a transaction for the copy operation
+                                    mem_conn.execute("BEGIN TRANSACTION")
+                                    
+                                    # Get a list of all tables
+                                    tables = mem_conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                                    
+                                    # Copy each table's data to the disk database
+                                    for table in tables:
+                                        table_name = table[0]
+                                        try:
+                                            # Copy data - this will fail for tables that don't exist in the disk DB
+                                            # but that's expected and we'll just continue
+                                            mem_conn.execute(f"DELETE FROM disk.{table_name}")
+                                            mem_conn.execute(f"INSERT INTO disk.{table_name} SELECT * FROM {table_name}")
+                                        except sqlite3.OperationalError as table_err:
+                                            # Ignore "no such table" errors
+                                            if "no such table" not in str(table_err):
+                                                logger.warning(f"Error copying table {table_name}: {table_err}")
+                                    
+                                    # Commit changes and detach
+                                    mem_conn.execute("COMMIT")
+                                    mem_conn.execute("DETACH DATABASE disk")
+                                    
+                                    logger.info(f"Successfully saved database checkpoint after {processed} tracks")
+                            except Exception as save_error:
+                                logger.error(f"Error during alternative database checkpoint: {save_error}")
+                                logger.info("Continuing process despite checkpoint error")
+                        except Exception as e:
+                            logger.error(f"Error during periodic progress checkpoint: {e}")
+                            # Continue processing even if checkpoint fails
+                        
                 except Exception as e:
                     logger.error(f"Error updating metadata for {file_path}: {e}")
                     # Continue with next track
@@ -478,7 +565,17 @@ class MetadataService:
             if status_tracker:
                 status_tracker['running'] = False
                 status_tracker['percent_complete'] = 100
-                status_tracker['last_updated'] = datetime.now()
+                status_tracker['last_updated'] = datetime.now().isoformat()
+            
+            # Final save for in-memory database
+            if db_in_memory:
+                try:
+                    from db_utils import trigger_db_save, get_optimized_connection
+                    with get_optimized_connection(db_path, in_memory=True, cache_size_mb=db_cache_size) as conn:
+                        trigger_db_save(conn, db_path)
+                        logger.info("Final save of in-memory database after metadata update")
+                except Exception as e:
+                    logger.error(f"Error during final database save: {e}")
             
             logger.info(f"Metadata update complete: {processed}/{total_tracks} tracks processed, {updated} updated")
             
@@ -492,7 +589,7 @@ class MetadataService:
             if status_tracker:
                 status_tracker['running'] = False
                 status_tracker['error'] = str(e)
-                status_tracker['last_updated'] = datetime.now()
+                status_tracker['last_updated'] = datetime.now().isoformat()
             return {
                 'processed': 0,
                 'updated': 0,

@@ -99,9 +99,8 @@ function initMetadataControls() {
     const updateSpotifyBtn = document.getElementById('update-spotify-btn');
     
     if (updateMetadataBtn) {
-        updateMetadataBtn.addEventListener('click', function() {
-            startMetadataUpdate();
-        });
+        console.log('Adding click handler to update metadata button');
+        updateMetadataBtn.addEventListener('click', updateMetadata); // FIXED: Call updateMetadata directly
     }
     
     if (updateLastfmBtn) {
@@ -388,6 +387,9 @@ function startPollingQuickScanStatus() {
 // Modify the updateMetadata function to trigger the global status indicator
 
 function updateMetadata() {
+
+    console.log('updateMetadata function called'); // Add this debug line
+
     const updateBtn = document.getElementById('update-metadata-btn');
     const statusElem = document.getElementById('metadata-status-text');
     const skipExisting = document.getElementById('skip-existing-metadata').checked;
@@ -401,18 +403,18 @@ function updateMetadata() {
         statusElem.parentElement.style.display = 'block';
     }
     
+    // Create form data with proper content type
+    const formData = new FormData();
+    formData.append('skip_existing', skipExisting ? 'true' : 'false');
+    
     fetch('/api/update-metadata', {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            skip_existing: skipExisting
-        })
+        body: formData  // Changed from JSON to FormData
     })
     .then(response => response.json())
     .then(data => {
-        if (data.success) {
+        console.log('Metadata update response:', data);
+        if (data.status === 'started') {
             showMessage('Metadata update started in background', 'success');
             
             // Start polling with minimal UI updates
@@ -1142,4 +1144,25 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Add this line to call the initialization function
+    initMetadataControls();
+    
+    // These functions are likely already being called
+    initQuickScanListeners();
+    initAnalysisControls();
+    
+    // Any other initialization functions should also be called here
+});
+
+// Make sure this function exists and works properly
+function initMetadataControls() {
+    const updateMetadataBtn = document.getElementById('update-metadata-btn');
+    
+    if (updateMetadataBtn) {
+        console.log('Adding click handler to update metadata button');
+        updateMetadataBtn.addEventListener('click', updateMetadata);
+    }
+}
 

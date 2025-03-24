@@ -2085,38 +2085,62 @@ def save_music_path():
 
 @app.route('/api/update-metadata', methods=['POST'])
 def update_metadata():
-    if not metadata_service:
-        return jsonify({"status": "error", "message": "Metadata service not available"}), 500
+    """Handle metadata update request"""
+    try:
+        if not metadata_service:
+            logger.error("Metadata update failed: Metadata service not available")
+            return jsonify({"status": "error", "message": "Metadata service not available"}), 500
+            
+        # Extract skip_existing from form data with proper debugging
+        try:
+            skip_existing = request.form.get('skip_existing', 'false') == 'true'
+            logger.info(f"Received form data: {dict(request.form)}")
+        except Exception as form_error:
+            logger.error(f"Error parsing form data: {form_error}")
+            # Fallback to JSON if form parsing fails
+            data = request.get_json(silent=True) or {}
+            skip_existing = data.get('skip_existing', False)
         
-    # Get skip_existing parameter
-    skip_existing = request.form.get('skip_existing', 'false') == 'true'
-    
-    # Check if metadata update is already running
-    if METADATA_UPDATE_STATUS['running']:
-        return jsonify({"status": "error", "message": "Metadata update already in progress"}), 409
-    
-    # Update status
-    METADATA_UPDATE_STATUS.update({
-        'running': True,
-        'start_time': datetime.now().isoformat(),
-        'total_tracks': 0,
-        'processed_tracks': 0,
-        'updated_tracks': 0,
-        'current_track': '',
-        'percent_complete': 0,
-        'last_updated': datetime.now().isoformat(),
-        'error': None
-    })
-    
-    # Start metadata update in a background thread
-    metadata_thread = threading.Thread(target=run_metadata_update, args=(skip_existing,))
-    metadata_thread.daemon = True
-    metadata_thread.start()
-    
-    # Mark database as modified (actual modification happens in thread)
-    g.db_modified = True
-    
-    return jsonify({"status": "started", "message": "Metadata update started"})
+        logger.info(f"Metadata update requested with skip_existing={skip_existing}")
+        
+        # Check if metadata update is already running
+        if METADATA_UPDATE_STATUS.get('running', False):
+            logger.info("Metadata update already in progress")
+            return jsonify({"status": "error", "message": "Metadata update already in progress"}), 409
+        
+        # Update status
+        METADATA_UPDATE_STATUS.update({
+            'running': True,
+            'start_time': datetime.now().isoformat(),
+            'total_tracks': 0,
+            'processed_tracks': 0,
+            'updated_tracks': 0,
+            'current_track': '',
+            'percent_complete': 0,
+            'last_updated': datetime.now().isoformat(),
+            'error': None,
+            'scan_complete': True  # Add this for UI consistency
+        })
+        
+        # Start metadata update in a background thread
+        metadata_thread = threading.Thread(target=run_metadata_update, args=(skip_existing,))
+        metadata_thread.daemon = True
+        metadata_thread.start()
+        
+        # Mark database as modified for the request context
+        g.db_modified = True
+        
+        logger.info("Metadata update thread started successfully")
+        return jsonify({"status": "started", "message": "Metadata update started"})
+    except Exception as e:
+        logger.error(f"Error starting metadata update: {e}")
+        # Update status with error
+        METADATA_UPDATE_STATUS.update({
+            'running': False,
+            'error': str(e),
+            'last_updated': datetime.now().isoformat()
+        })
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # Add this function to run metadata update in background
 def run_metadata_update(skip_existing=False):
@@ -2128,7 +2152,7 @@ def run_metadata_update(skip_existing=False):
             
         # Run metadata update
         logger.info(f"Starting metadata update (skip_existing={skip_existing})")
-        metadata_service.update_all_metadata(status_tracker=METADATA_UPDATE_STATUS, skip_existing=skip_existing)
+        result = metadata_service.update_all_metadata(status_tracker=METADATA_UPDATE_STATUS, skip_existing=skip_existing)
         
         # Update final status
         METADATA_UPDATE_STATUS.update({
@@ -2139,10 +2163,15 @@ def run_metadata_update(skip_existing=False):
         
         # Save database changes if in-memory mode is active
         if DB_IN_MEMORY and main_thread_conn:
-            from db_utils import trigger_db_save
-            trigger_db_save(main_thread_conn, DB_PATH)
+            try:
+                from db_utils import trigger_db_save
+                trigger_db_save(main_thread_conn, DB_PATH)
+                logger.info("Saved in-memory database after metadata update completion")
+            except Exception as e:
+                logger.error(f"Error saving database after metadata update: {e}")
+                # Log error but don't re-raise to prevent thread termination
         
-        logger.info("Metadata update completed successfully")
+        logger.info(f"Metadata update completed successfully: {result.get('processed', 0)} processed, {result.get('updated', 0)} updated")
         
     except Exception as e:
         logger.error(f"Error updating metadata: {e}")
@@ -2152,11 +2181,6 @@ def run_metadata_update(skip_existing=False):
             'error': str(e),
             'last_updated': datetime.now().isoformat()
         })
-        
-        # Save any partial changes to database
-        if DB_IN_MEMORY and main_thread_conn:
-            from db_utils import trigger_db_save
-            trigger_db_save(main_thread_conn, DB_PATH)
 
 # Add this helper function to check if an artist already has an image
 def artist_has_image(artist_name):

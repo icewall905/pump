@@ -103,20 +103,37 @@ def trigger_db_save(conn, db_path):
     try:
         logger.info("Saving in-memory database to disk from background task...")
         
+        # Check if connection is None
+        if conn is None:
+            logger.error("Cannot save database: Connection is None")
+            return False
+        
         # Create a new disk database connection
         disk_conn = sqlite3.connect(db_path)
         
-        # CRITICAL FIX: Use the actual connection's iterator dump
-        for line in conn.iterdump():
-            if line not in ("BEGIN;", "COMMIT;"):  # Skip transaction statements
-                disk_conn.execute(line)
-        
-        # Ensure changes are committed
-        disk_conn.commit()
-        disk_conn.close()
-        
-        logger.info("In-memory database successfully saved to disk")
+        try:
+            # First attempt: Use the connection's iterdump
+            for line in conn.iterdump():
+                if line not in ("BEGIN;", "COMMIT;"):  # Skip transaction statements
+                    disk_conn.execute(line)
+            
+            # Ensure changes are committed
+            disk_conn.commit()
+            logger.info("In-memory database successfully saved to disk")
+        except Exception as e:
+            logger.error(f"Error during database dump: {e}")
+            # Try backup method as fallback
+            try:
+                conn.backup(disk_conn)
+                logger.info("Database saved using backup method")
+            except Exception as backup_error:
+                logger.error(f"Backup method also failed: {backup_error}")
+                raise
+        finally:
+            disk_conn.close()
+            
         logger.info("Background task database save complete")
+        return True
     except Exception as e:
         logger.error(f"Error saving in-memory database to disk: {e}")
-        raise
+        return False
