@@ -618,22 +618,23 @@ def run_analysis(folder_path, recursive):
         ANALYSIS_STATUS.update({
             'running': True,
             'start_time': datetime.now().isoformat(),
-            'files_processed': already_analyzed,  # FIXED: Use already_analyzed, not analyzed_count
+            'files_processed': already_analyzed,
             'total_files': total_in_db,
-            'current_file': '',  # FIXED: Initialize with empty string, not undefined file_path
-            'percent_complete': int((already_analyzed / total_in_db) * 100) if total_in_db > 0 else 100,
+            'current_file': '',
+            'percent_complete': 0,
             'last_updated': datetime.now().isoformat(),
-            'error': None
+            'error': None,
+            'scan_complete': True  # ADD THIS LINE to change the display text
         })
         
-        # Run analysis
+        # Run analysis, passing the ANALYSIS_STATUS dictionary
         logger.info(f"Starting full analysis of pending files...")
         
         # Store the start time to calculate progress accurately
         start_time = time.time()
         
-        # Use analyze_pending_files instead of analyze_directory
-        result = analyzer.analyze_pending_files(batch_size=5)  # Reduced batch size
+        # FIXED: Pass ANALYSIS_STATUS instead of importing it
+        result = analyzer.analyze_pending_files(batch_size=5, status_dict=ANALYSIS_STATUS)
         
         # Update final status
         ANALYSIS_STATUS.update({
@@ -2267,7 +2268,8 @@ def analysis_status():
             'percent_complete': ANALYSIS_STATUS['percent_complete'],
             'elapsed_seconds': round(elapsed_seconds),
             'remaining_seconds': round(remaining_seconds),
-            'error': ANALYSIS_STATUS['error']
+            'error': ANALYSIS_STATUS['error'],
+            'scan_complete': ANALYSIS_STATUS.get('scan_complete', False)  # ADD THIS LINE
         })
     except Exception as e:
         logger.error(f"Error getting analysis status: {e}")

@@ -938,11 +938,13 @@ class MusicAnalyzer:
             scan_mutex.release()
 
     def analyze_pending_files(self, limit: Optional[int] = None, 
-                              batch_size: int = 10, 
-                              max_errors: int = 3,
-                              progress_callback = None):
+                         batch_size: int = 10, 
+                         max_errors: int = 3,
+                         progress_callback = None,
+                         status_dict = None):
         """Analyze files that have been added to the database but not yet analyzed."""
         global analysis_progress
+        from datetime import datetime  # Add import at the top
         
         analysis_progress['is_running'] = True
         analysis_progress['stop_requested'] = False
@@ -962,18 +964,9 @@ class MusicAnalyzer:
         
         analysis_progress['analyzed_count'] = already_analyzed
 
-        if progress_callback:
-            progress_callback({
-                'file': os.path.basename(file_path),
-                'index': analysis_progress['current_file_index'],
-                'total': len(pending_files),
-                'analyzed': analyzed_count
-            })
-
-
         logger.info(f"Starting full analysis of pending files - already analyzed: {already_analyzed}")
         
-        # CRITICAL FIX: Use analysis_status instead of JOIN to find pending files
+        # CRITICAL FIX: Get the pending files BEFORE using total_pending
         pending_files = execute_query(
             self.db_path,
             '''SELECT id, file_path
@@ -984,11 +977,7 @@ class MusicAnalyzer:
             cache_size_mb=self.cache_size_mb
         )
         
-        # Logging key information for debugging
-        logger.info(f"SQL query returned {len(pending_files)} pending files")
-        if pending_files and len(pending_files) > 0:
-            logger.info(f"First pending file: {pending_files[0][1]}")
-        
+        # NOW calculate total_pending
         total_pending = len(pending_files)
         
         if limit:
@@ -997,123 +986,113 @@ class MusicAnalyzer:
         analysis_progress['total_files'] = already_analyzed + total_pending
         analysis_progress['pending_count'] = total_pending
         
-        logger.info(f"Found {len(pending_files)} files pending analysis (total pending: {total_pending})")
+        # NOW update the status dictionary with total_pending
+        if status_dict:
+            status_dict.update({
+                'running': True,
+                'total_files': total_pending,
+                'current_file': '',
+                'percent_complete': 0,
+                'last_updated': datetime.now().isoformat(),
+                'scan_complete': True  # Add this line to preserve the flag
+            })
         
-        if len(pending_files) == 0:
-            analysis_progress['is_running'] = False
-            return {
-                'success': True,
-                'analyzed': 0,
-                'errors': 0,
-                'pending': 0
-            }
-        
+        # Initialize counters
         analyzed_count = 0
         error_count = 0
         consecutive_errors = 0
         
-        # Process in smaller batches (5 files) for more frequent updates
-        batch_size = min(batch_size, 5)
-        
-        # Process in batches to avoid memory issues and allow pausing
-        for i in range(0, len(pending_files), batch_size):
-            batch = pending_files[i:i+batch_size]
+        # Process each file - FIXED: added proper loop structure
+        for i, (file_id, file_path) in enumerate(pending_files):
+            # Check if we should stop
+            if analysis_progress['stop_requested']:
+                logger.info("Analysis stopped by user request")
+                break
             
-            logger.info(f"Processing batch {i//batch_size + 1}/{(len(pending_files)+batch_size-1)//batch_size}: {len(batch)} files")
+            # Update progress before starting the analysis (for UI feedback)
+            analysis_progress['current_file_index'] = i + 1
             
-            # Use a smaller transaction for each file instead of the whole batch
-            for file_id, file_path in batch:
-                # Check if we should stop
-                if analysis_progress['stop_requested']:
-                    logger.info("Analysis stopped by user request")
-                    break
-                
-                # Update progress before starting the analysis (for UI feedback)
-                analysis_progress['current_file'] = os.path.basename(file_path)
-                analysis_progress['current_file_index'] += 1
-                
-                logger.info(f"Analyzing file {analysis_progress['current_file_index']}/{len(pending_files)}: {file_path}")
-                
-                try:
-                    # Use a separate transaction for each file
-                    with transaction_context(self.db_path, self.in_memory, self.cache_size_mb) as (conn, cursor):
-                        # Analyze the file
-                        features = self._analyze_file_without_db_check(file_path)
-                        
-                        if features and 'error' not in features:
-                            # Update the file's analysis status
-                            cursor.execute(
-                                "UPDATE audio_files SET analysis_status = 'analyzed' WHERE id = ?",
-                                (file_id,)
-                            )
-                            
-                            # Insert the features
-                            cursor.execute(
-                                '''INSERT OR REPLACE INTO audio_features
-                                   (file_id, tempo, key, mode, time_signature, energy, danceability, brightness, noisiness, loudness)
-                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                                (
-                                    file_id,
-                                    features.get("tempo", 0),
-                                    features.get("key", 0),
-                                    features.get("mode", 0),
-                                    features.get("time_signature", 4),
-                                    features.get("energy", 0),
-                                    features.get("danceability", 0),
-                                    features.get("brightness", 0),
-                                    features.get("noisiness", 0),
-                                    features.get("loudness", 0)
-                                )
-                            )
-                            
-                            analyzed_count += 1
-                            analysis_progress['analyzed_count'] += 1
-                            consecutive_errors = 0
-                            logger.info(f"Successfully analyzed: {os.path.basename(file_path)}")
-                        else:
-                            # Mark as failed
-                            cursor.execute(
-                                "UPDATE audio_files SET analysis_status = 'failed' WHERE id = ?",
-                                (file_id,)
-                            )
-                            error_count += 1
-                            analysis_progress['failed_count'] += 1
-                            consecutive_errors += 1
-                            logger.warning(f"Failed to analyze: {os.path.basename(file_path)} - {features.get('error', 'Unknown error')}")
+            # Also update the web status dictionary if provided
+            if status_dict:
+                status_dict.update({
+                    'files_processed': i + 1,
+                    'current_file': os.path.basename(file_path),
+                    'percent_complete': int(((i + 1) / total_pending) * 100) if total_pending > 0 else 100,
+                    'last_updated': datetime.now().isoformat(),
+                    'scan_complete': True  # Add this line to ensure flag stays set
+                })
+            
+            logger.info(f"Analyzing file {i+1}/{len(pending_files)}: {file_path}")
+            
+            try:
+                # Use a separate transaction for each file
+                with transaction_context(self.db_path, self.in_memory, self.cache_size_mb) as (conn, cursor):
+                    # Analyze the file
+                    features = self._analyze_file_without_db_check(file_path)
                     
-                    # Save in-memory database every 5 files
-                    if self.in_memory and analyzed_count % 5 == 0:
-                        with optimized_connection(self.db_path, in_memory=self.in_memory, cache_size_mb=self.cache_size_mb) as conn:
-                            from db_utils import trigger_db_save
-                            trigger_db_save(conn, self.db_path)
-                            logger.info(f"Saved in-memory database after {analyzed_count} files")
+                    if features and 'error' not in features:
+                        # Update the file's analysis status
+                        cursor.execute(
+                            "UPDATE audio_files SET analysis_status = 'analyzed' WHERE id = ?",
+                            (file_id,)
+                        )
                         
-                except Exception as e:
-                    logger.error(f"Error analyzing {file_path}: {e}")
-                    # Use a separate transaction to update the status
-                    with transaction_context(self.db_path, self.in_memory, self.cache_size_mb) as (conn, cursor):
+                        # Insert the features
+                        cursor.execute(
+                            '''INSERT OR REPLACE INTO audio_features
+                               (file_id, tempo, key, mode, time_signature, energy, danceability, brightness, noisiness, loudness)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                            (
+                                file_id,
+                                features.get("tempo", 0),
+                                features.get("key", 0),
+                                features.get("mode", 0),
+                                features.get("time_signature", 4),
+                                features.get("energy", 0),
+                                features.get("danceability", 0),
+                                features.get("brightness", 0),
+                                features.get("noisiness", 0),
+                                features.get("loudness", 0)
+                            )
+                        )
+                        
+                        analyzed_count += 1
+                        analysis_progress['analyzed_count'] += 1
+                        consecutive_errors = 0
+                        logger.info(f"Successfully analyzed: {os.path.basename(file_path)}")
+                    else:
+                        # Mark as failed
                         cursor.execute(
                             "UPDATE audio_files SET analysis_status = 'failed' WHERE id = ?",
                             (file_id,)
                         )
-                    error_count += 1
-                    analysis_progress['failed_count'] += 1
-                    consecutive_errors += 1
+                        error_count += 1
+                        analysis_progress['failed_count'] += 1
+                        consecutive_errors += 1
+                        logger.warning(f"Failed to analyze: {os.path.basename(file_path)} - {features.get('error', 'Unknown error')}")
                 
-                # Check if we've hit too many consecutive errors
-                if consecutive_errors >= max_errors:
-                    logger.warning(f"Stopping analysis after {consecutive_errors} consecutive errors")
-                    break
+                # Save in-memory database every 5 files
+                if self.in_memory and analyzed_count % 5 == 0:
+                    with optimized_connection(self.db_path, in_memory=self.in_memory, cache_size_mb=self.cache_size_mb) as conn:
+                        from db_utils import trigger_db_save
+                        trigger_db_save(conn, self.db_path)
+                        logger.info(f"Saved in-memory database after {analyzed_count} files")
+                    
+            except Exception as e:
+                logger.error(f"Error analyzing {file_path}: {e}")
+                # Use a separate transaction to update the status
+                with transaction_context(self.db_path, self.in_memory, self.cache_size_mb) as (conn, cursor):
+                    cursor.execute(
+                        "UPDATE audio_files SET analysis_status = 'failed' WHERE id = ?",
+                        (file_id,)
+                    )
+                error_count += 1
+                analysis_progress['failed_count'] += 1
+                consecutive_errors += 1
             
-            # Save in-memory database after each batch
-            if self.in_memory:
-                with optimized_connection(self.db_path, in_memory=self.in_memory, cache_size_mb=self.cache_size_mb) as conn:
-                    from db_utils import trigger_db_save
-                    trigger_db_save(conn, self.db_path)
-                    logger.info(f"Saved in-memory database after batch {i//batch_size + 1}")
-            
-            # Break out of the main loop if we need to stop
-            if analysis_progress['stop_requested'] or consecutive_errors >= max_errors:
+            # Check if we've hit too many consecutive errors
+            if consecutive_errors >= max_errors:
+                logger.warning(f"Stopping analysis after {consecutive_errors} consecutive errors")
                 break
         
         # Get updated pending count
