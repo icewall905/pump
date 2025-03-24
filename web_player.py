@@ -17,9 +17,10 @@ from datetime import datetime, timedelta
 from flask import redirect, url_for
 import time  # For sleep between API calls
 import threading  # Add this import
-from flask import jsonify, request  # Add this import
+from flask import jsonify, request, g  # Add this import
 import re
 from db_utils import get_optimized_connection, optimized_connection
+from db_operations import execute_query_dict, execute_query_row, execute_write, execute_batch
 
 # Import logging configuration
 try:
@@ -312,6 +313,47 @@ if DB_IN_MEMORY:
 else:
     main_thread_conn = None
 
+import signal
+import atexit
+import sys
+
+# Variable to track if we're already shutting down
+_is_shutting_down = False
+main_thread_conn = None
+
+def save_db_before_exit(signum=None, frame=None):
+    """Save in-memory database to disk before application exits"""
+    global _is_shutting_down, main_thread_conn
+    
+    # Prevent multiple shutdown handlers from running
+    if _is_shutting_down:
+        return
+    
+    _is_shutting_down = True
+    
+    if DB_IN_MEMORY and main_thread_conn:
+        try:
+            logger.info("Saving in-memory database to disk before exit...")
+            from db_utils import trigger_db_save
+            trigger_db_save(main_thread_conn, DB_PATH)
+            logger.info("Database saved successfully before exit")
+        except Exception as e:
+            logger.error(f"Error saving database before exit: {e}")
+    
+    # Force exit after short delay if we get stuck
+    if signum in (signal.SIGINT, signal.SIGTERM):
+        def force_exit():
+            sys.exit(0)
+        
+        # Schedule force exit in 2 seconds if still running
+        import threading
+        threading.Timer(2.0, force_exit).start()
+
+# Register exit handlers
+atexit.register(save_db_before_exit)
+signal.signal(signal.SIGTERM, save_db_before_exit)
+signal.signal(signal.SIGINT, save_db_before_exit)
+
 @app.route('/')
 def index():
     """Home page with search functionality"""
@@ -327,33 +369,22 @@ def search():
         return jsonify([])
     
     try:
-        # Use optimized connection instead of direct sqlite3.connect
-        if DB_IN_MEMORY and main_thread_conn:  # Changed global_db_conn to main_thread_conn
-            conn = main_thread_conn  # Changed global_db_conn to main_thread_conn
-        else:
-            conn = get_optimized_connection(DB_PATH, cache_size_mb=DB_CACHE_SIZE_MB)
-            
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        # Use LIKE for case-insensitive search across multiple fields
-        cursor.execute('''
-            SELECT id, file_path, title, artist, album, album_art_url, duration
-            FROM audio_files 
-            WHERE title LIKE ? OR artist LIKE ? OR album LIKE ? 
-            ORDER BY artist, album, title
-            LIMIT ?
-        ''', (f'%{query}%', f'%{query}%', f'%{query}%', MAX_SEARCH_RESULTS))
-        
-        tracks = [dict(row) for row in cursor.fetchall()]
-        
-        # Only close if not using in-memory mode
-        if not (DB_IN_MEMORY and main_thread_conn):  # Changed global_db_conn to main_thread_conn
-            conn.close()
+        # Use execute_query_dict instead of direct connection handling
+        tracks = execute_query_dict(
+            DB_PATH,
+            '''SELECT id, file_path, title, artist, album, album_art_url, duration
+               FROM audio_files 
+               WHERE title LIKE ? OR artist LIKE ? OR album LIKE ? 
+               ORDER BY artist, album, title
+               LIMIT ?''',
+            (f'%{query}%', f'%{query}%', f'%{query}%', MAX_SEARCH_RESULTS),
+            in_memory=DB_IN_MEMORY,
+            cache_size_mb=DB_CACHE_SIZE_MB
+        )
         
         logger.info(f"Search for '{query}' returned {len(tracks)} results")
         return jsonify(tracks)
-        
+    
     except Exception as e:
         logger.error(f"Error searching tracks: {e}")
         return jsonify({'error': str(e)}), 500
@@ -371,16 +402,16 @@ def create_playlist():
         # Create a playlist using the analyzer
         logger.info(f"Generating playlist with seed track ID {seed_track_id} and {playlist_size} tracks")
         
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
         # Get the seed track's file path
-        cursor.execute('SELECT file_path FROM audio_files WHERE id = ?', (seed_track_id,))
-        seed_track = cursor.fetchone()
+        seed_track = execute_query_row(
+            DB_PATH,
+            'SELECT file_path FROM audio_files WHERE id = ?', 
+            (seed_track_id,),
+            in_memory=DB_IN_MEMORY,
+            cache_size_mb=DB_CACHE_SIZE_MB
+        )
         
         if not seed_track:
-            conn.close()
             return jsonify({'error': 'Seed track not found'}), 404
         
         # Generate the playlist
@@ -390,20 +421,21 @@ def create_playlist():
             # Get the full details of the tracks
             playlist = []
             for track_path in similar_tracks:
-                cursor.execute('''
-                    SELECT id, file_path, title, artist, album, album_art_url, duration 
-                    FROM audio_files 
-                    WHERE file_path = ?
-                ''', (track_path,))
-                track = cursor.fetchone()
+                track = execute_query_row(
+                    DB_PATH,
+                    '''SELECT id, file_path, title, artist, album, album_art_url, duration 
+                       FROM audio_files 
+                       WHERE file_path = ?''',
+                    (track_path,),
+                    in_memory=DB_IN_MEMORY,
+                    cache_size_mb=DB_CACHE_SIZE_MB
+                )
                 if track:
-                    playlist.append(dict(track))
+                    playlist.append(track)
             
-            conn.close()
             logger.info(f"Generated playlist with {len(playlist)} tracks")
             return jsonify(playlist)
         else:
-            conn.close()
             return jsonify({'error': 'Analyzer not available'}), 500
             
     except Exception as e:
@@ -414,30 +446,34 @@ def create_playlist():
 def explore():
     """Get random tracks for exploration"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT COUNT(*) as count FROM audio_files')
-        count = cursor.fetchone()['count']
+        # Get count of total tracks
+        count_result = execute_query_row(
+            DB_PATH,
+            'SELECT COUNT(*) as count FROM audio_files',
+            in_memory=DB_IN_MEMORY,
+            cache_size_mb=DB_CACHE_SIZE_MB
+        )
+        count = count_result['count'] if count_result else 0
         
         # Get random tracks - changed from 10 to 6
         random_tracks = []
         if count > 0:
             sample_size = min(6, count)  # Changed from 10 to 6
-            cursor.execute(f'''
-                SELECT af.id, af.file_path, af.title, af.artist, af.album, af.album_art_url, af.duration
-                FROM audio_files af
-                ORDER BY RANDOM()
-                LIMIT {sample_size}
-            ''')
+            random_tracks = execute_query_dict(
+                DB_PATH,
+                f'''SELECT af.id, af.file_path, af.title, af.artist, af.album, af.album_art_url, af.duration
+                   FROM audio_files af
+                   ORDER BY RANDOM()
+                   LIMIT {sample_size}''',
+                in_memory=DB_IN_MEMORY,
+                cache_size_mb=DB_CACHE_SIZE_MB
+            )
             
-            random_tracks = [dict(row) for row in cursor.fetchall()]
+            # Set default titles for tracks without titles
             for track in random_tracks:
                 if not track['title']:
                     track['title'] = os.path.basename(track['file_path'])
         
-        conn.close()
         logger.info(f"Returning {len(random_tracks)} random tracks for exploration")
         return jsonify(random_tracks)
     
@@ -506,6 +542,45 @@ def analyze_music():
             'error': error_msg
         })
 
+
+def _fix_database_inconsistencies(self):
+    """Fix any inconsistencies between audio_files and audio_features tables"""
+    try:
+        with transaction_context(self.db_path, self.in_memory, self.cache_size_mb) as (conn, cursor):
+            # Get count before fix
+            cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
+            before_count = cursor.fetchone()[0]
+            
+            # Check for inconsistencies - files marked as analyzed but missing features
+            cursor.execute('''
+                UPDATE audio_files 
+                SET analysis_status = 'pending'
+                WHERE analysis_status = 'analyzed' 
+                AND id NOT IN (SELECT file_id FROM audio_features)
+            ''')
+            
+            # Check for inconsistencies - files with features but not marked as analyzed
+            cursor.execute('''
+                UPDATE audio_files 
+                SET analysis_status = 'analyzed'
+                WHERE analysis_status = 'pending' 
+                AND id IN (SELECT file_id FROM audio_features WHERE 
+                           tempo > 0 OR energy > 0 OR danceability > 0)
+            ''')
+            
+            # Get count after fix
+            cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
+            after_count = cursor.fetchone()[0]
+            
+            logger.info(f"Database consistency check: {before_count} pending files before, {after_count} after fix")
+            
+            # Save changes immediately if in-memory
+            if self.in_memory:
+                from db_utils import trigger_db_save
+                trigger_db_save(conn, self.db_path)
+    except Exception as e:
+        logger.error(f"Error fixing database inconsistencies: {e}")
+
 # Update the run_analysis function
 
 def run_analysis(folder_path, recursive):
@@ -517,48 +592,48 @@ def run_analysis(folder_path, recursive):
         if not analyzer:
             logger.error("Cannot run analysis: Music analyzer not available")
             return
-            
+
+        # CRITICAL FIX: Check and fix database consistency first
+        analyzer._fix_database_inconsistencies()    
+        
         # First count the total number of files to be analyzed
-        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
+        db_stats = execute_query_row(
+            DB_PATH,
+            '''SELECT 
+                COUNT(*) as total_in_db,
+                COALESCE(SUM(CASE WHEN analysis_status = 'analyzed' THEN 1 ELSE 0 END), 0) as already_analyzed
+               FROM audio_files''',
+            in_memory=DB_IN_MEMORY,
+            cache_size_mb=DB_CACHE_SIZE_MB
+        )
+        
+        total_in_db = db_stats['total_in_db'] if db_stats else 0
+        already_analyzed = db_stats['already_analyzed'] if db_stats else 0
+        pending_count = total_in_db - already_analyzed
             
-            # Get count of analyzed vs non-analyzed tracks - FIXED NULL HANDLING
-            cursor.execute('''
-                SELECT 
-                    COUNT(*) as total_in_db,
-                    COALESCE(SUM(CASE WHEN analysis_status = 'analyzed' THEN 1 ELSE 0 END), 0) as already_analyzed
-                FROM audio_files
-            ''')
-            result = cursor.fetchone()
-            
-            total_in_db = result['total_in_db'] if result else 0
-            already_analyzed = result['already_analyzed'] if result else 0
-            pending_count = total_in_db - already_analyzed
-            
-            # Log counts
-            logger.info(f"Database status: {total_in_db} total files, {already_analyzed} already analyzed, {pending_count} pending analysis")
+        # Log counts
+        logger.info(f"Database status: {total_in_db} total files, {already_analyzed} already analyzed, {pending_count} pending analysis")
             
         # Update status with these counts *before* starting analysis
         ANALYSIS_STATUS.update({
             'running': True,
             'start_time': datetime.now().isoformat(),
-            'files_processed': already_analyzed,
-            'total_files': total_in_db,  # Set the total files here
-            'current_file': '',
-            'percent_complete': 0 if total_in_db > 0 else 100,
+            'files_processed': already_analyzed,  # FIXED: Use already_analyzed, not analyzed_count
+            'total_files': total_in_db,
+            'current_file': '',  # FIXED: Initialize with empty string, not undefined file_path
+            'percent_complete': int((already_analyzed / total_in_db) * 100) if total_in_db > 0 else 100,
             'last_updated': datetime.now().isoformat(),
             'error': None
         })
         
         # Run analysis
-        logger.info(f"Starting full analysis of {folder_path} (recursive={recursive})")
+        logger.info(f"Starting full analysis of pending files...")
         
         # Store the start time to calculate progress accurately
         start_time = time.time()
         
-        # Run the actual analysis
-        analyzer.analyze_directory(folder_path, recursive=recursive)
+        # Use analyze_pending_files instead of analyze_directory
+        result = analyzer.analyze_pending_files(batch_size=5)  # Reduced batch size
         
         # Update final status
         ANALYSIS_STATUS.update({
@@ -573,7 +648,7 @@ def run_analysis(folder_path, recursive):
             from db_utils import trigger_db_save
             trigger_db_save(main_thread_conn, DB_PATH)
             
-        logger.info(f"Analysis completed successfully. Total files: {total_in_db}, Processed: {pending_count}")
+        logger.info(f"Analysis completed successfully. Total files: {total_in_db}, Analyzed: {result.get('analyzed', 0)}, Errors: {result.get('errors', 0)}, Pending: {result.get('pending', 0)}")
         
     except Exception as e:
         logger.error(f"Error running analysis: {e}")
@@ -668,7 +743,8 @@ def settings():
             update_scheduler()
             
             # Mark database as modified (in case config db is stored in memory)
-            g.db_modified = True
+            if hasattr(g, 'db_modified'):  # Check if g exists
+                g.db_modified = True
             
             logger.info("Settings saved successfully")
             return redirect(url_for('settings', message='Settings saved successfully'))
@@ -725,18 +801,14 @@ def settings():
 def debug_metadata():
     """Debug endpoint to check metadata in database"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT id, file_path, title, artist, album, album_art_url, metadata_source
-            FROM audio_files
-            LIMIT 20
-        ''')
-        
-        tracks = [dict(row) for row in cursor.fetchall()]
-        conn.close()
+        tracks = execute_query_dict(
+            DB_PATH,
+            '''SELECT id, file_path, title, artist, album, album_art_url, metadata_source
+               FROM audio_files
+               LIMIT 20''',
+            in_memory=DB_IN_MEMORY,
+            cache_size_mb=DB_CACHE_SIZE_MB
+        )
         
         return jsonify({
             'count': len(tracks),
@@ -789,8 +861,6 @@ def album_art_proxy(url):
     except Exception as e:
         logger.error(f"Error proxying album art: {e}")
         return send_file('static/images/default-album-art.png', mimetype='image/jpeg')
-
-# Update the artist_image_proxy function
 
 @app.route('/artistimg/<path:url>')
 def artist_image_proxy(url):
@@ -1207,37 +1277,26 @@ def recent_tracks():
 @app.route('/track/<int:track_id>')
 def get_track_info(track_id):
     """Get track information for playback"""
-    # Use the connection from the active app context
-    conn = sqlite3.connect(DB_PATH)  # Changed to use DB_PATH directly
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    # Get track data from database
-    cursor.execute(
-        '''
-        SELECT t.id, t.title, t.artist, t.album, t.file_path, t.album_art_url
-        FROM audio_files t  /* Changed from "tracks" to "audio_files" */
-        WHERE t.id = ?
-        ''',
-        (track_id,)
-    )
-    
-    track = cursor.fetchone()
-    if not track:
-        conn.close()
-        return jsonify({'error': 'Track not found'}), 404
+    try:
+        # Get track data from database
+        track = execute_query_row(
+            DB_PATH,
+            '''SELECT t.id, t.title, t.artist, t.album, t.file_path, t.album_art_url
+               FROM audio_files t
+               WHERE t.id = ?''',
+            (track_id,),
+            in_memory=DB_IN_MEMORY,
+            cache_size_mb=DB_CACHE_SIZE_MB
+        )
         
-    # Convert to dict for JSON response
-    track_data = {
-        'id': track['id'],
-        'title': track['title'],
-        'artist': track['artist'],
-        'album': track['album'],
-        'album_art_url': track['album_art_url']
-    }
-    
-    conn.close()
-    return jsonify(track_data)
+        if not track:
+            return jsonify({'error': 'Track not found'}), 404
+            
+        # Track data is already in dict format
+        return jsonify(track)
+    except Exception as e:
+        logger.error(f"Error getting track info for {track_id}: {e}")
+        return jsonify({'error': str(e)}), 500
 
 # Add caching headers to streaming route to improve playback
 
@@ -1245,16 +1304,18 @@ def get_track_info(track_id):
 def stream(track_id):
     try:
         # Get the track information
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT file_path FROM audio_files WHERE id = ?", (track_id,))
-        result = cursor.fetchone()
-        conn.close()
+        result = execute_query_row(
+            DB_PATH,
+            "SELECT file_path FROM audio_files WHERE id = ?",
+            (track_id,),
+            in_memory=DB_IN_MEMORY,
+            cache_size_mb=DB_CACHE_SIZE_MB
+        )
         
         if not result:
             return jsonify({"error": "Track not found"}), 404
             
-        file_path = result[0]
+        file_path = result['file_path']
         
         # Check if file exists
         if not os.path.exists(file_path):
@@ -1314,17 +1375,9 @@ def get_album_tracks(album):
 @app.route('/api/library/artists')
 def get_artists():
     try:
-        # Use optimized connection
-        if DB_IN_MEMORY and main_thread_conn:  # FIXED: Changed global_db_conn to main_thread_conn
-            conn = main_thread_conn  # FIXED: Changed global_db_conn to main_thread_conn
-        else:
-            conn = get_optimized_connection(DB_PATH, cache_size_mb=DB_CACHE_SIZE_MB)
-            
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT 
+        artists = execute_query_dict(
+            DB_PATH,
+            '''SELECT 
                 artist, 
                 COUNT(*) as track_count,
                 artist_image_url,
@@ -1332,14 +1385,10 @@ def get_artists():
             FROM audio_files
             WHERE artist IS NOT NULL AND artist != ''
             GROUP BY artist
-            ORDER BY artist COLLATE NOCASE
-        ''')
-        
-        artists = [dict(row) for row in cursor.fetchall()]
-        
-        # Only close if not using in-memory mode
-        if not (DB_IN_MEMORY and main_thread_conn):  # FIXED: Changed global_db_conn to main_thread_conn
-            conn.close()
+            ORDER BY artist COLLATE NOCASE''',
+            in_memory=DB_IN_MEMORY,
+            cache_size_mb=DB_CACHE_SIZE_MB
+        )
         
         # Log the first few artists to see if they have images
         if artists and len(artists) > 0:
@@ -2421,6 +2470,45 @@ def quick_scan_status():
         logger.error(f"Error getting quick scan status: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/quick-scan', methods=['POST'])
+def quick_scan_api():
+    """API endpoint for quick scanning music library"""
+    try:
+        data = request.get_json()
+        folder_path = data.get('folder_path', '')
+        recursive = data.get('recursive', True)
+        
+        if not folder_path:
+            return jsonify({"success": False, "error": "No folder path specified"}), 400
+            
+        # Don't start if already running
+        if QUICK_SCAN_STATUS['running']:
+            return jsonify({
+                "success": False, 
+                "error": "A scan is already in progress"
+            })
+            
+        # Start quick scan in a background thread
+        thread = threading.Thread(
+            target=run_quick_scan,
+            args=(folder_path, recursive)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        # Mark database as modified
+        g.db_modified = True
+        
+        logger.info(f"Started quick scan for directory: {folder_path} (recursive={recursive})")
+        
+        return jsonify({
+            "success": True,
+            "message": "Quick scan started in background"
+        })
+        
+    except Exception as e:
+        logger.error(f"Error starting quick scan: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 def update_scheduler():
     """Update the scheduler based on current configuration"""

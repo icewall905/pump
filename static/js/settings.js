@@ -987,3 +987,159 @@ document.addEventListener('DOMContentLoaded', function() {
     updateAnalysisDisplay();
 });
 
+// Make sure these event listeners are being attached properly
+document.addEventListener('DOMContentLoaded', function() {
+    // Quick Scan button
+    const quickScanBtn = document.getElementById('quick-scan-btn');
+    if (quickScanBtn) {
+        quickScanBtn.addEventListener('click', function() {
+            const musicPath = document.getElementById('music-directory').value;
+            const recursive = document.getElementById('recursive-scan').checked;
+            
+            // Show status before making request
+            const statusText = document.getElementById('analysis-status-text');
+            if (statusText) {
+                statusText.textContent = "Starting quick scan...";
+            }
+            
+            // Make AJAX request to scan endpoint
+            fetch('/api/quick-scan', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ 
+                    folder_path: musicPath,
+                    recursive: recursive
+                }),
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Quick scan response:', data);
+                if (statusText) {
+                    statusText.textContent = data.message || "Quick scan initiated successfully";
+                }
+            })
+            .catch(error => {
+                console.error('Error starting quick scan:', error);
+                if (statusText) {
+                    statusText.textContent = "Error starting quick scan: " + error;
+                }
+            });
+        });
+    }
+    
+    // Full Analysis button
+    const analyzeBtn = document.getElementById('analyze-button');
+    if (analyzeBtn) {
+        analyzeBtn.addEventListener('click', function() {
+            const musicPath = document.getElementById('music-directory').value;
+            const recursive = document.getElementById('recursive-scan').checked;
+            
+            // Show status before making request
+            const statusText = document.getElementById('analysis-status-text');
+            if (statusText) {
+                statusText.textContent = "Starting full analysis...";
+            }
+            
+            // Make AJAX request to analyze endpoint
+            fetch('/analyze', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ 
+                    folder_path: musicPath,
+                    recursive: recursive
+                }),
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Analysis response:', data);
+                if (statusText) {
+                    statusText.textContent = data.message || "Analysis initiated successfully";
+                }
+            })
+            .catch(error => {
+                console.error('Error starting analysis:', error);
+                if (statusText) {
+                    statusText.textContent = "Error starting analysis: " + error;
+                }
+            });
+        });
+    }
+    
+    // Save Music Path button
+    const saveMusicPathBtn = document.getElementById('save-music-path');
+    if (saveMusicPathBtn) {
+        saveMusicPathBtn.addEventListener('click', function() {
+            const form = document.querySelector('.settings-form');
+            if (form) {
+                form.submit();
+            }
+        });
+    }
+    
+    // Debug
+    console.log('Settings page initialized - scan buttons should be working');
+});
+
+// Add these event handlers to your existing code
+document.addEventListener('DOMContentLoaded', function() {
+    // Quick scan button
+    const quickScanBtn = document.getElementById('quick-scan-btn');
+    if (quickScanBtn) {
+        quickScanBtn.addEventListener('click', function() {
+            const musicPath = document.getElementById('music-directory').value;
+            const recursive = document.getElementById('recursive-scan').checked;
+            
+            fetch('/api/quick-scan', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ 
+                    folder_path: musicPath,
+                    recursive: recursive
+                }),
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Quick scan started:', data);
+                // Update UI as needed
+            })
+            .catch(error => {
+                console.error('Error starting quick scan:', error);
+            });
+        });
+    }
+    
+    // Full analysis button
+    const analyzeBtn = document.getElementById('analyze-button');
+    if (analyzeBtn) {
+        analyzeBtn.addEventListener('click', function() {
+            const musicPath = document.getElementById('music-directory').value;
+            const recursive = document.getElementById('recursive-scan').checked;
+            
+            fetch('/analyze', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ 
+                    folder_path: musicPath,
+                    recursive: recursive
+                }),
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Analysis started:', data);
+                // Update UI as needed
+            })
+            .catch(error => {
+                console.error('Error starting analysis:', error);
+            });
+        });
+    }
+});
+

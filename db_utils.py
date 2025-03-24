@@ -98,15 +98,25 @@ def save_memory_db_to_disk(memory_conn, db_path):
         logger.error(f"Error saving in-memory database to disk: {e}")
         return False
 
-def trigger_db_save(memory_conn, db_path):
-    """Save in-memory database to disk from background threads"""
-    if memory_conn:
-        try:
-            logger.info("Saving in-memory database to disk from background task...")
-            save_memory_db_to_disk(memory_conn, db_path)
-            logger.info("Background task database save complete")
-            return True
-        except Exception as e:
-            logger.error(f"Error saving in-memory database from background task: {e}")
-            return False
-    return False
+def trigger_db_save(conn, db_path):
+    """Force save the in-memory database to disk."""
+    try:
+        logger.info("Saving in-memory database to disk from background task...")
+        
+        # Create a new disk database connection
+        disk_conn = sqlite3.connect(db_path)
+        
+        # CRITICAL FIX: Use the actual connection's iterator dump
+        for line in conn.iterdump():
+            if line not in ("BEGIN;", "COMMIT;"):  # Skip transaction statements
+                disk_conn.execute(line)
+        
+        # Ensure changes are committed
+        disk_conn.commit()
+        disk_conn.close()
+        
+        logger.info("In-memory database successfully saved to disk")
+        logger.info("Background task database save complete")
+    except Exception as e:
+        logger.error(f"Error saving in-memory database to disk: {e}")
+        raise

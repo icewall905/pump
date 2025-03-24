@@ -14,6 +14,8 @@ from io import BytesIO
 from PIL import Image
 import sqlite3  # Add this import
 from datetime import datetime  # Add this import
+from db_utils import get_optimized_connection, optimized_connection
+from db_operations import execute_query, execute_query_dict, execute_query_row, execute_write, execute_batch, transaction_context
 
 logger = logging.getLogger('metadata_service')
 
@@ -372,29 +374,27 @@ class MetadataService:
             skip_existing: If True, skip tracks that already have metadata
         """
         try:
-            # Connect to database
-            conn = sqlite3.connect(self.config_file.replace('pump.conf', 'pump.db'))
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
+            # Get database path from config file path
+            db_path = self.config_file.replace('pump.conf', 'pump.db')
             
             # Get all tracks
+            # In update_all_metadata function:
             if skip_existing:
                 # Skip tracks that already have metadata
-                cursor.execute('''
-                    SELECT id, file_path, title, artist, album
-                    FROM audio_files 
-                    WHERE metadata_source IS NULL OR metadata_source = ''
-                ''')
+                tracks = execute_query_dict(
+                    db_path,
+                    "SELECT id, file_path, title, artist, album FROM audio_files WHERE metadata_source IS NULL OR metadata_source = ''",
+                )
                 logger.info("Metadata update: Skipping tracks with existing metadata")
             else:
                 # Update all tracks
-                cursor.execute('''
-                    SELECT id, file_path, title, artist, album
-                    FROM audio_files
-                ''')
+                tracks = execute_query_dict(
+                    db_path,
+                    '''SELECT id, file_path, title, artist, album
+                       FROM audio_files'''
+                )
                 logger.info("Metadata update: Processing all tracks")
             
-            tracks = cursor.fetchall()
             total_tracks = len(tracks)
             
             # Update status
@@ -436,24 +436,25 @@ class MetadataService:
                         # Enrich metadata from online sources
                         enriched = self.enrich_metadata(basic_metadata, cache_dir)
                         
-                        # Update database
-                        cursor.execute('''
-                            UPDATE audio_files SET
+                        # Update database using execute_write
+                        execute_write(
+                            db_path,
+                            '''UPDATE audio_files SET
                                 title = ?,
                                 artist = ?,
                                 album = ?,
                                 album_art_url = ?,
                                 metadata_source = ?
-                            WHERE id = ?
-                        ''', (
-                            enriched.get('title') or track['title'],
-                            enriched.get('artist') or track['artist'],
-                            enriched.get('album') or track['album'],
-                            enriched.get('album_art_url', ''),
-                            enriched.get('metadata_source', 'local_file'),
-                            track_id
-                        ))
-                        conn.commit()
+                            WHERE id = ?''',
+                            (
+                                enriched.get('title') or track['title'],
+                                enriched.get('artist') or track['artist'],
+                                enriched.get('album') or track['album'],
+                                enriched.get('album_art_url', ''),
+                                enriched.get('metadata_source', 'local_file'),
+                                track_id
+                            )
+                        )
                         updated += 1
                     
                     processed += 1
@@ -492,7 +493,9 @@ class MetadataService:
                 status_tracker['running'] = False
                 status_tracker['error'] = str(e)
                 status_tracker['last_updated'] = datetime.now()
-        finally:
-            if conn:
-                conn.close()
+            return {
+                'processed': 0,
+                'updated': 0,
+                'error': str(e)
+            }
 
