@@ -1,6 +1,6 @@
 #!/bin/bash
 
-ENV_NAME="pump_env"  # Name your conda environment
+ENV_NAME="pump_env"  # Name your environment
 LOG_DIR="logs"       # Directory for log files
 
 # Function to display colored messages
@@ -22,19 +22,39 @@ check_sudo() {
     fi
 }
 
-# Check if conda is available
-if ! command -v conda &> /dev/null; then
-    print_message "red" "Conda not found! Please install Anaconda or Miniconda."
-    exit 1
-fi
+# Setup environment based on available tools (conda or venv)
+if command -v conda &> /dev/null; then
+    print_message "green" "Conda detected. Using conda environment..."
+    
+    # Initialize conda for shell if needed
+    conda_init_status=$(conda info --json | grep -c "not initialized")
+    if [ $conda_init_status -gt 0 ]; then
+        print_message "yellow" "Initializing conda for your shell..."
+        conda init "$(basename "$SHELL")"
+        print_message "yellow" "Please restart your terminal and run this script again."
+        exit 1
+    fi
 
-# Initialize conda for shell if needed
-conda_init_status=$(conda info --json | grep -c "not initialized")
-if [ $conda_init_status -gt 0 ]; then
-    print_message "yellow" "Initializing conda for your shell..."
-    conda init "$(basename "$SHELL")"
-    print_message "yellow" "Please restart your terminal and run this script again."
-    exit 1
+    # Check if our environment exists
+    if ! conda env list | grep -q "^${ENV_NAME}"; then
+        print_message "green" "Creating conda environment '${ENV_NAME}'..."
+        conda create -y -n $ENV_NAME python=3.9
+    fi
+
+    # Activate the conda environment
+    print_message "green" "Activating conda environment..."
+    eval "$(conda shell.bash hook)"
+    conda activate $ENV_NAME
+else
+    print_message "yellow" "Conda not found. Falling back to Python virtual environment (venv)."
+    # If the venv directory doesn't exist, create it
+    if [ ! -d "$ENV_NAME" ]; then
+        print_message "green" "Creating virtual environment '${ENV_NAME}' using venv..."
+        python3 -m venv $ENV_NAME
+    fi
+    # Activate the venv
+    print_message "green" "Activating virtual environment..."
+    source $ENV_NAME/bin/activate
 fi
 
 # Check and install required system packages
@@ -62,17 +82,6 @@ if command -v apt-get &> /dev/null; then
 else
     print_message "yellow" "This script is optimized for Debian/Ubuntu. You may need to manually install: ffmpeg, libsndfile, libtag, and libchromaprint."
 fi
-
-# Check if our environment exists
-if ! conda env list | grep -q "^${ENV_NAME}"; then
-    print_message "green" "Creating conda environment '${ENV_NAME}'..."
-    conda create -y -n $ENV_NAME python=3.9
-fi
-
-# Activate the environment
-print_message "green" "Activating conda environment..."
-eval "$(conda shell.bash hook)"
-conda activate $ENV_NAME
 
 # Create a more comprehensive requirements.txt with correct versions
 print_message "green" "Setting up Python dependencies..."
@@ -162,7 +171,7 @@ LOG_LEVELS = {
 }
 
 def configure_logging(level='info', log_to_file=True, log_dir='logs', max_size_mb=10, backup_count=5):
-    """
+    \"""
     Configure the logging system
     
     Args:
@@ -171,7 +180,7 @@ def configure_logging(level='info', log_to_file=True, log_dir='logs', max_size_m
         log_dir (str): Directory for log files
         max_size_mb (int): Maximum size of log file in MB before rotation
         backup_count (int): Number of backup log files to keep
-    """
+    \"""
     # Convert string level to logging level
     log_level = LOG_LEVELS.get(level.lower(), logging.INFO)
     
@@ -216,11 +225,11 @@ def configure_logging(level='info', log_to_file=True, log_dir='logs', max_size_m
     return root_logger
 
 def get_logger(name):
-    """Get a logger with the given name"""
+    \"""Get a logger with the given name\"""
     return logging.getLogger(name)
 
 def set_log_level(level):
-    """Set the log level for all handlers"""
+    \"""Set the log level for all handlers\"""
     if level not in LOG_LEVELS:
         raise ValueError(f"Invalid log level: {level}. Valid levels are: {list(LOG_LEVELS.keys())}")
     
@@ -237,8 +246,6 @@ if [ $failed_modules -gt 0 ]; then
     print_message "red" "Failed to install $failed_modules critical modules. Please check your system and try again."
     exit 1
 fi
-
-# Add this right before starting the web player (around line 236)
 
 # Verify that the Python files are where we expect them
 print_message "green" "Verifying Python files..."

@@ -134,17 +134,16 @@ def save_memory_db_to_disk(memory_conn, db_path):
         logger.error(f"Error saving in-memory database to disk: {e}")
         return False
 
-def trigger_db_save(memory_conn, db_path):
-    """Save in-memory database to disk from background threads"""
-    if memory_conn:
-        try:
-            logger.info("Saving in-memory database to disk from background task...")
-            save_memory_db_to_disk(memory_conn, db_path)
-            logger.info("Background task database save complete")
-            return True
-        except Exception as e:
-            logger.error(f"Error saving in-memory database from background task: {e}")
+def trigger_db_save(conn, db_path):
+    """Force save the in-memory database to disk."""
+    try:
+        logger.info("Saving in-memory database to disk from background task...")
+        
+        # Check if connection is None
+        if conn is None:
+            logger.error("Cannot save database: Connection is None")
             return False
+<<<<<<< HEAD
     return False
 
 def execute_with_retry(conn, query, params=None, max_retries=5, retry_delay=0.1):
@@ -264,4 +263,35 @@ def import_disk_db_to_memory(memory_conn, db_path):
             return False
     except Exception as e:
         logger.error(f"Error importing database from disk to memory: {e}")
+=======
+        
+        # Create a new disk database connection
+        disk_conn = sqlite3.connect(db_path)
+        
+        try:
+            # First attempt: Use the connection's iterdump
+            for line in conn.iterdump():
+                if line not in ("BEGIN;", "COMMIT;"):  # Skip transaction statements
+                    disk_conn.execute(line)
+            
+            # Ensure changes are committed
+            disk_conn.commit()
+            logger.info("In-memory database successfully saved to disk")
+        except Exception as e:
+            logger.error(f"Error during database dump: {e}")
+            # Try backup method as fallback
+            try:
+                conn.backup(disk_conn)
+                logger.info("Database saved using backup method")
+            except Exception as backup_error:
+                logger.error(f"Backup method also failed: {backup_error}")
+                raise
+        finally:
+            disk_conn.close()
+            
+        logger.info("Background task database save complete")
+        return True
+    except Exception as e:
+        logger.error(f"Error saving in-memory database to disk: {e}")
+>>>>>>> b7563440ace559a7a70371559939ee5745a43cbe
         return False

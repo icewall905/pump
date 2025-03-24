@@ -19,6 +19,7 @@ venv/
 ENV/
 .env/
 .venv/
+pump_env/
 
 # Database files
 *.db
