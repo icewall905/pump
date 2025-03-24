@@ -4,7 +4,6 @@ import random
 import configparser
 import logging
 import hashlib
-import atexit  # Add this import
 from flask import Flask, render_template, request, jsonify, Response, send_file
 from music_analyzer import MusicAnalyzer
 from werkzeug.serving import run_simple
@@ -24,10 +23,42 @@ from db_operations import (
     save_memory_db_to_disk, import_disk_db_to_memory, 
     execute_query_dict, execute_with_retry
 )
-# Add after your imports
 import queue
 import random
 import time
+import signal
+import atexit
+import sys
+
+# Add near the top of your file
+import os
+import atexit
+import signal
+import threading
+
+# Set a watchdog timer to force exit if Ctrl+C fails
+def setup_exit_watchdog():
+    def handler(signum, frame):
+        print("\nForce quitting (watchdog triggered)")
+        os._exit(1)  # Force exit
+        
+    # Register a forced exit after 10 seconds if normal shutdown fails
+    def watchdog_exit():
+        signal.signal(signal.SIGALRM, handler)
+        signal.alarm(10)  # 10 second timeout
+        
+    # Register the watchdog to run on SIGINT
+    def sigint_watchdog(signum, frame):
+        print("\nCtrl+C detected, shutting down...")
+        threading.Thread(target=watchdog_exit, daemon=True).start()
+        # Let the normal handlers run
+        clean_shutdown(signum, frame)
+        
+    # Override SIGINT handler
+    signal.signal(signal.SIGINT, sigint_watchdog)
+
+# Call this function at the end of your imports
+setup_exit_watchdog()
 
 # Database queue and thread management
 DB_WRITE_QUEUE = queue.Queue()
@@ -42,6 +73,7 @@ DB_SAVE_LOCK = threading.Lock()
 DB_SAVE_IN_PROGRESS = False
 LAST_SAVE_TIME = 0
 MIN_SAVE_INTERVAL = 60  # Seconds between saves
+
 
 
 # Import logging configuration
@@ -85,7 +117,6 @@ def is_analysis_running():
             return False
             
     return False
-
 
 def check_database_stats(db_path, in_memory=False, memory_conn=None):
     """Check database statistics to verify data existence"""
@@ -273,6 +304,17 @@ CACHE_DIR = config.get('cache', 'image_cache_dir', fallback='album_art_cache')
 MAX_CACHE_SIZE_MB = config.getint('cache', 'max_cache_size_mb', fallback=500)
 
 
+# Make sure DB_PATH is defined before calling this
+from db_operations import initialize_database
+if os.path.exists(DB_PATH):
+    logger.info(f"Using existing database at {DB_PATH}")
+    # Make sure tables exist even in existing database
+    initialize_database(DB_PATH)
+else:
+    logger.info(f"Creating new database at {DB_PATH}")
+    initialize_database(DB_PATH)
+
+
 # Create Flask app
 app = Flask(__name__)
 app.config['DATABASE_PATH'] = DB_PATH  # Add this line to set the config
@@ -294,13 +336,34 @@ except Exception as e:
 
 # Add this function to coordinate database saves using your existing functions
 def throttled_save_to_disk(force=False):
-    """Throttled version of save_memory_db_to_disk that prevents frequent saves"""
-    global DB_SAVE_IN_PROGRESS, LAST_SAVE_TIME
+    """Throttled version of save_memory_db_to_disk with better error handling"""
+    global DB_SAVE_IN_PROGRESS, LAST_SAVE_TIME, main_thread_conn
     
     # Only proceed if we're using in-memory mode
-    if not DB_IN_MEMORY or not main_thread_conn:
+    if not DB_IN_MEMORY:
         return False
         
+    # Ensure we have a valid connection
+    if main_thread_conn is None:
+        logger.warning("Cannot save database: main_thread_conn is None")
+        return False
+        
+    # Verify connection is still valid
+    try:
+        main_thread_conn.execute("SELECT 1")
+    except sqlite3.Error:
+        logger.error("Cannot save database: main_thread_conn is closed or invalid")
+        # Try to recreate the connection
+        try:
+            from db_operations import get_optimized_connection
+            main_thread_conn = get_optimized_connection(
+                DB_PATH, in_memory=True, cache_size_mb=DB_CACHE_SIZE_MB, check_same_thread=False
+            )
+            logger.info("Main thread connection recreated successfully")
+        except Exception as conn_error:
+            logger.error(f"Failed to recreate main thread connection: {conn_error}")
+            return False
+    
     # Check if a save is already in progress
     if DB_SAVE_IN_PROGRESS:
         logger.debug("Skipping save - another save is already in progress")
@@ -321,8 +384,7 @@ def throttled_save_to_disk(force=False):
         DB_SAVE_IN_PROGRESS = True
         logger.info("Saving in-memory database to disk (throttled)...")
         
-        # Use your existing function from db_utils
-        from db_utils import save_memory_db_to_disk
+        # Use your existing function from db_operations
         success = save_memory_db_to_disk(main_thread_conn, DB_PATH)
         
         if success:
@@ -340,7 +402,6 @@ def throttled_save_to_disk(force=False):
         DB_SAVE_IN_PROGRESS = False
         DB_SAVE_LOCK.release()
 
-
 def db_write_worker():
     """Worker thread that processes database write operations serially"""
     global DB_WRITE_RUNNING
@@ -357,6 +418,8 @@ def db_write_worker():
                 if operation is None:  # None is a signal to stop
                     logger.info("Received stop signal for DB write worker")
                     break
+                    
+                # Rest of function remains the same...
                     
                 # Unpack the operation
                 sql, params, callback = operation
@@ -397,12 +460,15 @@ def db_write_worker():
 def start_db_write_worker():
     global DB_WRITE_THREAD, DB_WRITE_RUNNING
     
-    if DB_WRITE_THREAD is None or not DB_WRITE_THREAD.is_alive():
-        DB_WRITE_RUNNING = True
-        DB_WRITE_THREAD = threading.Thread(target=db_write_worker)
-        DB_WRITE_THREAD.daemon = True
-        DB_WRITE_THREAD.start()
-        logger.info("Started database write worker thread")
+    # Don't start if already running
+    if DB_WRITE_THREAD is not None and DB_WRITE_THREAD.is_alive():
+        return
+        
+    DB_WRITE_RUNNING = True
+    DB_WRITE_THREAD = threading.Thread(target=db_write_worker)
+    DB_WRITE_THREAD.daemon = True  # Make sure it's a daemon thread
+    DB_WRITE_THREAD.start()
+    logger.info("Started database write worker thread")
 
 # Call near the end of initialization
 start_db_write_worker()
@@ -478,11 +544,15 @@ main_thread_conn = None
 # Create a global connection for in-memory mode
 if DB_IN_MEMORY:
     try:
-        from db_utils import get_optimized_connection, save_memory_db_to_disk, import_disk_db_to_memory
+        from db_operations import (
+           get_optimized_connection, save_memory_db_to_disk, import_disk_db_to_memory,
+          trigger_db_save, optimized_connection, reset_database_locks
+        )
         
         # Create connection in main thread (initially empty)
         main_thread_conn = get_optimized_connection(
-            DB_PATH, in_memory=True, cache_size_mb=DB_CACHE_SIZE_MB, check_same_thread=False)
+            DB_PATH, in_memory=True, cache_size_mb=DB_CACHE_SIZE_MB, check_same_thread=False
+        )
         
         # Import existing data from disk if available
         if os.path.exists(DB_PATH):
@@ -532,13 +602,10 @@ try:
 except Exception as e:
     logger.error(f"Error checking database stats at startup: {e}")
 
-import signal
-import atexit
-import sys
+
 
 # Variable to track if we're already shutting down
 _is_shutting_down = False
-main_thread_conn = None
 
 def ensure_single_instance(process_name):
     """Prevent duplicate background processes"""
@@ -642,6 +709,63 @@ def search():
         logger.error(f"Error searching tracks: {e}")
         return jsonify({'error': str(e)}), 500
 
+
+# Replace your current save_db_before_exit function with this improved version
+def clean_shutdown(signum=None, frame=None):
+    """Improved shutdown handler with timeout and forced exit"""
+    global _is_shutting_down, main_thread_conn, DB_WRITE_RUNNING
+    
+    # Prevent multiple shutdown handlers from running simultaneously
+    if _is_shutting_down:
+        logger.info("Shutdown already in progress, forcing exit")
+        os._exit(0)  # Force immediate exit if called twice
+    
+    _is_shutting_down = True
+    logger.info("Application shutting down gracefully...")
+    
+    try:
+        # Stop background threads first
+        DB_WRITE_RUNNING = False
+        
+        # Signal the queue to stop by adding None
+        try:
+            DB_WRITE_QUEUE.put(None)  # Signal worker to stop
+        except:
+            pass
+            
+        # Only try to save if we have a valid in-memory database
+        if DB_IN_MEMORY and main_thread_conn:
+            try:
+                # Verify connection is still valid before trying to save
+                try:
+                    main_thread_conn.execute("SELECT 1")
+                    logger.info("Saving in-memory database to disk before exit...")
+                    save_memory_db_to_disk(main_thread_conn, DB_PATH)
+                    logger.info("Database saved successfully")
+                except sqlite3.Error:
+                    logger.warning("Database connection already closed, skipping save")
+            except Exception as e:
+                logger.error(f"Error during database shutdown: {e}")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}")
+    
+    # Force exit after short delay if we're handling a signal
+    if signum is not None:
+        logger.info("Forcing exit in 3 seconds if still running...")
+        
+        def force_exit():
+            logger.info("Forced exit triggered")
+            os._exit(0)  # Use os._exit which can't be caught or blocked
+        
+        # Schedule force exit with shorter timeout (3 seconds)
+        t = threading.Timer(3.0, force_exit)
+        t.daemon = True  # Make sure the timer itself doesn't block shutdown
+        t.start()
+
+# Update your signal handlers
+atexit.register(clean_shutdown)
+signal.signal(signal.SIGINT, clean_shutdown)
+signal.signal(signal.SIGTERM, clean_shutdown)
 
 def analyze_directory_worker(folder_path, recursive):
     """Worker thread that performs analysis with thread-safe DB access"""
@@ -1077,7 +1201,7 @@ def _fix_database_inconsistencies(self):
             
             # Save changes immediately if in-memory
             if self.in_memory:
-                from db_utils import trigger_db_save
+                from db_operations import trigger_db_save
                 trigger_db_save(conn, self.db_path)
     except Exception as e:
         logger.error(f"Error fixing database inconsistencies: {e}")
@@ -1155,7 +1279,7 @@ def run_analysis(folder_path, recursive):
         
         # Save database changes if in-memory mode is active
         if DB_IN_MEMORY and main_thread_conn:
-            from db_utils import trigger_db_save
+            from db_operations import trigger_db_save
             trigger_db_save(main_thread_conn, DB_PATH)
             
         logger.info(f"Analysis completed successfully. Total files: {total_in_db}, Analyzed: {result.get('analyzed', 0)}, Errors: {result.get('errors', 0)}, Pending: {result.get('pending', 0)}")
@@ -1393,17 +1517,14 @@ def artist_image_proxy(url):
         # Only download if it's a URL
         if url.startswith(('http://', 'https://')):
             response = requests.get(url, timeout=10)
-            if response.status_code == 200:
                 # Save to cache
-                with open(cache_path, 'wb') as f:
+            with open(cache_path, 'wb') as f:
                     f.write(response.content)
                 
-                return redirect(f"/cache/{cache_filename}")
-            else:
-                return send_file('static/images/default-artist-image.png', mimetype='image/jpeg')
+            return redirect(f"/cache/{cache_filename}")
         else:
-            # If it's not a URL and not in cache, return default image
-            return send_file('static/images/default-artist-image.png', mimetype='image/jpeg')
+             return send_file('static/images/default-artist-image.png', mimetype='image/jpeg')
+
     except Exception as e:
         logger.error(f"Error proxying artist image: {e}")
         return send_file('static/images/default-artist-image.png', mimetype='image/jpeg')
@@ -1547,7 +1668,7 @@ def clear_cache():
 def get_playlists():
     """Get all saved playlists"""
     try:
-        from db_utils import execute_with_retry
+        from db_operations import execute_with_retry
         
         with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
             conn.row_factory = sqlite3.Row
@@ -2668,7 +2789,7 @@ def run_metadata_update(skip_existing=False):
         # Save database changes if in-memory mode is active
         if DB_IN_MEMORY and main_thread_conn:
             try:
-                from db_utils import trigger_db_save
+                from db_operations import trigger_db_save
                 trigger_db_save(main_thread_conn, DB_PATH)
                 logger.info("Saved in-memory database after metadata update completion")
             except Exception as e:
@@ -2952,7 +3073,7 @@ def run_quick_scan(folder_path, recursive=True):
         
         # Save database changes if in-memory mode is active
         if DB_IN_MEMORY and main_thread_conn:
-            from db_utils import trigger_db_save
+            from db_operations import trigger_db_save
             trigger_db_save(main_thread_conn, DB_PATH)
             
         logger.info(f"Quick scan completed successfully. Processed {result.get('processed', 0)} files, added {result.get('added', 0)} tracks.")
@@ -2968,7 +3089,7 @@ def run_quick_scan(folder_path, recursive=True):
         
         # Save any partial changes to database
         if DB_IN_MEMORY and main_thread_conn:
-            from db_utils import trigger_db_save
+            from db_operations import trigger_db_save
             trigger_db_save(main_thread_conn, DB_PATH)
 
 @app.route('/api/quick-scan/status')
@@ -3777,12 +3898,13 @@ def reset_database_locks():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+# Set db_operations module variables after DB_PATH is defined
+import db_operations
+db_operations.DB_PATH = DB_PATH
+db_operations.DB_IN_MEMORY = config.getboolean('database_performance', 'in_memory', fallback=False)
+db_operations.DB_CACHE_SIZE_MB = config.getint('database_performance', 'cache_size_mb', fallback=75)
+
 
 if __name__ == '__main__':
     run_server()
 
-# After creating the database path, set it in db_operations
-from db_operations import DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB
-DB_PATH = db_path  # Your database path
-DB_IN_MEMORY = config.getboolean('database', 'in_memory', fallback=False)
-DB_CACHE_SIZE_MB = config.getint('database', 'cache_size_mb', fallback=75)

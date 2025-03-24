@@ -1,5 +1,5 @@
 import os
-from db_utils import optimized_connection
+from db_operations import optimized_connection
 import sqlite3
 
 def check_database():

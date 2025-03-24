@@ -16,8 +16,14 @@ from spotify_service import SpotifyService
 from metadata_service import MetadataService
 from db_operations import (
     save_memory_db_to_disk, import_disk_db_to_memory, 
-    execute_query_dict, execute_with_retry
+    execute_query_dict, execute_with_retry,
+    get_optimized_connection, optimized_connection,
+    execute_query, execute_query_row, execute_write,
+    transaction_context, trigger_db_save
 )
+
+
+
 # Initialize logger
 logger = logging.getLogger(__name__)
 
@@ -153,7 +159,7 @@ class MusicAnalyzer:
                 
                 # Ensure in-memory database changes are saved immediately after schema setup
                 if self.in_memory:
-                    from db_utils import trigger_db_save
+                    from db_operations import trigger_db_save
                     trigger_db_save(conn, self.db_path)
                     logger.info("Schema changes saved to disk")
                     
@@ -717,7 +723,7 @@ class MusicAnalyzer:
         # Create a new connection in this thread
         try:
             # Create thread-local connection
-            from db_utils import get_optimized_connection
+            from db_operations import get_optimized_connection
             thread_conn = get_optimized_connection(self.db_path, self.in_memory, self.cache_size_mb)
             
             # Get all pending files from database
@@ -815,7 +821,7 @@ class MusicAnalyzer:
                     
                     # Save changes periodically
                     if i % 5 == 0 and self.in_memory:
-                        from db_utils import trigger_db_save
+                        from db_operations import trigger_db_save
                         trigger_db_save(thread_conn, self.db_path)
                         
                 except Exception as e:
@@ -829,7 +835,7 @@ class MusicAnalyzer:
             
             # Final database save
             if self.in_memory:
-                from db_utils import trigger_db_save
+                from db_operations import trigger_db_save
                 trigger_db_save(thread_conn, self.db_path)
             
             # Close thread connection
@@ -1244,7 +1250,7 @@ class MusicAnalyzer:
             # If using in-memory database, explicitly save to disk
                 if self.in_memory:
                     with optimized_connection(self.db_path, in_memory=self.in_memory, cache_size_mb=self.cache_size_mb) as conn:
-                        from db_utils import trigger_db_save
+                        from db_operations import trigger_db_save
                         trigger_db_save(conn, self.db_path)
                         logger.info("Explicitly saved in-memory database to disk after scan")
 
@@ -1412,7 +1418,7 @@ class MusicAnalyzer:
                 # Save in-memory database every 5 files
                 if self.in_memory and analyzed_count % 5 == 0:
                     with optimized_connection(self.db_path, in_memory=self.in_memory, cache_size_mb=self.cache_size_mb) as conn:
-                        from db_utils import trigger_db_save
+                        from db_operations import trigger_db_save
                         trigger_db_save(conn, self.db_path)
                         logger.info(f"Saved in-memory database after {analyzed_count} files")
                     
@@ -1453,7 +1459,7 @@ class MusicAnalyzer:
         # Final save of in-memory database
         if self.in_memory:
             with optimized_connection(self.db_path, in_memory=self.in_memory, cache_size_mb=self.cache_size_mb) as conn:
-                from db_utils import trigger_db_save
+                from db_operations import trigger_db_save
                 trigger_db_save(conn, self.db_path)
                 logger.info("Saved in-memory database after completing analysis")
         
@@ -1784,6 +1790,36 @@ class MusicAnalyzer:
             logger.error(f"Error creating station: {e}")
             return []
 
+    def analyze_audio_file(self, file_path):
+        """Main analysis method with improved error handling"""
+        try:
+            # Load the audio file with error checking
+            try:
+                y, sr = librosa.load(file_path, sr=None, duration=30)
+                if y is None or len(y) == 0:
+                    raise ValueError("Failed to load audio data from file")
+            except Exception as e:
+                logger.error(f"Error loading audio file {file_path}: {e}")
+                return None
+                
+            # Extract features with defensive programming
+            features = {}
+            
+            # Always check values before accessing them
+            try:
+                tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+                features['tempo'] = float(tempo) if tempo is not None else 0.0
+            except Exception as e:
+                logger.warning(f"Error extracting tempo from {file_path}: {e}")
+                features['tempo'] = 0.0
+                
+            # Similar pattern for other feature extractions...
+            
+            return features
+        except Exception as e:
+            logger.error(f"Error analyzing file {file_path}: {e}")
+            return None
+
 
 def main():
     """Command line interface for music analysis"""
@@ -1821,5 +1857,25 @@ if __name__ == "__main__":
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
+    
+    # Replace your current analyzer initialization
+    try:
+        if os.path.exists(DB_PATH):
+            # Initialize database if needed (make sure tables exist)
+            from db_operations import initialize_database
+            initialize_database(DB_PATH)
+            
+            # Now initialize the analyzer
+            analyzer = MusicAnalyzer(DB_PATH)
+            logger.info("Music analyzer initialized successfully")
+        else:
+            # Create a new database file
+            from db_operations import initialize_database
+            initialize_database(DB_PATH)
+            analyzer = MusicAnalyzer(DB_PATH)
+            logger.info("Music analyzer initialized with new database")
+    except Exception as e:
+        analyzer = None
+        logger.error(f"Error initializing music analyzer: {e}")
     
     exit(main())

@@ -1,5 +1,5 @@
 import os
-from db_utils import get_optimized_connection
+from db_operations import get_optimized_connection
 
 # Remove the existing database
 if os.path.exists('pump.db'):

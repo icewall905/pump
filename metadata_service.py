@@ -18,6 +18,7 @@ from db_operations import (
     save_memory_db_to_disk, import_disk_db_to_memory, 
     execute_query_dict, execute_with_retry
 )
+import shutil
 
 logger = logging.getLogger('metadata_service')
 
@@ -377,7 +378,7 @@ class MetadataService:
         """
         # Move ALL imports outside of any try blocks to ensure they stay in scope
         from db_operations import execute_query_dict, execute_query_row, execute_write
-        from db_utils import trigger_db_save, get_optimized_connection
+        from db_operations import trigger_db_save, get_optimized_connection
         import os
         from datetime import datetime
         import configparser
@@ -572,7 +573,7 @@ class MetadataService:
             # Final save for in-memory database
             if db_in_memory:
                 try:
-                    from db_utils import trigger_db_save, get_optimized_connection
+                    from db_operations import trigger_db_save, get_optimized_connection
                     with get_optimized_connection(db_path, in_memory=True, cache_size_mb=db_cache_size) as conn:
                         trigger_db_save(conn, db_path)
                         logger.info("Final save of in-memory database after metadata update")
@@ -600,7 +601,7 @@ class MetadataService:
 
     def _update_track_metadata_with_retry(self, track_id, artist, title, album, metadata):
         """Update a track's metadata with retry logic for database locks"""
-        from db_utils import with_transaction
+        from db_operations import with_transaction
         
         def do_update(conn, track_id, artist, title, album, metadata):
             cursor = conn.cursor()

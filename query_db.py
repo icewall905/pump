@@ -1,4 +1,4 @@
-from db_utils import optimized_connection
+from db_operations import optimized_connection
 
 def query_db(db_path: str):
     with optimized_connection(db_path) as conn:
