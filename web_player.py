@@ -44,8 +44,38 @@ from db_operations import (
     transaction_context, release_connection
 )
 
-# Add after your configuration section
-# Define a location for lock files since we don't have DB_PATH anymore
+# Add near the top of the file after imports but before other configuration
+
+import os
+import logging
+import sqlite3
+import configparser
+import threading
+import queue
+
+# Configuration and database path setup
+config = configparser.ConfigParser()
+config_file = 'pump.conf'
+
+# Load configuration if exists
+if os.path.exists(config_file):
+    config.read(config_file)
+
+# Define DB_PATH from configuration or use default
+DB_PATH = config.get('database', 'path', fallback='pump.db')
+DB_IN_MEMORY = config.getboolean('database_performance', 'in_memory', fallback=False)
+DB_CACHE_SIZE_MB = config.getint('database_performance', 'cache_size_mb', fallback=75)
+
+# Set db_operations module variables after DB_PATH is defined
+from db_operations import set_db_config
+if 'set_db_config' in dir():
+    try:
+        set_db_config(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB)
+    except Exception as e:
+        logger = logging.getLogger('web_player')
+        logger.error(f"Error setting database configuration: {e}")
+
+# Define a location for lock files
 LOCK_FILE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'locks')
 # Create the directory if it doesn't exist
 if not os.path.exists(LOCK_FILE_DIR):
@@ -986,29 +1016,21 @@ def get_db_schema():
 def explore():
     """Get random tracks for exploration"""
     try:
-        from db_operations import execute_query_row, execute_query_dict
-        
         # Get count of total tracks
-        count_result = execute_query_row(
-            DB_PATH,
-            'SELECT COUNT(*) as count FROM audio_files',
-            in_memory=DB_IN_MEMORY,
-            cache_size_mb=DB_CACHE_SIZE_MB
-        )
-        count = count_result['count'] if count_result else 0
+        count_result = execute_query("SELECT COUNT(*) FROM tracks")
+        count = count_result[0][0] if count_result else 0
         
         # Get random tracks - changed from 10 to 6
         random_tracks = []
         if count > 0:
             sample_size = min(6, count)  # Changed from 10 to 6
+            # Use PostgreSQL compatible query and parameter style
             random_tracks = execute_query_dict(
-                DB_PATH,
-                f'''SELECT af.id, af.file_path, af.title, af.artist, af.album, af.album_art_url, af.duration
-                   FROM audio_files af
+                """SELECT id, file_path, title, artist, album, album_art_url, duration
+                   FROM tracks
                    ORDER BY RANDOM()
-                   LIMIT {sample_size}''',
-                in_memory=DB_IN_MEMORY,
-                cache_size_mb=DB_CACHE_SIZE_MB
+                   LIMIT %s""",
+                (sample_size,)
             )
             
             # Set default titles for tracks without titles
@@ -1029,7 +1051,7 @@ def analyze_music():
     global analyzer, ANALYSIS_STATUS
     
     # Check for running analysis using a file-based lock
-    lock_file = os.path.join(os.path.dirname(DB_PATH), '.analysis_lock')
+    lock_file = os.path.join(LOCK_FILE_DIR, '.analysis_lock')
     
     if os.path.exists(lock_file):
         # Check if the process is actually running
@@ -1133,23 +1155,23 @@ def _fix_database_inconsistencies():
                                tempo > 0 OR energy > 0 OR danceability > 0)
                 ''')
                 
+                # Commit the changes
+                conn.commit()
+                
                 # Get count after fix
                 cursor.execute("SELECT COUNT(*) FROM tracks WHERE analysis_status = 'pending'")
                 after_count = cursor.fetchone()[0]
                 
-                # Commit changes
-                conn.commit()
-                
-                logger.info(f"Database consistency check: {before_count} pending files before, {after_count} after fix")
+                logger.info(f"Fixed database inconsistencies: {before_count - after_count} records updated")
         except Exception as e:
             conn.rollback()
-            raise e
+            logger.error(f"Error fixing database inconsistencies: {e}")
+            raise
         finally:
             release_connection(conn)
+            
     except Exception as e:
         logger.error(f"Error fixing database inconsistencies: {e}")
-
-# Update the run_analysis function
 
 def run_analysis(folder_path, recursive):
     """Run full analysis in a background thread"""
@@ -1423,6 +1445,92 @@ def artist_image_proxy(url):
     except Exception as e:
         logger.error(f"Error proxying artist image: {e}")
         return send_file('static/images/default-artist-image.png', mimetype='image/jpeg')
+
+
+@app.route('/api/reset-locks', methods=['POST'])
+def reset_all_locks():
+    """Emergency endpoint to reset all locks and stop background processes"""
+    global ANALYSIS_STATUS, METADATA_UPDATE_STATUS, QUICK_SCAN_STATUS
+    global analysis_thread, DB_WRITE_RUNNING, DB_SAVE_IN_PROGRESS
+    
+    try:
+        # Reset status dicts
+        ANALYSIS_STATUS = {'running': False, 'error': None}
+        METADATA_UPDATE_STATUS = {'running': False, 'error': None}
+        QUICK_SCAN_STATUS = {'running': False, 'error': None}
+        
+        # Stop background processes
+        DB_SAVE_IN_PROGRESS = False
+        
+        # Clear DB write queue and restart worker
+        DB_WRITE_RUNNING = False
+        while not DB_WRITE_QUEUE.empty():
+            try:
+                DB_WRITE_QUEUE.get_nowait()
+                DB_WRITE_QUEUE.task_done()
+            except:
+                pass
+                
+        if ANALYSIS_LOCK.locked():
+            ANALYSIS_LOCK.release()
+            
+        # Remove lock files from the LOCK_FILE_DIR
+        for lock_file in glob.glob(os.path.join(LOCK_FILE_DIR, '.*_lock')):
+            try:
+                os.remove(lock_file)
+                logger.info(f"Removed lock file: {lock_file}")
+            except Exception as e:
+                logger.error(f"Error removing lock file {lock_file}: {e}")
+            
+        # Restart DB writer
+        time.sleep(1)
+        start_db_write_worker()
+        
+        # Also call database-specific lock resets
+        if hasattr(db_operations, 'reset_database_locks'):
+            db_operations.reset_database_locks()
+        
+        return jsonify({"status": "success", "message": "All locks reset"})
+    except Exception as e:
+        logger.error(f"Error resetting locks: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# Set db_operations module variables after DB_PATH is defined
+import db_operations
+db_operations.DB_IN_MEMORY = config.getboolean('database_performance', 'in_memory', fallback=False)
+db_operations.DB_CACHE_SIZE_MB = config.getint('database_performance', 'cache_size_mb', fallback=75)
+
+def initialize_memory_db():
+    """PostgreSQL doesn't have in-memory mode, this is a compatibility function"""
+    logger.info("PostgreSQL doesn't support in-memory mode, using regular connection")
+    try:
+        # Use the imported get_connection
+        return get_connection()
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        return None
+
+def shutdown():
+    """Graceful shutdown of the application"""
+    logger.info("Application shutting down gracefully...")
+    
+    try:
+        # For PostgreSQL connections, just close the pool
+        if 'pg_pool' in globals() and pg_pool is not None:
+            logger.info("Closing PostgreSQL connection pool")
+            pg_pool.closeall()
+        
+        # For SQLite, save memory DB to disk if needed
+        if DB_IN_MEMORY and 'main_thread_conn' in globals() and main_thread_conn:
+            try:
+                logger.info("Saving in-memory database to disk")
+                save_memory_db_to_disk(main_thread_conn, DB_PATH)
+            except Exception as e:
+                logger.error(f"Error during database shutdown: {e}")
+    except Exception as e:
+        logger.error(f"Error during application shutdown: {e}")
+
 
 def cleanup_cache():
     """Cleanup the image cache if it exceeds the maximum size"""
@@ -1767,30 +1875,26 @@ def delete_playlist(playlist_id):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/recent')
-def recent_tracks():
+def get_recent_tracks():
     """Get recently added tracks"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        limit = request.args.get('limit', default=10, type=int)
         
-        # Get most recently added tracks - changed from 10 to 6
-        cursor.execute('''
-            SELECT id, file_path, title, artist, album, album_art_url, duration
-            FROM audio_files
-            ORDER BY date_added DESC
-            LIMIT 6
-        ''')
+        # Use PostgreSQL-compatible query
+        recent_tracks = execute_query_dict(
+            """SELECT id, file_path, title, artist, album, album_art_url, date_added, duration 
+               FROM tracks 
+               ORDER BY date_added DESC 
+               LIMIT %s""", 
+            (limit,)
+        )
         
-        recent_tracks = [dict(row) for row in cursor.fetchall()]
+        # Set default titles
         for track in recent_tracks:
             if not track['title']:
                 track['title'] = os.path.basename(track['file_path'])
-        
-        conn.close()
-        logger.info(f"Returning {len(recent_tracks)} recent tracks")
+                
         return jsonify(recent_tracks)
-        
     except Exception as e:
         logger.error(f"Error getting recent tracks: {e}")
         return jsonify({'error': str(e)}), 500
@@ -1895,25 +1999,18 @@ def get_album_tracks(album):
 
 @app.route('/api/library/artists')
 def get_artists():
+    """Get all artists in the library"""
     try:
+        # Use PostgreSQL-compatible query
         artists = execute_query_dict(
-            DB_PATH,
-            '''SELECT 
-                artist, 
-                COUNT(*) as track_count,
-                artist_image_url,
-                SUM(duration) as total_duration
-            FROM audio_files
-            WHERE artist IS NOT NULL AND artist != ''
-            GROUP BY artist
-            ORDER BY artist COLLATE NOCASE''',
-            in_memory=DB_IN_MEMORY,
-            cache_size_mb=DB_CACHE_SIZE_MB
+            """SELECT DISTINCT artist, 
+                  COUNT(*) as track_count,
+                  MAX(album_art_url) as artist_image_url
+               FROM tracks 
+               WHERE artist IS NOT NULL AND artist != ''
+               GROUP BY artist 
+               ORDER BY artist"""
         )
-        
-        # Log the first few artists to see if they have images
-        if artists and len(artists) > 0:
-            logger.info(f"Sample artists: {artists[:2]}")
         
         return jsonify(artists)
     except Exception as e:
@@ -2407,16 +2504,37 @@ def view_logs():
         log_file = os.path.join(log_dir, 'pump.log')
         
         if not os.path.exists(log_file):
+            logger.error(f"Log file not found: {log_file}")
             return jsonify({"error": "Log file not found"}), 404
         
-        with open(log_file, 'r') as f:
-            # Get the last 'lines' lines
-            log_lines = f.readlines()[-lines:]
-        
-        return jsonify({"logs": log_lines})
+        try:
+            with open(log_file, 'r', encoding='utf-8') as f:
+                # Use safe approach to read logs in case file is large
+                all_lines = []
+                for line in f:
+                    all_lines.append(line)
+                    # Keep only the last 'lines' number of entries
+                    if len(all_lines) > lines:
+                        all_lines.pop(0)
+                log_lines = all_lines
+            
+            return jsonify({"logs": log_lines})
+        except UnicodeDecodeError:
+            # Try with different encoding if UTF-8 fails
+            logger.warning(f"Unicode decode error, trying with latin-1 encoding")
+            with open(log_file, 'r', encoding='latin-1') as f:
+                all_lines = []
+                for line in f:
+                    all_lines.append(line)
+                    if len(all_lines) > lines:
+                        all_lines.pop(0)
+                log_lines = all_lines
+            
+            return jsonify({"logs": log_lines})
+            
     except Exception as e:
-        logger.error(f"Error viewing logs: {e}")
-        return jsonify({"error": "Failed to view logs"}), 500
+        logger.error(f"Error viewing logs: {e}", exc_info=True)
+        return jsonify({"error": f"Failed to view logs: {str(e)}"}), 500
 
 # Add this with your other routes
 
@@ -3352,24 +3470,23 @@ with app.app_context():
 def get_liked_tracks():
     """Get all liked tracks"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        # Use PostgreSQL-compatible query
+        liked_tracks = execute_query_dict(
+            """SELECT id, file_path, title, artist, album, album_art_url, duration, liked 
+               FROM tracks 
+               WHERE liked = TRUE 
+               ORDER BY title"""
+        )
         
-        cursor.execute("""
-            SELECT id, file_path, title, artist, album, duration, album_art_url
-            FROM audio_files
-            WHERE liked = 1
-            ORDER BY artist, album, title
-        """)
-        
-        tracks = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        
-        return jsonify(tracks)
+        # Set default titles
+        for track in liked_tracks:
+            if not track['title']:
+                track['title'] = os.path.basename(track['file_path'])
+                
+        return jsonify(liked_tracks)
     except Exception as e:
         logger.error(f"Error getting liked tracks: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/tracks/<int:track_id>/like', methods=['POST'])
 def like_track(track_id):
@@ -3742,70 +3859,6 @@ def run_server():
     except Exception as e:
         logger.error(f"Error running server: {e}")
 
-
-@app.route('/api/reset-locks', methods=['POST'])
-def reset_all_locks():
-    """Emergency endpoint to reset all locks and stop background processes"""
-    global ANALYSIS_STATUS, METADATA_UPDATE_STATUS, QUICK_SCAN_STATUS
-    global analysis_thread, DB_WRITE_RUNNING, DB_SAVE_IN_PROGRESS
-    
-    try:
-        # Reset status dicts
-        ANALYSIS_STATUS = {'running': False, 'error': None}
-        METADATA_UPDATE_STATUS = {'running': False, 'error': None}
-        QUICK_SCAN_STATUS = {'running': False, 'error': None}
-        
-        # Stop background processes
-        DB_SAVE_IN_PROGRESS = False
-        
-        # Clear DB write queue and restart worker
-        DB_WRITE_RUNNING = False
-        while not DB_WRITE_QUEUE.empty():
-            try:
-                DB_WRITE_QUEUE.get_nowait()
-                DB_WRITE_QUEUE.task_done()
-            except:
-                pass
-                
-        if ANALYSIS_LOCK.locked():
-            ANALYSIS_LOCK.release()
-            
-        # Remove lock files from the LOCK_FILE_DIR
-        for lock_file in glob.glob(os.path.join(LOCK_FILE_DIR, '.*_lock')):
-            try:
-                os.remove(lock_file)
-                logger.info(f"Removed lock file: {lock_file}")
-            except Exception as e:
-                logger.error(f"Error removing lock file {lock_file}: {e}")
-            
-        # Restart DB writer
-        time.sleep(1)
-        start_db_write_worker()
-        
-        # Also call database-specific lock resets
-        if hasattr(db_operations, 'reset_database_locks'):
-            db_operations.reset_database_locks()
-        
-        return jsonify({"status": "success", "message": "All locks reset"})
-    except Exception as e:
-        logger.error(f"Error resetting locks: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-# Set db_operations module variables after DB_PATH is defined
-import db_operations
-db_operations.DB_IN_MEMORY = config.getboolean('database_performance', 'in_memory', fallback=False)
-db_operations.DB_CACHE_SIZE_MB = config.getint('database_performance', 'cache_size_mb', fallback=75)
-
-def initialize_memory_db():
-    """PostgreSQL doesn't have in-memory mode, this is a compatibility function"""
-    logger.info("PostgreSQL doesn't support in-memory mode, using regular connection")
-    try:
-        # Use the imported get_connection
-        return get_connection()
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
-        return None
 
 if __name__ == '__main__':
     run_server()

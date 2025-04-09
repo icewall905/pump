@@ -8,6 +8,8 @@ from psycopg2 import pool
 from psycopg2.extras import DictCursor, execute_values
 import configparser
 import sqlite3
+from contextlib import contextmanager  # Add this import
+import re
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -214,9 +216,9 @@ def initialize_database():
             conn.commit()
             logger.info("Database initialized")
     except Exception as e:
-        logger.error(f"Error initializing database: {e}")
         if conn:
             conn.rollback()
+        logger.error(f"Error initializing database: {e}")
     finally:
         if conn:
             release_connection(conn)
@@ -1091,35 +1093,43 @@ def execute_query_row(query, params=None, in_memory=False, cache_size_mb=None):
         if conn:
             release_connection(conn)
 
+def sanitize_for_postgres(value):
+    """Remove null bytes and other problematic characters from strings for PostgreSQL"""
+    if isinstance(value, str):
+        # Replace NUL bytes with spaces
+        return value.replace('\x00', ' ')
+    return value
+
 def execute_write(query, params=None, in_memory=False, cache_size_mb=None):
-    """Execute a write operation (INSERT, UPDATE, DELETE) and commit changes
+    """Execute a write query using the appropriate database connection
     
-    Args:
-        query: SQL query string for write operation
-        params: Optional parameters for the query
-        in_memory: Ignored (kept for compatibility with SQLite)
-        cache_size_mb: Ignored (kept for compatibility with SQLite)
-        
-    Returns:
-        Number of affected rows or None on error
+    This handles both SQLite and PostgreSQL connections properly
     """
-    conn = None
     try:
         conn = get_connection()
-        with conn.cursor() as cursor:
-            cursor.execute(query, params)
-            affected_rows = cursor.rowcount
+        # Check if this is a PostgreSQL connection
+        if hasattr(conn, 'cursor'):
+            # PostgreSQL connection - use cursor to execute
+            cursor = conn.cursor()
+            cursor.execute(query, params or ())
             conn.commit()
-            return affected_rows
+            result = True
+        else:
+            # SQLite connection - direct execution
+            if params:
+                conn.execute(query, params)
+            else:
+                conn.execute(query)
+            conn.commit()
+            result = True
+        
+        release_connection(conn)
+        return result
     except Exception as e:
-        if conn:
-            conn.rollback()
-        logger.error(f"Error executing write operation: {e}")
-        raise
-    finally:
+        logger.error(f"Error executing write query: {e}")
         if conn:
             release_connection(conn)
-
+        return False
 
 def reset_database_locks():
     """
@@ -1181,11 +1191,8 @@ def check_database_stats(db_path=None, in_memory=False, cache_size_mb=None):
         dict: Database statistics
     """
     stats = {
-        'total_tracks': 0,
-        'analyzed_tracks': 0,
-        'db_size_mb': 0,
-        'db_size': '0 KB',  # Add this field for compatibility
-        'track_count': 0    # Add this field for compatibility
+        'track_count': 0,
+        'db_size': '0 MB'
     }
     
     try:
@@ -1195,23 +1202,14 @@ def check_database_stats(db_path=None, in_memory=False, cache_size_mb=None):
         # Count total tracks
         cursor.execute("SELECT COUNT(*) FROM tracks")
         result = cursor.fetchone()
-        stats['total_tracks'] = result[0] if result else 0
-        stats['track_count'] = stats['total_tracks']  # For compatibility
+        stats['track_count'] = result[0] if result else 0
         
-        # Count analyzed tracks (those with audio features)
-        cursor.execute("SELECT COUNT(*) FROM audio_features")
-        result = cursor.fetchone()
-        stats['analyzed_tracks'] = result[0] if result else 0
-        
-        # Get approximate database size
+        # Get database size
         cursor.execute("""
-            SELECT pg_size_pretty(pg_database_size(current_database())) as size,
-                   pg_database_size(current_database()) as size_bytes
+            SELECT pg_size_pretty(pg_database_size(current_database())) as size
         """)
         result = cursor.fetchone()
-        if result:
-            stats['db_size'] = result[0] 
-            stats['db_size_mb'] = round(result[1] / (1024 * 1024), 2)
+        stats['db_size'] = result[0] if result else '0 MB'
         
         release_connection(conn)
         return stats
@@ -1219,7 +1217,23 @@ def check_database_stats(db_path=None, in_memory=False, cache_size_mb=None):
         logger.error(f"Error checking database stats: {e}")
         if 'conn' in locals() and conn:
             release_connection(conn)
-        return stats  # Return default stats even on error
+        return stats
+
+# Add this function at the end of the file
+
+def set_db_config(db_path=None, in_memory=False, cache_size_mb=None):
+    """Configure global database settings
+    
+    Args:
+        db_path: Path to database file
+        in_memory: Whether to use in-memory database
+        cache_size_mb: Cache size for database
+    """
+    global DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB
+    DB_PATH = db_path
+    DB_IN_MEMORY = in_memory
+    DB_CACHE_SIZE_MB = cache_size_mb
+    logger.info(f"Database configuration set: path={db_path}, in_memory={in_memory}, cache_size={cache_size_mb}MB")
 
 # Initialize the database when the module is imported
 try:

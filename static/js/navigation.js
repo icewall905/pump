@@ -438,7 +438,14 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Initialize logs page functionality
     function initLogsPage() {
-        console.log('Initializing logs page');
+        // Check if our dedicated logs.js has been loaded
+        if (window.logsInitialized) {
+            console.log('Logs page already initialized by logs.js');
+            return;
+        }
+        
+        console.log('Initializing logs page from navigation.js');
+        
         const logLines = document.getElementById('log-lines');
         const refreshBtn = document.getElementById('refresh-logs');
         const downloadBtn = document.getElementById('download-logs');

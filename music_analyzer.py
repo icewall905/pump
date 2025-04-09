@@ -1655,6 +1655,14 @@ class MusicAnalyzer:
             logger.error(f"Error analyzing file {file_path}: {e}")
             return None
 
+    def quick_scan(self, directory: str, recursive: bool = True):
+        """
+        Alias for scan_library for backward compatibility.
+        Quickly scan directory for audio files and add them to database without analysis.
+        """
+        logger.info(f"Running quick scan (alias for scan_library) on {directory}")
+        return self.scan_library(directory, recursive)
+
 
 def main():
     """Command line interface for music analysis"""

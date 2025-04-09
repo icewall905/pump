@@ -372,12 +372,33 @@ class MetadataService:
             conn = get_connection()
             cursor = conn.cursor()
             
+            processed = 0
+            updated = 0
+            
+            # Check if metadata_source column exists
+            try:
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'tracks' AND column_name = 'metadata_source'
+                    )
+                """)
+                has_metadata_source = cursor.fetchone()[0]
+                
+                if not has_metadata_source:
+                    logger.warning("metadata_source column doesn't exist, adding it now")
+                    cursor.execute("""
+                        ALTER TABLE tracks ADD COLUMN IF NOT EXISTS metadata_source TEXT;
+                        ALTER TABLE tracks ADD COLUMN IF NOT EXISTS metadata_updated_at TIMESTAMP;
+                    """)
+                    conn.commit()
+            except Exception as e:
+                logger.error(f"Error checking/creating metadata columns: {e}")
+                # Continue with the function even if this fails
+            
             # Get total number of tracks
             cursor.execute("SELECT COUNT(*) FROM tracks")
             total_tracks = cursor.fetchone()[0]
-            
-            processed = 0
-            updated = 0
             
             # Update status tracker if provided
             if status_tracker:
@@ -392,11 +413,14 @@ class MetadataService:
             # Get tracks to process
             if skip_existing:
                 logger.info("Metadata update: Skipping tracks with existing metadata")
-                cursor.execute("""
-                    SELECT id, file_path, title, artist, album 
-                    FROM tracks 
-                    WHERE metadata_source IS NULL OR metadata_source = ''
-                """)
+                if has_metadata_source:
+                    cursor.execute("""
+                        SELECT id, file_path, title, artist, album 
+                        FROM tracks 
+                        WHERE metadata_source IS NULL OR metadata_source = ''
+                    """)
+                else:
+                    cursor.execute("SELECT id, file_path, title, artist, album FROM tracks")
             else:
                 logger.info("Metadata update: Processing all tracks")
                 cursor.execute("SELECT id, file_path, title, artist, album FROM tracks")

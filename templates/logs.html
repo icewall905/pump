@@ -60,73 +60,29 @@
     .log-warning { color: #ffcc66; }
     .log-error { color: #ff8888; }
     .log-critical { color: #ff55ff; }
+    
+    /* Additional styles for loading and error states */
+    .loading {
+        text-align: center;
+        color: #888;
+        padding: 20px;
+    }
+    .error {
+        color: #ff8888;
+        border-left: 3px solid #ff5555;
+        padding: 8px 12px;
+        background-color: rgba(255, 0, 0, 0.1);
+        margin: 10px 0;
+    }
+    .empty {
+        text-align: center;
+        color: #888;
+        padding: 20px;
+    }
 </style>
-<!-- Add this in the head section if needed -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
 {% endblock %}
 
 {% block scripts %}
-<script>
-    document.addEventListener('DOMContentLoaded', function() {
-        const logContent = document.getElementById('log-content');
-        const logLines = document.getElementById('log-lines');
-        const refreshBtn = document.getElementById('refresh-logs');
-        const downloadBtn = document.getElementById('download-logs');
-        
-        function loadLogs() {
-            const lines = logLines.value;
-            logContent.innerHTML = '<div class="loading">Loading logs...</div>';
-            
-            fetch(`/api/logs/view?lines=${lines}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.error) {
-                        logContent.innerHTML = `<div class="error">${data.error}</div>`;
-                        return;
-                    }
-                    
-                    if (!data.logs || data.logs.length === 0) {
-                        logContent.innerHTML = '<div class="empty">No logs found</div>';
-                        return;
-                    }
-                    
-                    logContent.innerHTML = '';
-                    data.logs.forEach(line => {
-                        const logLine = document.createElement('div');
-                        logLine.className = 'log-line';
-                        
-                        // Add color based on log level
-                        if (line.includes(' DEBUG ')) logLine.classList.add('log-debug');
-                        if (line.includes(' INFO ')) logLine.classList.add('log-info');
-                        if (line.includes(' WARNING ')) logLine.classList.add('log-warning');
-                        if (line.includes(' ERROR ')) logLine.classList.add('log-error');
-                        if (line.includes(' CRITICAL ')) logLine.classList.add('log-critical');
-                        
-                        logLine.textContent = line;
-                        logContent.appendChild(logLine);
-                    });
-                    
-                    // Scroll to bottom
-                    logContent.scrollTop = logContent.scrollHeight;
-                })
-                .catch(error => {
-                    logContent.innerHTML = `<div class="error">Error loading logs: ${error}</div>`;
-                });
-        }
-        
-        // Initial load
-        loadLogs();
-        
-        // Refresh button
-        refreshBtn.addEventListener('click', loadLogs);
-        
-        // Lines dropdown
-        logLines.addEventListener('change', loadLogs);
-        
-        // Download logs
-        downloadBtn.addEventListener('click', function() {
-            window.location.href = '/api/logs/download';
-        });
-    });
-</script>
+<script src="{{ url_for('static', filename='js/logs.js') }}"></script>
 {% endblock %}
