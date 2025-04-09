@@ -21,7 +21,8 @@ from flask import jsonify, request, g  # Add this import
 import re
 from db_operations import (
     save_memory_db_to_disk, import_disk_db_to_memory, 
-    execute_query_dict, execute_with_retry
+    execute_query_dict, execute_with_retry, execute_query_row,
+    get_optimized_connection, trigger_db_save, optimized_connection, reset_database_locks
 )
 import queue
 import random
@@ -1043,6 +1044,8 @@ def get_db_schema():
 def explore():
     """Get random tracks for exploration"""
     try:
+        from db_operations import execute_query_row, execute_query_dict
+        
         # Get count of total tracks
         count_result = execute_query_row(
             DB_PATH,
@@ -1668,22 +1671,22 @@ def clear_cache():
 def get_playlists():
     """Get all saved playlists"""
     try:
-        from db_operations import execute_with_retry
+        from db_operations import execute_query_dict
         
-        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
-            conn.row_factory = sqlite3.Row
-            
-            # Use retry logic for the query
-            cursor = execute_with_retry(conn, '''
-                SELECT p.id, p.name, p.description, p.created_at, p.updated_at,
-                       COUNT(pi.id) as track_count
-                FROM playlists p
-                LEFT JOIN playlist_items pi ON p.id = pi.playlist_id
-                GROUP BY p.id
-                ORDER BY p.updated_at DESC
-            ''')
-            
-            playlists = [dict(row) for row in cursor.fetchall()]
+        # Use execute_query_dict instead which doesn't need the connection object
+        playlists = execute_query_dict(
+            DB_PATH,
+            '''
+            SELECT p.id, p.name, p.description, p.created_at, p.updated_at,
+                   COUNT(pi.id) as track_count
+            FROM playlists p
+            LEFT JOIN playlist_items pi ON p.id = pi.playlist_id
+            GROUP BY p.id
+            ORDER BY p.updated_at DESC
+            ''',
+            in_memory=DB_IN_MEMORY,
+            cache_size_mb=DB_CACHE_SIZE_MB
+        )
         
         return jsonify(playlists)
         

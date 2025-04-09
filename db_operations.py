@@ -182,11 +182,29 @@ def reset_connections():
 @contextmanager
 def optimized_connection(db_path, in_memory=False, cache_size_mb=75):
     """Context manager that provides an optimized SQLite connection"""
-    conn = get_optimized_connection(db_path, in_memory, cache_size_mb)
+    conn = None
     try:
+        # If in-memory mode is requested and a connection exists in thread-local storage, use that
+        if in_memory and hasattr(_thread_local, 'conn'):
+            conn = _thread_local.conn
+            # Verify connection is still valid
+            try:
+                conn.execute("SELECT 1")
+            except sqlite3.Error:
+                # Connection is invalid, create a new one
+                logger.warning("In-memory connection was invalid, creating new connection")
+                conn = get_optimized_connection(db_path, in_memory, cache_size_mb)
+                _thread_local.conn = conn
+        else:
+            # Create a new connection
+            conn = get_optimized_connection(db_path, in_memory, cache_size_mb)
+            
         yield conn
     finally:
-        conn.close()
+        # Only close the connection if it's not in-memory
+        # This is the key fix - don't close in-memory connections
+        if conn and not in_memory:
+            conn.close()
 
 def get_optimized_connection(db_path, in_memory=False, cache_size_mb=75, check_same_thread=True):
     """Get an optimized SQLite connection with performance settings"""
