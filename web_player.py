@@ -570,7 +570,7 @@ if DB_IN_MEMORY:
 logger.info("Checking database stats at startup...")
 try:
     db_stats = check_database_stats()
-    if db_stats:
+    if (db_stats):
         logger.info(f"Database stats: Size: {db_stats.get('db_size', 'unknown')}, Tracks: {db_stats.get('track_count', 0)}")
     else:
         logger.warning("Database stats check returned no data")
@@ -1016,14 +1016,14 @@ def get_db_schema():
 def explore():
     """Get random tracks for exploration"""
     try:
-        # Get count of total tracks
-        count_result = execute_query("SELECT COUNT(*) FROM tracks")
-        count = count_result[0][0] if count_result else 0
+        # Count total tracks using execute_query instead of direct SQL
+        result = execute_query("SELECT COUNT(*) FROM tracks")
+        count = result[0][0] if result else 0
         
-        # Get random tracks - changed from 10 to 6
+        # Get random tracks
         random_tracks = []
         if count > 0:
-            sample_size = min(6, count)  # Changed from 10 to 6
+            sample_size = min(6, count)
             # Use PostgreSQL compatible query and parameter style
             random_tracks = execute_query_dict(
                 """SELECT id, file_path, title, artist, album, album_art_url, duration
@@ -2388,75 +2388,69 @@ def test_spotify(artist_name):
         logger.error(f"Error testing Spotify API: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/station/<track_id>')
-def create_station(track_id):
-    """Create a playlist based on a seed track"""
+@app.route('/station/<int:seed_track_id>')
+def create_station(seed_track_id):
+    """Create a station from a seed track"""
     try:
-        # Get the default playlist size from config
-        playlist_size = int(config.get('app', 'default_playlist_size', fallback='10'))
-        logger.info(f"Creating station with {playlist_size} tracks")
+        # Get number of tracks from query string or default
+        num_tracks = request.args.get('num_tracks', 
+                                    config.get('app', 'default_playlist_size', fallback=10), 
+                                    type=int)
         
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        logger.info(f"Creating station with {num_tracks} tracks")
         
-        # Get the seed track
-        cursor.execute('SELECT * FROM audio_files WHERE id = ?', (track_id,))
-        seed_track = cursor.fetchone()
+        # Get seed track
+        seed_track = execute_query_dict(
+            "SELECT * FROM tracks WHERE id = %s",
+            (seed_track_id,),
+            fetchone=True
+        )
         
         if not seed_track:
-            return jsonify({'error': 'Seed track not found'})
+            return jsonify({'error': 'Seed track not found'}), 404
         
-        # Use the actual audio analyzer for similarity matching
-        station_tracks = []
+        # Get audio features for the seed track
+        seed_features = execute_query_dict(
+            """SELECT * FROM audio_features WHERE track_id = %s""",
+            (seed_track_id,),
+            fetchone=True
+        )
         
-        # Check if analyzer is available
-        if analyzer is None:
-            logger.error("Analyzer not available - check logs for initialization errors")
-            return jsonify({'error': 'Audio analyzer is not initialized. Check server logs for details.'})
+        if not seed_features:
+            return jsonify({'error': 'No audio features available for this seed track'}), 400
         
-        # Check if the track has been analyzed
-        cursor.execute('''
-            SELECT COUNT(*) as count FROM audio_features 
-            WHERE file_id = ?
-        ''', (seed_track['id'],))
-        has_features = cursor.fetchone()['count'] > 0
+        # Find similar tracks based on audio features
+        similar_tracks = execute_query_dict(
+            """
+            SELECT t.*, af.*
+            FROM audio_features af
+            JOIN tracks t ON af.track_id = t.id
+            WHERE t.id != %s
+            ORDER BY 
+                POWER(af.energy - %s, 2) +
+                POWER(af.danceability - %s, 2) +
+                POWER(af.valence - %s, 2) +
+                POWER(af.acousticness - %s, 2)
+            LIMIT %s
+            """,
+            (
+                seed_track_id, 
+                seed_features.get('energy', 0),
+                seed_features.get('danceability', 0),
+                seed_features.get('valence', 0),
+                seed_features.get('acousticness', 0),
+                num_tracks - 1  # -1 because we add the seed track at first position
+            )
+        )
         
-        if not has_features:
-            logger.warning(f"Track {seed_track['title']} has not been analyzed yet. Run analysis first.")
-            return jsonify({
-                'error': 'This track has not been analyzed yet. Please run analysis from Settings page first.'
-            })
-            
-        # Get the seed track as the first item
-        station_tracks.append(dict(seed_track))
+        # Add seed track to the beginning of the result set
+        station = [seed_track] + similar_tracks
         
-        # Create a station based on audio similarity
-        similar_file_paths = analyzer.create_station(seed_track['file_path'], playlist_size)
-        
-        # Get full details for similar tracks
-        for file_path in similar_file_paths:
-            if file_path == seed_track['file_path']:
-                continue  # Skip seed track as it's already added
-                
-            cursor.execute('''
-                SELECT * FROM audio_files WHERE file_path = ?
-            ''', (file_path,))
-            track = cursor.fetchone()
-            if track:
-                station_tracks.append(dict(track))
-        
-        logger.info(f"Created station with {len(station_tracks)} tracks using audio similarity")
-        return jsonify(station_tracks)
+        return jsonify(station)
         
     except Exception as e:
         logger.error(f"Error creating station: {e}")
-        return jsonify({'error': str(e)})
-    finally:
-        if conn:
-            conn.close()
-
-# Add this with your other routes
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/settings/change_log_level', methods=['POST'])
 def change_log_level():
@@ -3319,6 +3313,54 @@ def run_quick_scan_task():
         logger.error(f"Error running scheduled quick scan: {e}")
         return False
 
+
+def create_similar_playlist(seed_track_id, limit=10):
+    """Create a playlist of similar tracks based on audio features"""
+    try:
+        # Get seed track features
+        seed_features = execute_query_dict(
+            """
+            SELECT af.* 
+            FROM audio_features af
+            WHERE af.track_id = %s
+            """,
+            (seed_track_id,),
+            fetchone=True
+        )
+        
+        if not seed_features:
+            return []
+            
+        # Find similar tracks based on audio features
+        similar_tracks = execute_query_dict(
+            """
+            SELECT t.*, af.*
+            FROM tracks t
+            JOIN audio_features af ON t.id = af.track_id
+            WHERE t.id != %s
+            ORDER BY 
+                POWER(af.energy - %s, 2) +
+                POWER(af.danceability - %s, 2) +
+                POWER(af.valence - %s, 2) +
+                POWER(af.acousticness - %s, 2)
+            LIMIT %s
+            """,
+            (
+                seed_track_id, 
+                seed_features.get('energy', 0),
+                seed_features.get('danceability', 0),
+                seed_features.get('valence', 0),
+                seed_features.get('acousticness', 0),
+                limit
+            )
+        )
+        
+        return similar_tracks
+    except Exception as e:
+        logger.error(f"Error creating similar playlist: {e}")
+        return []
+
+
 def run_metadata_update_task():
     """Run metadata update task for scheduler"""
     global METADATA_UPDATE_STATUS
@@ -3490,36 +3532,31 @@ def get_liked_tracks():
 
 @app.route('/api/tracks/<int:track_id>/like', methods=['POST'])
 def like_track(track_id):
+    """Toggle like status for a track"""
     try:
-        data = request.get_json()
-        liked = data.get('liked', False)
+        # Query current like status
+        track = execute_query_dict(
+            "SELECT liked FROM tracks WHERE id = %s", 
+            (track_id,), 
+            fetchone=True
+        )
         
-        # Connect to database
-        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
-            cursor = conn.cursor()
-            
-            # Check if track exists
-            cursor.execute('SELECT id FROM audio_files WHERE id = ?', (track_id,))
-            if not cursor.fetchone():
-                return jsonify({'error': 'Track not found'}), 404
-                
-            # Update liked status
-            cursor.execute(
-                'UPDATE audio_files SET liked = ? WHERE id = ?',
-                (1 if liked else 0, track_id)
-            )
-            
-            conn.commit()
-            
-            # Mark database as modified
-            g.db_modified = True
-                
-            return jsonify({
-                'success': True,
-                'track_id': track_id,
-                'liked': liked
-            })
-            
+        if not track:
+            return jsonify({'error': 'Track not found'}), 404
+        
+        # Toggle the liked status
+        new_status = not track.get('liked', False)
+        
+        # Update the track
+        execute_write(
+            "UPDATE tracks SET liked = %s WHERE id = %s",
+            (new_status, track_id)
+        )
+        
+        return jsonify({
+            'status': 'success',
+            'liked': new_status
+        })
     except Exception as e:
         logger.error(f"Error updating liked status: {e}")
         return jsonify({'error': str(e)}), 500
@@ -3748,40 +3785,49 @@ def handle_exception(e):
 
 @app.route('/debug')
 def debug_info():
-    """Return debugging information"""
+    """Return PostgreSQL debugging information"""
     try:
-        import sqlite3
-        import os
+        # Get database info
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Get database size
+        cursor.execute("""
+            SELECT pg_size_pretty(pg_database_size(current_database())) as size,
+                   pg_database_size(current_database()) as size_bytes
+        """)
+        size_info = cursor.fetchone()
+        db_size = size_info[1] if size_info else 0
+        db_size_pretty = size_info[0] if size_info else '0 KB'
         
         # Get database info
         db_info = {
-            'exists': os.path.exists(DB_PATH),
-            'size': os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0,
-            'readable': os.access(DB_PATH, os.R_OK) if os.path.exists(DB_PATH) else False,
-            'writable': os.access(DB_PATH, os.W_OK) if os.path.exists(DB_PATH) else False
+            'type': 'PostgreSQL',
+            'size': db_size_pretty,
+            'size_bytes': db_size
         }
         
-        # Get table info
-        tables = []
-        if os.path.exists(DB_PATH):
-            conn = get_connection()
-            try:
-                cursor = conn.cursor()
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-                tables = [row[0] for row in cursor.fetchall()]
-                
-                # Get row counts
-                counts = {}
-                for table in tables:
-                    cursor.execute(f"SELECT COUNT(*) FROM {table}")
-                    counts[table] = cursor.fetchone()[0]
-            finally:
-                release_connection(conn)
+        # Get PostgreSQL tables
+        cursor.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'public'
+        """)
+        tables = [row[0] for row in cursor.fetchall()]
+        
+        # Get row counts
+        counts = {}
+        for table in tables:
+            cursor.execute(f"SELECT COUNT(*) FROM {table}")
+            counts[table] = cursor.fetchone()[0]
+        
+        # Release the connection
+        release_connection(conn)
         
         return jsonify({
             'database': db_info,
             'tables': tables,
-            'counts': counts if 'counts' in locals() else {},
+            'counts': counts,
             'environment': {
                 'in_memory': DB_IN_MEMORY,
                 'cache_size': DB_CACHE_SIZE_MB,
@@ -3790,51 +3836,54 @@ def debug_info():
             }
         })
     except Exception as e:
+        logger.error(f"Error in debug info: {e}")
         return jsonify({'error': str(e)}), 500
-
-
 
 @app.route('/api/db-diagnostic')
 def db_diagnostic():
-    """Return database diagnostics"""
+    """Return database diagnostics for PostgreSQL"""
     try:
-        # Check disk database
-        disk_size = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
+        conn = get_connection()
+        cursor = conn.cursor()
         
-        with optimized_connection(DB_PATH, False, cache_size_mb=10) as disk_conn:
-            disk_conn.row_factory = sqlite3.Row
-            cursor = disk_conn.cursor()
-            
-            # Count tables
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            tables = [row[0] for row in cursor.fetchall()]
-            
-            # Count rows in each table
-            counts = {}
-            for table in tables:
-                cursor.execute(f"SELECT COUNT(*) FROM {table}")
-                counts[table] = cursor.fetchone()[0]
+        # Get database size
+        cursor.execute("""
+            SELECT pg_size_pretty(pg_database_size(current_database())) as size,
+                   pg_database_size(current_database()) as size_bytes
+        """)
+        size_info = cursor.fetchone()
+        db_size = size_info[1] if size_info else 0
         
-        # Check in-memory database if active
-        memory_counts = {}
-        if DB_IN_MEMORY and main_thread_conn:
-            main_thread_conn.row_factory = sqlite3.Row
-            cursor = main_thread_conn.cursor()
-            
-            for table in tables:
-                cursor.execute(f"SELECT COUNT(*) FROM {table}")
-                memory_counts[table] = cursor.fetchone()[0]
+        # Get PostgreSQL tables (replacing sqlite_master)
+        cursor.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'public'
+        """)
+        tables = [row[0] for row in cursor.fetchall()]
+        
+        # Count rows in each table
+        counts = {}
+        for table in tables:
+            cursor.execute(f"SELECT COUNT(*) FROM {table}")
+            counts[table] = cursor.fetchone()[0]
+        
+        # Release the connection
+        release_connection(conn)
         
         return jsonify({
-            'disk_database': {
-                'exists': os.path.exists(DB_PATH),
-                'size_kb': round(disk_size / 1024, 2),
-                'tables': tables,
-                'counts': counts
+            'database': {
+                'type': 'PostgreSQL',
+                'size_kb': round(db_size / 1024, 2),
+                'size_pretty': size_info[0] if size_info else '0 KB'
             },
-            'memory_database': {
-                'active': bool(DB_IN_MEMORY and main_thread_conn),
-                'counts': memory_counts
+            'tables': tables,
+            'counts': counts,
+            'environment': {
+                'in_memory': DB_IN_MEMORY,
+                'cache_size': DB_CACHE_SIZE_MB,
+                'python_version': sys.version,
+                'working_directory': os.getcwd()
             }
         })
     except Exception as e:
@@ -3862,4 +3911,3 @@ def run_server():
 
 if __name__ == '__main__':
     run_server()
-

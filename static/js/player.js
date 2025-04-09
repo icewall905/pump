@@ -293,42 +293,31 @@ function loadLiked() {
 
 // Add the toggleLikeStatus function if it doesn't exist in the global scope
 function toggleLikeStatus(trackId) {
+    if (!trackId) return;
+    
+    console.log('Toggling like status for track:', trackId);
+    
+    // Send request to toggle like status without content type header
     fetch(`/api/tracks/${trackId}/like`, {
         method: 'POST'
     })
     .then(response => response.json())
     .then(data => {
-        if (data.error) {
-            console.error('Error toggling like status:', data.error);
-            return;
-        }
+        console.log('Like status toggled:', data);
         
-        // Update all like buttons for this track
-        document.querySelectorAll(`.track-like-button[data-id="${trackId}"]`).forEach(btn => {
+        // Update the UI
+        const likeButtons = document.querySelectorAll(`.track-like-button[data-id="${trackId}"]`);
+        likeButtons.forEach(button => {
             if (data.liked) {
-                btn.classList.add('liked');
-                btn.innerHTML = '♥';
-                btn.title = 'Unlike';
+                button.classList.add('liked');
+                button.innerHTML = '♥';
+                button.title = 'Unlike';
             } else {
-                btn.classList.remove('liked');
-                btn.innerHTML = '♡';
-                btn.title = 'Like';
+                button.classList.remove('liked');
+                button.innerHTML = '♡';
+                button.title = 'Like';
             }
         });
-        
-        // Update now playing like button if this is the current track
-        const nowPlayingLikeButton = document.getElementById('like-track');
-        if (nowPlayingLikeButton && window.currentTrackId === trackId) {
-            if (data.liked) {
-                nowPlayingLikeButton.classList.add('liked');
-                nowPlayingLikeButton.innerHTML = '♥';
-                nowPlayingLikeButton.title = 'Unlike';
-            } else {
-                nowPlayingLikeButton.classList.remove('liked');
-                nowPlayingLikeButton.innerHTML = '♡';
-                nowPlayingLikeButton.title = 'Like';
-            }
-        }
     })
     .catch(error => {
         console.error('Error toggling like status:', error);
@@ -1680,42 +1669,31 @@ window.initPlayerPage = function() {
     
     // Add this helper function
     function toggleLikeStatus(trackId) {
+        if (!trackId) return;
+    
+        console.log('Toggling like status for track:', trackId);
+        
+        // Send request to toggle like status without content type header
         fetch(`/api/tracks/${trackId}/like`, {
             method: 'POST'
         })
         .then(response => response.json())
         .then(data => {
-            if (data.error) {
-                console.error('Error toggling like status:', data.error);
-                return;
-            }
+            console.log('Like status toggled:', data);
             
-            // Update all like buttons for this track
-            document.querySelectorAll(`.track-like-button[data-id="${trackId}"]`).forEach(btn => {
+            // Update the UI
+            const likeButtons = document.querySelectorAll(`.track-like-button[data-id="${trackId}"]`);
+            likeButtons.forEach(button => {
                 if (data.liked) {
-                    btn.classList.add('liked');
-                    btn.innerHTML = '♥';
-                    btn.title = 'Unlike';
+                    button.classList.add('liked');
+                    button.innerHTML = '♥';
+                    button.title = 'Unlike';
                 } else {
-                    btn.classList.remove('liked');
-                    btn.innerHTML = '♡';
-                    btn.title = 'Like';
+                    button.classList.remove('liked');
+                    button.innerHTML = '♡';
+                    button.title = 'Like';
                 }
             });
-            
-            // Update now playing like button if this is the current track
-            const nowPlayingLikeButton = document.getElementById('like-track');
-            if (nowPlayingLikeButton && window.currentTrackId === trackId) {
-                if (data.liked) {
-                    nowPlayingLikeButton.classList.add('liked');
-                    nowPlayingLikeButton.innerHTML = '♥';
-                    nowPlayingLikeButton.title = 'Unlike';
-                } else {
-                    nowPlayingLikeButton.classList.remove('liked');
-                    nowPlayingLikeButton.innerHTML = '♡';
-                    nowPlayingLikeButton.title = 'Like';
-                }
-            }
         })
         .catch(error => {
             console.error('Error toggling like status:', error);
