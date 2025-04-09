@@ -3,6 +3,10 @@
 ENV_NAME="pump_env"  # Name your environment
 LOG_DIR="logs"       # Directory for log files
 
+# Directory where the script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
+
 # Function to display colored messages
 print_message() {
     local color=$1
@@ -63,7 +67,7 @@ check_sudo
 
 # Check if apt-get is available (for Debian/Ubuntu systems)
 if command -v apt-get &> /dev/null; then
-    packages=("ffmpeg" "libsndfile1" "libtag1-dev" "libchromaprint-dev")
+    packages=("ffmpeg" "libsndfile1" "libtag1-dev" "libchromaprint-dev" "libpq-dev")
     missing_packages=()
     
     for pkg in "${packages[@]}"; do
@@ -79,8 +83,30 @@ if command -v apt-get &> /dev/null; then
     else
         print_message "green" "All required system libraries are already installed."
     fi
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+    print_message "yellow" "MacOS detected. Checking Homebrew packages..."
+    if command -v brew &> /dev/null; then
+        # Check if postgresql is installed via Homebrew
+        if ! brew list postgresql@14 &>/dev/null; then
+            print_message "yellow" "Installing PostgreSQL with Homebrew..."
+            brew install postgresql@14
+            
+            # Add PostgreSQL binaries to PATH
+            if [[ -d /usr/local/opt/postgresql@14/bin ]]; then
+                export PATH="/usr/local/opt/postgresql@14/bin:$PATH"
+                print_message "green" "Added PostgreSQL binaries to PATH"
+            elif [[ -d /opt/homebrew/opt/postgresql@14/bin ]]; then
+                export PATH="/opt/homebrew/opt/postgresql@14/bin:$PATH"
+                print_message "green" "Added PostgreSQL binaries to PATH"
+            fi
+        else
+            print_message "green" "PostgreSQL already installed via Homebrew"
+        fi
+    else
+        print_message "yellow" "Homebrew not found. You may need to manually install PostgreSQL."
+    fi
 else
-    print_message "yellow" "This script is optimized for Debian/Ubuntu. You may need to manually install: ffmpeg, libsndfile, libtag, and libchromaprint."
+    print_message "yellow" "System package manager not detected. You may need to manually install system dependencies."
 fi
 
 # Create a more comprehensive requirements.txt with correct versions
@@ -109,35 +135,113 @@ pyacoustid>=1.2.0
 discogs-client>=2.3.0
 tinytag>=1.5.0
 eyeD3>=0.9.6
+psycopg2-binary>=2.9.3
 EOF
 
-# Install all required packages
-print_message "green" "Installing required packages..."
-pip install -r requirements.txt
+# First, explicitly uninstall any existing psycopg2 and psycopg2-binary to avoid conflicts
+print_message "green" "Cleaning up any existing PostgreSQL Python drivers..."
+pip uninstall -y psycopg2 psycopg2-binary >/dev/null 2>&1
 
-# Function to check if module is available
+# Install psycopg2-binary with extra verbosity for troubleshooting
+print_message "green" "Installing PostgreSQL Python driver (psycopg2-binary)..."
+pip install --verbose psycopg2-binary
+
+# Function to check if module is available with better error handling
 check_module() {
-    python -c "import $1" 2>/dev/null
-    if [ $? -eq 0 ]; then
-        print_message "green" "✓ $1 is available"
-        return 0
-    else
-        print_message "yellow" "⚠️ $1 is not available - installing..."
-        pip install $1
-        python -c "import $1" 2>/dev/null
+    module_name="$1"
+    
+    # Special handling for psycopg2
+    if [ "$module_name" = "psycopg2" ]; then
+        # First, try to import the module
+        python -c "import psycopg2; print(f'psycopg2 version: {psycopg2.__version__}')" 2>/dev/null
+        
         if [ $? -eq 0 ]; then
-            print_message "green" "✓ $1 is now available"
+            print_message "green" "✓ $module_name is available"
             return 0
         else
-            print_message "red" "✗ Failed to install $1"
+            print_message "yellow" "⚠️ psycopg2 import failed. Trying alternatives..."
+            
+            # Detailed diagnostics for psycopg2
+            print_message "yellow" "--- psycopg2 diagnostics ---"
+            
+            # Check if binary version might work
+            python -c "import psycopg2.binary" 2>/dev/null
+            if [ $? -eq 0 ]; then
+                print_message "green" "✓ psycopg2.binary module works"
+            else
+                print_message "red" "✗ psycopg2.binary also fails"
+            fi
+            
+            # Try with conda if available
+            if command -v conda &> /dev/null; then
+                print_message "yellow" "Trying conda install..."
+                conda install -y -c conda-forge psycopg2
+                
+                # Check again
+                python -c "import psycopg2" 2>/dev/null
+                if [ $? -eq 0 ]; then
+                    print_message "green" "✓ psycopg2 was successfully installed via conda"
+                    return 0
+                fi
+            fi
+            
+            # Special handling for MacOS
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                print_message "yellow" "MacOS detected. Trying environment variable workarounds..."
+                
+                # Try setting environment variables that sometimes help on Mac
+                export LDFLAGS="-L/usr/local/opt/openssl/lib"
+                export CPPFLAGS="-I/usr/local/opt/openssl/include"
+                
+                pip install --no-cache-dir --no-binary :all: psycopg2-binary
+                
+                # Try one more time with the new installation
+                python -c "import psycopg2" 2>/dev/null
+                if [ $? -eq 0 ]; then
+                    print_message "green" "✓ psycopg2 was successfully installed with special flags"
+                    return 0
+                else
+                    print_message "red" "✗ All psycopg2 installation attempts failed."
+                    print_message "yellow" "Please try manually: pip install --no-binary :all: psycopg2-binary"
+                    print_message "yellow" "If that fails, you may need more specific system dependencies."
+                    return 1
+                fi
+            fi
+            
+            print_message "red" "✗ Failed to install psycopg2"
             return 1
+        fi
+    else
+        # Standard module checking
+        python -c "import $module_name" 2>/dev/null
+        
+        if [ $? -eq 0 ]; then
+            print_message "green" "✓ $module_name is available"
+            return 0
+        else
+            print_message "yellow" "⚠️ $module_name is not available - installing..."
+            pip install $module_name
+            
+            python -c "import $module_name" 2>/dev/null
+            if [ $? -eq 0 ]; then
+                print_message "green" "✓ $module_name is now available"
+                return 0
+            else
+                print_message "red" "✗ Failed to install $module_name"
+                return 1
+            fi
         fi
     fi
 }
 
-# Check critical modules
+# Install basic requirements
+print_message "green" "Installing required packages..."
+pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
+
+# Check critical modules with improved checks
 print_message "green" "Verifying critical modules..."
-critical_modules=("flask" "logging" "musicbrainzngs" "spotipy" "pylast")
+critical_modules=("flask" "logging" "musicbrainzngs" "spotipy" "pylast" "psycopg2")
 failed_modules=0
 
 for module in "${critical_modules[@]}"; do
@@ -261,6 +365,14 @@ if [ ! -f "logging_config.py" ]; then
     print_message "red" "Warning: logging_config.py not found, creating it now..."
     # The code to create logging_config.py is already in your script
 fi
+
+# Start PostgreSQL with Docker Compose
+print_message "green" "Starting PostgreSQL database..."
+docker-compose up -d
+
+# Wait a moment for PostgreSQL to fully initialize
+print_message "green" "Waiting for PostgreSQL to initialize..."
+sleep 5
 
 # Start the web player
 print_message "green" "Starting Pump Web Player..."

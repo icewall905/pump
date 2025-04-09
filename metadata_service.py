@@ -14,11 +14,8 @@ from io import BytesIO
 from PIL import Image
 import sqlite3  # Add this import
 from datetime import datetime  # Add this import
-from db_operations import (
-    save_memory_db_to_disk, import_disk_db_to_memory, 
-    execute_query_dict, execute_with_retry
-)
 import shutil
+from db_operations import get_connection, release_connection, execute_query, execute_query_dict, execute_write
 
 logger = logging.getLogger('metadata_service')
 
@@ -369,235 +366,144 @@ class MetadataService:
             return image_url  # Return original URL as fallback
 
     def update_all_metadata(self, status_tracker=None, skip_existing=False):
-        """
-        Update metadata for all tracks in the database
-        
-        Args:
-            status_tracker: Dictionary to track update status
-            skip_existing: If True, skip tracks that already have metadata
-        """
-        # Move ALL imports outside of any try blocks to ensure they stay in scope
-        from db_operations import execute_query_dict, execute_query_row, execute_write
-        from db_operations import trigger_db_save, get_optimized_connection
-        import os
-        from datetime import datetime
-        import configparser
-        
+        """Update metadata for all tracks in the database"""
         try:
-            # Get database path from config file path
-            db_path = self.config_file.replace('pump.conf', 'pump.db')
+            # Configure PostgreSQL connection directly without relying on db_path
+            conn = get_connection()
+            cursor = conn.cursor()
             
-            # Check if using in-memory database by reading from config
-            db_in_memory = False
-            db_cache_size = 75
-            try:
-                config = configparser.ConfigParser()
-                if os.path.exists(self.config_file):
-                    config.read(self.config_file)
-                    db_in_memory = config.getboolean('database_performance', 'in_memory', fallback=False)
-                    db_cache_size = config.getint('database_performance', 'cache_size_mb', fallback=75)
-            except Exception as e:
-                logger.error(f"Error reading database config: {e}")
-                
-            logger.info(f"Metadata update using in_memory={db_in_memory}, cache_size={db_cache_size}")
+            # Get total number of tracks
+            cursor.execute("SELECT COUNT(*) FROM tracks")
+            total_tracks = cursor.fetchone()[0]
             
-            # Get all tracks - use the db_in_memory parameter
-            if skip_existing:
-                # Skip tracks that already have metadata
-                tracks = execute_query_dict(
-                    db_path,
-                    "SELECT id, file_path, title, artist, album FROM audio_files WHERE metadata_source IS NULL OR metadata_source = ''",
-                    in_memory=db_in_memory,
-                    cache_size_mb=db_cache_size
-                )
-                logger.info("Metadata update: Skipping tracks with existing metadata")
-            else:
-                # Update all tracks
-                tracks = execute_query_dict(
-                    db_path,
-                    '''SELECT id, file_path, title, artist, album
-                       FROM audio_files''',
-                    in_memory=db_in_memory,
-                    cache_size_mb=db_cache_size
-                )
-                logger.info("Metadata update: Processing all tracks")
-            
-            total_tracks = len(tracks)
-            
-            # Update status
-            if status_tracker:
-                status_tracker['total_tracks'] = total_tracks
-                status_tracker['processed_tracks'] = 0
-                status_tracker['updated_tracks'] = 0
-                status_tracker['scan_complete'] = True  # Add this flag for consistent UI feedback
-            
-            # Create cache directory if it doesn't exist
-            cache_dir = os.path.join(os.path.dirname(self.config_file), 'album_art_cache')
-            if not os.path.exists(cache_dir):
-                os.makedirs(cache_dir, exist_ok=True)
-            
-            # Store the execute_write function in a class attribute to ensure it stays in scope
-            self._execute_write = execute_write
-            
-            # Process each track
             processed = 0
             updated = 0
             
-            for track in tracks:
-                track_id = track['id']
-                file_path = track['file_path']
+            # Update status tracker if provided
+            if status_tracker:
+                status_tracker['running'] = True
+                status_tracker['start_time'] = datetime.now()
+                status_tracker['total_tracks'] = total_tracks
+                status_tracker['processed_tracks'] = 0
+                status_tracker['updated_tracks'] = 0
+                status_tracker['percent_complete'] = 0
+                status_tracker['error'] = None
                 
-                try:
-                    if status_tracker:
-                        status_tracker['current_track'] = os.path.basename(file_path)
+            # Get tracks to process
+            if skip_existing:
+                logger.info("Metadata update: Skipping tracks with existing metadata")
+                cursor.execute("""
+                    SELECT id, file_path, title, artist, album 
+                    FROM tracks 
+                    WHERE metadata_source IS NULL OR metadata_source = ''
+                """)
+            else:
+                logger.info("Metadata update: Processing all tracks")
+                cursor.execute("SELECT id, file_path, title, artist, album FROM tracks")
+                
+            tracks = cursor.fetchall()
+            total_tracks = len(tracks)
+            
+            # Release this connection as we'll use a new one per batch
+            release_connection(conn)
+            
+            # Process tracks in batches
+            batch_size = 50
+            for i in range(0, len(tracks), batch_size):
+                batch = tracks[i:i+batch_size]
+                
+                for track in batch:
+                    track_id, file_path, title, artist, album = track
                     
-                    logger.debug(f"Processing track: {file_path}")
-                    
-                    # Get basic metadata from file
-                    basic_metadata = self.get_metadata_from_file(file_path)
-                    
-                    # If we don't have title and artist, use what's in the database
-                    if not basic_metadata.get('title'):
-                        basic_metadata['title'] = track['title']
-                    if not basic_metadata.get('artist'):
-                        basic_metadata['artist'] = track['artist']
-                    
-                    # Only proceed if we have at least title or artist
-                    if basic_metadata.get('title') or basic_metadata.get('artist'):
-                        # Enrich metadata from online sources
-                        enriched = self.enrich_metadata(basic_metadata, cache_dir)
+                    try:
+                        # Update status
+                        if status_tracker:
+                            status_tracker['current_track'] = f"{artist} - {title}"
+                            status_tracker['processed_tracks'] = processed
+                            status_tracker['updated_tracks'] = updated
+                            status_tracker['percent_complete'] = min(100, int((processed / total_tracks) * 100))
                         
-                        # Update database using execute_write with in_memory parameter
-                        self._execute_write(
-                            db_path,
-                            '''UPDATE audio_files SET
-                                title = ?,
-                                artist = ?,
-                                album = ?,
-                                album_art_url = ?,
-                                metadata_source = ?
-                            WHERE id = ?''',
-                            (
-                                enriched.get('title') or track['title'],
-                                enriched.get('artist') or track['artist'],
-                                enriched.get('album') or track['album'],
-                                enriched.get('album_art_url', ''),
-                                enriched.get('metadata_source', 'local_file'),
-                                track_id
-                            ),
-                            in_memory=db_in_memory,  # Pass in_memory here
-                            cache_size_mb=db_cache_size  # Pass cache_size here
-                        )
-                        updated += 1
-                    
+                        # Get metadata from external service
+                        metadata = self.get_track_metadata(artist, title, album)
+                        
+                        if metadata:
+                            # Update track metadata
+                            conn = get_connection()
+                            cursor = conn.cursor()
+                            
+                            # Prepare update values
+                            update_fields = []
+                            update_values = []
+                            
+                            if 'genre' in metadata and metadata['genre']:
+                                update_fields.append("genre = %s")
+                                update_values.append(metadata['genre'])
+                                
+                            if 'album_art_url' in metadata and metadata['album_art_url']:
+                                update_fields.append("album_art_url = %s")
+                                update_values.append(metadata['album_art_url'])
+                                
+                            if 'metadata_source' in metadata and metadata['metadata_source']:
+                                update_fields.append("metadata_source = %s")
+                                update_values.append(metadata['metadata_source'])
+                                
+                            if update_fields:
+                                # Add the track_id to values
+                                update_values.append(track_id)
+                                
+                                # Build and execute update query
+                                update_query = f"""
+                                    UPDATE tracks 
+                                    SET {', '.join(update_fields)},
+                                        metadata_updated_at = NOW()
+                                    WHERE id = %s
+                                """
+                                
+                                cursor.execute(update_query, update_values)
+                                conn.commit()
+                                updated += 1
+                            
+                            release_connection(conn)
+                        
+                    except Exception as e:
+                        logger.error(f"Error updating metadata for {artist} - {title}: {e}")
+                        
                     processed += 1
                     
-                    # Update status
-                    if status_tracker:
-                        status_tracker['processed_tracks'] = processed
-                        status_tracker['updated_tracks'] = updated
-                        status_tracker['percent_complete'] = int((processed / total_tracks) * 100)
-                        status_tracker['last_updated'] = datetime.now().isoformat()
-                    
-                    # Log progress periodically
-                    if processed % 10 == 0:
+                    # Periodically update status
+                    if processed % 10 == 0 and status_tracker:
                         logger.info(f"Metadata update progress: {processed}/{total_tracks} tracks processed")
-                    
-                    # Save to disk periodically when using in-memory database
-                    if db_in_memory and processed % 20 == 0:
-                        try:
-                            logger.info(f"Periodic checkpoint: processed {processed}/{total_tracks} tracks")
-                            
-                            # A more direct approach to saving the database
-                            try:
-                                # Create a new connection to the destination (disk) database
-                                disk_conn = sqlite3.connect(db_path)
-                                
-                                # Use the execute_write function directly to execute vacuum
-                                # This helps ensure all changes are flushed
-                                self._execute_write(
-                                    db_path,
-                                    "PRAGMA wal_checkpoint(FULL)",
-                                    (),
-                                    in_memory=db_in_memory,
-                                    cache_size_mb=db_cache_size
-                                )
-                                
-                                # Now copy the current state from in-memory to disk using ATTACH
-                                with get_optimized_connection(":memory:", in_memory=True, cache_size_mb=db_cache_size) as mem_conn:
-                                    # This forces the database to be written to disk without using
-                                    # the unreliable backup API
-                                    mem_conn.execute("ATTACH DATABASE ? AS disk", (db_path,))
-                                    
-                                    # Use a transaction for the copy operation
-                                    mem_conn.execute("BEGIN TRANSACTION")
-                                    
-                                    # Get a list of all tables
-                                    tables = mem_conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-                                    
-                                    # Copy each table's data to the disk database
-                                    for table in tables:
-                                        table_name = table[0]
-                                        try:
-                                            # Copy data - this will fail for tables that don't exist in the disk DB
-                                            # but that's expected and we'll just continue
-                                            mem_conn.execute(f"DELETE FROM disk.{table_name}")
-                                            mem_conn.execute(f"INSERT INTO disk.{table_name} SELECT * FROM {table_name}")
-                                        except sqlite3.OperationalError as table_err:
-                                            # Ignore "no such table" errors
-                                            if "no such table" not in str(table_err):
-                                                logger.warning(f"Error copying table {table_name}: {table_err}")
-                                    
-                                    # Commit changes and detach
-                                    mem_conn.execute("COMMIT")
-                                    mem_conn.execute("DETACH DATABASE disk")
-                                    
-                                    logger.info(f"Successfully saved database checkpoint after {processed} tracks")
-                            except Exception as save_error:
-                                logger.error(f"Error during alternative database checkpoint: {save_error}")
-                                logger.info("Continuing process despite checkpoint error")
-                        except Exception as e:
-                            logger.error(f"Error during periodic progress checkpoint: {e}")
-                            # Continue processing even if checkpoint fails
-                        
-                except Exception as e:
-                    logger.error(f"Error updating metadata for {file_path}: {e}")
-                    # Continue with next track
             
-            # Update final status
+            # Final status update
             if status_tracker:
-                status_tracker['running'] = False
+                status_tracker['processed_tracks'] = processed
+                status_tracker['updated_tracks'] = updated
                 status_tracker['percent_complete'] = 100
-                status_tracker['last_updated'] = datetime.now().isoformat()
-            
-            # Final save for in-memory database
-            if db_in_memory:
-                try:
-                    from db_operations import trigger_db_save, get_optimized_connection
-                    with get_optimized_connection(db_path, in_memory=True, cache_size_mb=db_cache_size) as conn:
-                        trigger_db_save(conn, db_path)
-                        logger.info("Final save of in-memory database after metadata update")
-                except Exception as e:
-                    logger.error(f"Error during final database save: {e}")
-            
+                status_tracker['running'] = False
+                status_tracker['last_updated'] = datetime.now()
+                
             logger.info(f"Metadata update complete: {processed}/{total_tracks} tracks processed, {updated} updated")
             
             return {
                 'processed': processed,
-                'updated': updated
+                'updated': updated,
+                'total': total_tracks
             }
-            
         except Exception as e:
             logger.error(f"Error during metadata update: {e}")
             if status_tracker:
                 status_tracker['running'] = False
                 status_tracker['error'] = str(e)
-                status_tracker['last_updated'] = datetime.now().isoformat()
+                status_tracker['last_updated'] = datetime.now()
             return {
                 'processed': 0,
                 'updated': 0,
+                'total': 0,
                 'error': str(e)
             }
+        finally:
+            if 'conn' in locals() and conn:
+                release_connection(conn)
 
     def _update_track_metadata_with_retry(self, track_id, artist, title, album, metadata):
         """Update a track's metadata with retry logic for database locks"""

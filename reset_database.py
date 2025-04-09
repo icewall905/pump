@@ -1,13 +1,9 @@
 import os
 from db_operations import get_optimized_connection
 
-# Remove the existing database
-if os.path.exists('pump.db'):
-    print("Removing existing database...")
-    os.remove('pump.db')
+
 
 # Create new database
-conn = get_optimized_connection('pump.db')
 cursor = conn.cursor()
 
 try:

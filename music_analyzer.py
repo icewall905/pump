@@ -10,17 +10,12 @@ import logging
 import threading
 import time
 import mutagen
-from datetime import datetime  # Add this missing import
+from datetime import datetime
 from lastfm_service import LastFMService
 from spotify_service import SpotifyService
 from metadata_service import MetadataService
-from db_operations import (
-    save_memory_db_to_disk, import_disk_db_to_memory, 
-    execute_query_dict, execute_with_retry,
-    get_optimized_connection, optimized_connection,
-    execute_query, execute_query_row, execute_write,
-    transaction_context, trigger_db_save
-)
+from db_operations import get_connection, release_connection, execute_query_dict
+from db_operations import optimized_connection, transaction_context, execute_query_row, execute_write
 
 
 
@@ -46,8 +41,9 @@ scan_mutex = threading.Lock()
 class MusicAnalyzer:
     """Class for analyzing audio files and extracting features"""
     
-    def __init__(self, db_path, in_memory=False, cache_size_mb=75):
+    def __init__(self, db_path=None, in_memory=False, cache_size_mb=75):
         """Initialize the analyzer with database path"""
+        # These parameters are kept for compatibility but not used
         self.db_path = db_path
         self.in_memory = in_memory
         self.cache_size_mb = cache_size_mb
@@ -56,7 +52,7 @@ class MusicAnalyzer:
         self.metadata_service = None
         
         # Create database connection for this instance
-        self.db_conn = get_optimized_connection(db_path, in_memory, cache_size_mb)
+        self.db_conn = get_connection()
         
         # Initialize database tables if they don't exist
         self._ensure_tables_exist()
@@ -170,40 +166,51 @@ class MusicAnalyzer:
 
     def _ensure_tables_exist(self):
         """Ensure all required tables exist in the database"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            
-            # Create audio_features table if it doesn't exist
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS audio_features (
-                id INTEGER PRIMARY KEY,
-                file_id INTEGER,
-                tempo REAL,
-                key INTEGER,
-                mode INTEGER,
-                time_signature INTEGER,
-                energy REAL,
-                danceability REAL,
-                brightness REAL,
-                noisiness REAL,
-                loudness REAL,
-                date_analyzed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (file_id) REFERENCES audio_files(id)
-            )
-            ''')
-            
-            # Create indexes for faster lookups
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_id ON audio_features(file_id)")
-            
-            # Confirm audio_files table exists and has required columns
-            cursor.execute("PRAGMA table_info(audio_files)")
-            columns = [row[1] for row in cursor.fetchall()]
-            
-            # Make sure analysis_status column exists
-            if 'analysis_status' not in columns:
-                cursor.execute("ALTER TABLE audio_files ADD COLUMN analysis_status TEXT DEFAULT 'pending'")
+        try:
+            with self.db_conn.cursor() as cursor:
+                # Check and create tracks table
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS tracks (
+                        id SERIAL PRIMARY KEY,
+                        file_path TEXT UNIQUE,
+                        title TEXT,
+                        artist TEXT,
+                        album TEXT,
+                        genre TEXT,
+                        year INTEGER,
+                        duration FLOAT,
+                        sample_rate INTEGER,
+                        bit_rate INTEGER,
+                        channels INTEGER,
+                        album_art_url TEXT,
+                        date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        liked BOOLEAN DEFAULT FALSE,
+                        analysis_status TEXT DEFAULT 'pending'
+                    )
+                """)
                 
-            conn.commit()
+                # Check and create audio_features table
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS audio_features (
+                        track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+                        tempo FLOAT,
+                        key INTEGER,
+                        energy FLOAT,
+                        danceability FLOAT,
+                        acousticness FLOAT,
+                        instrumentalness FLOAT,
+                        valence FLOAT,
+                        loudness FLOAT,
+                        mode INTEGER,
+                        time_signature INTEGER,
+                        analysis_version TEXT
+                    )
+                """)
+                
+                self.db_conn.commit()
+        except Exception as e:
+            logger.error(f"Error ensuring tables exist: {e}")
+            self.db_conn.rollback()
         
     def analyze_file(self, file_path: str, save_to_db: bool = True) -> Dict:
         """
@@ -1017,267 +1024,95 @@ class MusicAnalyzer:
     def scan_library(self, directory: str, recursive: bool = True, 
                      extensions: List[str] = ['.mp3', '.wav', '.flac', '.ogg'], 
                      batch_size: int = 100):
-        """Scan a directory for audio files and add them to the database."""
-        global analysis_progress
+        """
+        Analyze audio files in a directory using batch processing for DB checks.
+        """
+        logger.info(f"Starting quick scan of {directory} (recursive={recursive})")
         
-        # Try to acquire the lock, but don't block if we can't
-        if not scan_mutex.acquire(blocking=False):
-            logger.warning("Another scan is already running. Skipping this scan request.")
-            return {
-                'files_processed': 0,
-                'files_added': 0,
-                'files_updated': 0,
-                'files_skipped': 0,
-                'errors': 0,
-                'status': 'skipped'
-            }
+        # Collect audio files
+        audio_files = []
         
-        try:
-            # DEBUGGING logs 
-            logger.info(f"Starting scan_library with directory: {directory}")
-            logger.info(f"Directory exists: {os.path.exists(directory)}")
-            logger.info(f"Directory is dir: {os.path.isdir(directory)}")
-            logger.info(f"Looking for extensions: {extensions}")
+        if recursive:
+            for root, dirs, files in os.walk(directory):
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in extensions):
+                        audio_files.append(os.path.join(root, file))
+        else:
+            for file in os.listdir(directory):
+                if os.path.isfile(os.path.join(directory, file)) and any(file.lower().endswith(ext) for ext in extensions):
+                    audio_files.append(os.path.join(directory, file))
+        
+        logger.info(f"Found {len(audio_files)} audio files to process")
+        
+        # Process files in batches using the optimized connection
+        files_processed = 0
+        tracks_added = 0
+        
+        for i in range(0, len(audio_files), batch_size):
+            batch = audio_files[i:i+batch_size]
             
-            # Get valid audio files
-            all_files = []
+            # Extract file paths for this batch
+            file_paths = [path for path in batch]
             
-            # Debug the file collection process
+            # Check which files are already in the database using a cursor
+            conn = get_connection()
             try:
-                if recursive:
-                    # Recursive scan
-                    for root, dirs, files in os.walk(directory):
-                        # Debug first few directories found
-                        if len(all_files) == 0:
-                            logger.info(f"Walking directory: {root}, found {len(files)} files")
-                        
-                        for file in files:
-                            file_path = os.path.join(root, file)
-                            file_ext = os.path.splitext(file_path)[1].lower()
-                            
-                            if file_ext in extensions:
-                                all_files.append(file_path)
-                                
-                                # Log the first few files found for debugging
-                                if len(all_files) <= 5:
-                                    logger.info(f"Found audio file: {file_path}")
-                else:
-                    # Non-recursive scan - just files in the top directory
-                    for file in os.listdir(directory):
-                        file_path = os.path.join(directory, file)
-                        if os.path.isfile(file_path):
-                            file_ext = os.path.splitext(file_path)[1].lower()
-                            
-                            if file_ext in extensions:
-                                all_files.append(file_path)
-                                
-                                # Log the first few files found for debugging
-                                if len(all_files) <= 5:
-                                    logger.info(f"Found audio file: {file_path}")
-                                    
-                logger.info(f"Total files found with extensions {extensions}: {len(all_files)}")
+                with conn.cursor() as cursor:
+                    # Convert list to string for SQL IN clause with proper escaping
+                    placeholders = ','.join(['%s'] * len(file_paths))
+                    
+                    if placeholders:  # Only query if we have files
+                        query = f"SELECT file_path FROM tracks WHERE file_path IN ({placeholders})"
+                        cursor.execute(query, file_paths)
+                        existing_files = {row[0] for row in cursor.fetchall()}
+                    else:
+                        existing_files = set()
+                
+                # Process files that aren't in the database
+                new_files = [path for path in file_paths if path not in existing_files]
+                
+                for file_path in new_files:
+                    try:
+                        # Extract and save basic metadata
+                        metadata = self._get_basic_metadata(file_path)
+                        if metadata:
+                            # Insert using execute_write
+                            execute_write(
+                                """
+                                INSERT INTO tracks 
+                                (file_path, title, artist, album, genre, year, duration)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT (file_path) DO NOTHING
+                                """, 
+                                (
+                                    file_path, 
+                                    metadata.get('title', os.path.basename(file_path)),
+                                    metadata.get('artist', 'Unknown Artist'),
+                                    metadata.get('album', 'Unknown Album'),
+                                    metadata.get('genre', ''),
+                                    metadata.get('year', None),
+                                    metadata.get('duration', 0)
+                                )
+                            )
+                            tracks_added += 1
+                    except Exception as e:
+                        logger.error(f"Error processing file {file_path}: {e}")
+                
+                files_processed += len(batch)
+                # Log progress
+                if i % (batch_size * 5) == 0:
+                    logger.info(f"Processed {files_processed}/{len(audio_files)} files, added {tracks_added} new tracks")
+                    
             except Exception as e:
-                logger.error(f"Error collecting audio files: {e}")
-            
-            # Update progress tracking
-            analysis_progress['total_files'] = len(all_files)
-            analysis_progress['is_running'] = True
-            analysis_progress['stop_requested'] = False
-            analysis_progress['analyzed_count'] = 0
-            analysis_progress['failed_count'] = 0
-            
-            logger.info(f"Found {len(all_files)} audio files to process")
-            
-            # Create tables if they don't exist
-            execute_write(
-                self.db_path,
-                '''CREATE TABLE IF NOT EXISTS audio_files (
-                    id INTEGER PRIMARY KEY,
-                    file_path TEXT UNIQUE,
-                    title TEXT,
-                    artist TEXT,
-                    album TEXT,
-                    duration REAL,
-                    date_added TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    metadata_source TEXT DEFAULT 'local_file',
-                    album_art_url TEXT,
-                    artist_image_url TEXT
-                )''',
-                in_memory=self.in_memory,
-                cache_size_mb=self.cache_size_mb
-            )
-            
-            execute_write(
-                self.db_path,
-                '''CREATE TABLE IF NOT EXISTS audio_features (
-                    file_id INTEGER PRIMARY KEY,
-                    tempo REAL,
-                    loudness REAL,
-                    key INTEGER,
-                    mode INTEGER,
-                    time_signature INTEGER,
-                    energy REAL,
-                    danceability REAL,
-                    brightness REAL,
-                    noisiness REAL,
-                    FOREIGN KEY (file_id) REFERENCES audio_files(id)
-                )''',
-                in_memory=self.in_memory,
-                cache_size_mb=self.cache_size_mb
-            )
-            
-            # Create index on file_path for faster lookups
-            execute_write(
-                self.db_path,
-                'CREATE INDEX IF NOT EXISTS idx_file_path ON audio_files(file_path)',
-                in_memory=self.in_memory,
-                cache_size_mb=self.cache_size_mb
-            )
-            
-            # Batch process files
-            processed_count = 0
-            added_count = 0
-            updated_count = 0
-            skipped_count = 0
-            error_count = 0
-            
-            for i in range(0, len(all_files), batch_size):
-                batch = all_files[i:i+batch_size]
-                
-                # Skip empty batches
-                if not batch:
-                    continue
-                    
-                # Process the batch using a transaction context
-                with transaction_context(self.db_path, self.in_memory, self.cache_size_mb) as (conn, cursor):
-                    # Get existing files in this batch
-                    placeholders = ','.join(['?'] * len(batch))
-                    cursor.execute(
-                        f"SELECT id, file_path FROM audio_files WHERE file_path IN ({placeholders})",
-                        batch
-                    )
-                    existing_files = cursor.fetchall()
-                    existing_file_dict = {row[1]: row[0] for row in existing_files}
-                    
-                    for file_path in batch:
-                        if analysis_progress['stop_requested']:
-                            logger.info("Analysis stopped by user request")
-                            break
-                            
-                        # Update progress
-                        analysis_progress['current_file_index'] = i + batch.index(file_path)
-                        
-                        try:
-                            # Check if file is already in database
-                            file_id = existing_file_dict.get(file_path)
-                            
-                            # Check for features if file exists
-                            has_features = False
-                            if file_id:
-                                cursor.execute('SELECT file_id FROM audio_features WHERE file_id = ?', (file_id,))
-                                has_features = cursor.fetchone() is not None
-                            
-                            if file_id and has_features:
-                                # Skip if file already exists and has features
-                                logger.debug(f"Skipping {file_path}, it already exists with features")
-                                skipped_count += 1
-                            else:
-                                # Extract basic metadata
-                                try:
-                                    audio = mutagen.File(file_path)
-                                    metadata = self._extract_metadata(audio, file_path)
-                                    
-                                    if file_id:
-                                        # Update existing entry
-                                        cursor.execute('''
-                                            UPDATE audio_files SET 
-                                            title = ?, artist = ?, album = ?, duration = ?
-                                            WHERE id = ?
-                                        ''', (
-                                            metadata.get('title', ''),
-                                            metadata.get('artist', ''),
-                                            metadata.get('album', ''),
-                                            metadata.get('duration', 0),
-                                            file_id
-                                        ))
-                                        updated_count += 1
-                                    else:
-                                        # Add new entry
-                                        cursor.execute('''
-                                            INSERT INTO audio_files (file_path, title, artist, album, duration)
-                                            VALUES (?, ?, ?, ?, ?)
-                                        ''', (
-                                            file_path,
-                                            metadata.get('title', ''),
-                                            metadata.get('artist', ''),
-                                            metadata.get('album', ''),
-                                            metadata.get('duration', 0)
-                                        ))
-                                        file_id = cursor.lastrowid
-                                        added_count += 1
-                                    
-                                    # Add placeholder features if needed
-                                    if not has_features:
-                                        # Insert placeholder features
-                                        cursor.execute('''
-                                            INSERT OR REPLACE INTO audio_features 
-                                            (file_id, tempo, loudness, key, mode, time_signature, 
-                                            energy, danceability, brightness, noisiness)
-                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                        ''', (
-                                            file_id, 0.0, 0.0, 0, 0, 4, 0.0, 0.0, 0.0, 0.0
-                                        ))
-                                    
-                                    analysis_progress['analyzed_count'] += 1
-                                    
-                                except Exception as e:
-                                    logger.error(f"Error processing file {file_path}: {e}")
-                                    error_count += 1
-                                    analysis_progress['failed_count'] += 1
-                                    continue
-                                
-                            processed_count += 1
-                            
-                        except Exception as e:
-                            logger.error(f"Error processing {file_path}: {e}")
-                            error_count += 1
-                            analysis_progress['failed_count'] += 1
-                
-                # Check if we need to stop after each batch
-                if analysis_progress['stop_requested']:
-                    break
-            
-            # If using in-memory database, explicitly save to disk
-                if self.in_memory:
-                    with optimized_connection(self.db_path, in_memory=self.in_memory, cache_size_mb=self.cache_size_mb) as conn:
-                        from db_operations import trigger_db_save
-                        trigger_db_save(conn, self.db_path)
-                        logger.info("Explicitly saved in-memory database to disk after scan")
-
-                # Get the in-memory connection if it exists in thread local storage
-                from threading import local
-                thread_data = local()
-                
-                if hasattr(thread_data, 'conn'):
-                    trigger_db_save(thread_data.conn, self.db_path)
-                    logger.info("Explicitly saved in-memory database to disk after scan")
-            
-            # Update progress
-            analysis_progress['is_running'] = False
-            analysis_progress['last_run_completed'] = True
-            
-            logger.info(f"Scan complete: {processed_count} processed, {added_count} added, {updated_count} updated, {skipped_count} skipped, {error_count} errors")
-            
-            return {
-                'files_processed': processed_count,
-                'files_added': added_count,
-                'files_updated': updated_count,
-                'files_skipped': skipped_count,
-                'errors': error_count
-            }
-        finally:
-            # Always release the lock, even if an exception occurs
-            scan_mutex.release()
+                logger.error(f"Error during batch processing: {e}")
+            finally:
+                release_connection(conn)
+        
+        logger.info(f"Quick scan complete! Processed {files_processed} files, added {tracks_added} new tracks.")
+        return {
+            'files_processed': files_processed,
+            'tracks_added': tracks_added
+        }
 
     def analyze_pending_files(self, limit: Optional[int] = None, 
                          batch_size: int = 10, 

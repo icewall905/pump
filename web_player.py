@@ -19,10 +19,6 @@ import time  # For sleep between API calls
 import threading  # Add this import
 from flask import jsonify, request, g  # Add this import
 import re
-from db_operations import (
-    save_memory_db_to_disk, import_disk_db_to_memory, 
-    execute_query_dict, execute_with_retry
-)
 import queue
 import random
 import time
@@ -36,17 +32,24 @@ import atexit
 import signal
 import threading
 
+# Add near the top of your file after other imports
+from db_operations import (
+    get_connection, execute_query, execute_query_dict, execute_write,
+    optimized_connection, trigger_db_save, reset_database_locks,
+    transaction_context, release_connection
+)
+
+# Add after your configuration section
+# Define a location for lock files since we don't have DB_PATH anymore
+LOCK_FILE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'locks')
+# Create the directory if it doesn't exist
+if not os.path.exists(LOCK_FILE_DIR):
+    os.makedirs(LOCK_FILE_DIR, exist_ok=True)
+
 # Set a watchdog timer to force exit if Ctrl+C fails
 def setup_exit_watchdog():
     def handler(signum, frame):
         print("\nForce quitting (watchdog triggered)")
-        os._exit(1)  # Force exit
-        
-    # Register a forced exit after 10 seconds if normal shutdown fails
-    def watchdog_exit():
-        signal.signal(signal.SIGALRM, handler)
-        signal.alarm(10)  # 10 second timeout
-        
     # Register the watchdog to run on SIGINT
     def sigint_watchdog(signum, frame):
         print("\nCtrl+C detected, shutting down...")
@@ -97,7 +100,7 @@ def is_analysis_running():
         return True
         
     # Second, check if the lock file exists
-    lock_file = os.path.join(os.path.dirname(DB_PATH), '.analysis_lock')
+    lock_file = os.path.join(LOCK_FILE_DIR, '.analysis_lock')
     if os.path.exists(lock_file):
         try:
             with open(lock_file, 'r') as f:
@@ -118,40 +121,29 @@ def is_analysis_running():
             
     return False
 
-def check_database_stats(db_path, in_memory=False, memory_conn=None):
-    """Check database statistics to verify data existence"""
+def check_database_stats():
+    """Check database statistics for PostgreSQL"""
     try:
-        if in_memory and memory_conn:
-            conn = memory_conn
-        else:
-            conn = sqlite3.connect(db_path)
+        # Get track count
+        result = execute_query("SELECT COUNT(*) FROM tracks")
+        track_count = result[0][0] if result else 0
         
-        cursor = conn.cursor()
+        # Get size information using PostgreSQL system tables
+        result = execute_query("""
+            SELECT pg_size_pretty(pg_database_size(current_database())) 
+            FROM pg_database 
+            WHERE datname = current_database()
+        """)
+        db_size = result[0][0] if result else "Unknown"
         
-        # Get table counts
-        cursor.execute("SELECT COUNT(*) FROM audio_files")
-        audio_files_count = cursor.fetchone()[0]
-        
-        try:
-            cursor.execute("SELECT COUNT(*) FROM audio_features")
-            features_count = cursor.fetchone()[0]
-        except:
-            features_count = 0
-        
-        # Get storage info if it's a disk DB
-        if not in_memory:
-            file_size = os.path.getsize(db_path) if os.path.exists(db_path) else 0
-            logger.info(f"Database stats: {db_path}, Size: {file_size/1024:.1f} KB, Audio files: {audio_files_count}, Features: {features_count}")
-        else:
-            logger.info(f"In-memory database stats: Audio files: {audio_files_count}, Features: {features_count}")
-        
-        if not in_memory:
-            conn.close()
-            
-        return audio_files_count
+        logger.info(f"Database stats: PostgreSQL, Size: {db_size}, Audio files: {track_count}")
+        return {
+            'db_size': db_size,
+            'track_count': track_count
+        }
     except Exception as e:
         logger.error(f"Error checking database stats: {e}")
-        return 0
+        return None
    
 
 # Initialize logging with settings from config.ini if available
@@ -282,20 +274,17 @@ try:
     HOST = config.get('server', 'host', fallback='0.0.0.0')
     PORT = config.getint('server', 'port', fallback=8080)
     DEBUG = config.getboolean('server', 'debug', fallback=True)
-    DB_PATH = config.get('database', 'path', fallback='pump.db')
     DEFAULT_PLAYLIST_SIZE = config.getint('app', 'default_playlist_size', fallback=10)
     MAX_SEARCH_RESULTS = config.getint('app', 'max_search_results', fallback=50)
     
     logger.info(f"Configuration loaded successfully")
     logger.info(f"Server: {HOST}:{PORT} (debug={DEBUG})")
-    logger.info(f"Database: {DB_PATH}")
 except Exception as e:
     logger.error(f"Error processing configuration: {e}")
     logger.info("Using default values")
     HOST = '0.0.0.0'
     PORT = 8080
     DEBUG = True
-    DB_PATH = 'pump.db'
     DEFAULT_PLAYLIST_SIZE = 10
     MAX_SEARCH_RESULTS = 50
 
@@ -304,22 +293,14 @@ CACHE_DIR = config.get('cache', 'image_cache_dir', fallback='album_art_cache')
 MAX_CACHE_SIZE_MB = config.getint('cache', 'max_cache_size_mb', fallback=500)
 
 
-# Make sure DB_PATH is defined before calling this
-from db_operations import initialize_database
-if os.path.exists(DB_PATH):
-    logger.info(f"Using existing database at {DB_PATH}")
-    # Make sure tables exist even in existing database
-    initialize_database(DB_PATH)
-else:
-    logger.info(f"Creating new database at {DB_PATH}")
-    initialize_database(DB_PATH)
 
 
 # Create Flask app
 app = Flask(__name__)
-app.config['DATABASE_PATH'] = DB_PATH  # Add this line to set the config
+
 try:
-    analyzer = MusicAnalyzer(DB_PATH)
+    # Initialize music analyzer with PostgreSQL compatibility
+    analyzer = MusicAnalyzer()  # Don't pass a database path
     logger.info("Music analyzer initialized successfully")
 except Exception as e:
     analyzer = None
@@ -544,61 +525,20 @@ main_thread_conn = None
 # Create a global connection for in-memory mode
 if DB_IN_MEMORY:
     try:
-        from db_operations import (
-           get_optimized_connection, save_memory_db_to_disk, import_disk_db_to_memory,
-          trigger_db_save, optimized_connection, reset_database_locks
-        )
-        
-        # Create connection in main thread (initially empty)
-        main_thread_conn = get_optimized_connection(
-            DB_PATH, in_memory=True, cache_size_mb=DB_CACHE_SIZE_MB, check_same_thread=False
-        )
-        
-        # Import existing data from disk if available
-        if os.path.exists(DB_PATH):
-            logger.info(f"Importing existing database {DB_PATH} into memory")
-            import_disk_db_to_memory(main_thread_conn, DB_PATH)
-        else:
-            logger.info(f"No existing database to import, creating new in-memory database")
-        
-        # Add to the DB initialization section
-        if DB_IN_MEMORY and main_thread_conn:
-            main_thread_conn.execute("PRAGMA journal_mode=WAL")
-        
-        # Register function to save at exit
-        def save_db_at_exit():
-            logger.info("Application shutting down. Saving in-memory database to disk...")
-            check_database_stats(DB_PATH, DB_IN_MEMORY, main_thread_conn)
-            # Force save on exit to ensure no data loss
-            throttled_save_to_disk(force=True)
-            check_database_stats(DB_PATH)
-        
-        atexit.register(save_db_at_exit)
-        
-       
-        @app.before_request
-        def setup_db_connection():
-            g.db_modified = False
-        
-        @app.teardown_request
-        def save_if_modified(exception):
-            """Save in-memory database to disk if modified during request"""
-            if hasattr(g, 'db_modified') and g.db_modified and DB_IN_MEMORY and main_thread_conn:
-                try:
-                    # Use throttled save instead of direct save
-                    throttled_save_to_disk()
-                except Exception as e:
-                    logger.error(f"Error saving in-memory database to disk: {e}")
-        
-        logger.info("In-memory database mode initialized")
+        # PostgreSQL doesn't need special in-memory handling
+        main_thread_conn = get_connection()
+        logger.info("Database connection initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize in-memory database: {e}")
-        DB_IN_MEMORY = False
 
 # Now check the database after the connection is established
 logger.info("Checking database stats at startup...")
 try:
-    check_database_stats(DB_PATH, DB_IN_MEMORY, main_thread_conn if DB_IN_MEMORY else None)
+    db_stats = check_database_stats()
+    if db_stats:
+        logger.info(f"Database stats: Size: {db_stats.get('db_size', 'unknown')}, Tracks: {db_stats.get('track_count', 0)}")
+    else:
+        logger.warning("Database stats check returned no data")
 except Exception as e:
     logger.error(f"Error checking database stats at startup: {e}")
 
@@ -608,10 +548,10 @@ except Exception as e:
 _is_shutting_down = False
 
 def ensure_single_instance(process_name):
-    """Prevent duplicate background processes"""
-    lock_file = os.path.join(os.path.dirname(DB_PATH), f'.{process_name}_lock')
+    """Ensure only one instance of a process is running"""
+    # Use LOCK_FILE_DIR instead of DB_PATH directory
+    lock_file = os.path.join(LOCK_FILE_DIR, f'.{process_name}_lock')
     
-    # Check if lock exists
     if os.path.exists(lock_file):
         try:
             with open(lock_file, 'r') as f:
@@ -627,18 +567,13 @@ def ensure_single_instance(process_name):
                 os.remove(lock_file)
         except:
             # Invalid lock file, remove it
-            os.remove(lock_file)
-            
-    # Create lock
+            if os.path.exists(lock_file):
+                os.remove(lock_file)
+    
+    # Create new lock file
     with open(lock_file, 'w') as f:
         f.write(str(os.getpid()))
-        
-    # Register cleanup
-    @atexit.register
-    def remove_lock():
-        if os.path.exists(lock_file):
-            os.remove(lock_file)
-            
+    
     return True
 
 def save_db_before_exit(signum=None, frame=None):
@@ -1022,7 +957,8 @@ def get_db_schema():
     """Get the actual schema of database tables"""
     try:
         schema = {}
-        with sqlite3.connect(DB_PATH) as conn:
+        conn = get_connection()
+        try:
             cursor = conn.cursor()
             
             # Get list of tables
@@ -1034,6 +970,8 @@ def get_db_schema():
                 cursor.execute(f"PRAGMA table_info({table})")
                 columns = [{"name": row[1], "type": row[2]} for row in cursor.fetchall()]
                 schema[table] = columns
+        finally:
+            release_connection(conn)
                 
         return jsonify(schema)
     except Exception as e:
@@ -1168,41 +1106,39 @@ def analyze_music():
         })
 
 
-def _fix_database_inconsistencies(self):
-    """Fix any inconsistencies between audio_files and audio_features tables"""
+def _fix_database_inconsistencies():
+    """Fix any inconsistencies between tracks and audio_features tables"""
     try:
-        with transaction_context(self.db_path, self.in_memory, self.cache_size_mb) as (conn, cursor):
-            # Get count before fix
-            cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
-            before_count = cursor.fetchone()[0]
-            
-            # Check for inconsistencies - files marked as analyzed but missing features
-            cursor.execute('''
-                UPDATE audio_files 
-                SET analysis_status = 'pending'
-                WHERE analysis_status = 'analyzed' 
-                AND id NOT IN (SELECT file_id FROM audio_features)
-            ''')
-            
-            # Check for inconsistencies - files with features but not marked as analyzed
-            cursor.execute('''
-                UPDATE audio_files 
-                SET analysis_status = 'analyzed'
-                WHERE analysis_status = 'pending' 
-                AND id IN (SELECT file_id FROM audio_features WHERE 
-                           tempo > 0 OR energy > 0 OR danceability > 0)
-            ''')
-            
-            # Get count after fix
-            cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
-            after_count = cursor.fetchone()[0]
-            
-            logger.info(f"Database consistency check: {before_count} pending files before, {after_count} after fix")
-            
-            # Save changes immediately if in-memory
-            if self.in_memory:
-                from db_operations import trigger_db_save
-                trigger_db_save(conn, self.db_path)
+        # Use PostgreSQL compatible connection handling
+        conn = get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # Get count before fix
+                cursor.execute("SELECT COUNT(*) FROM tracks WHERE analysis_status = 'pending'")
+                before_count = cursor.fetchone()[0]
+                
+                # Update analysis status
+                cursor.execute('''
+                    UPDATE tracks 
+                    SET analysis_status = 'analyzed'
+                    WHERE analysis_status = 'pending' 
+                    AND id IN (SELECT track_id FROM audio_features WHERE 
+                               tempo > 0 OR energy > 0 OR danceability > 0)
+                ''')
+                
+                # Get count after fix
+                cursor.execute("SELECT COUNT(*) FROM tracks WHERE analysis_status = 'pending'")
+                after_count = cursor.fetchone()[0]
+                
+                # Commit changes
+                conn.commit()
+                
+                logger.info(f"Database consistency check: {before_count} pending files before, {after_count} after fix")
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            release_connection(conn)
     except Exception as e:
         logger.error(f"Error fixing database inconsistencies: {e}")
 
@@ -1210,88 +1146,40 @@ def _fix_database_inconsistencies(self):
 
 def run_analysis(folder_path, recursive):
     """Run full analysis in a background thread"""
-    global analysis_thread, ANALYSIS_STATUS
+    global analysis_thread
+    global analyzer
+    
+    if not analyzer:
+        logger.error("Cannot run analysis: Music analyzer not available")
+        return {
+            'status': 'error',
+            'message': 'Music analyzer not available'
+        }
     
     try:
-        # Make sure analyzer exists
-        if not analyzer:
-            logger.error("Cannot run analysis: Music analyzer not available")
-            ANALYSIS_STATUS.update({
-                'running': False,
-                'error': "Music analyzer not available",
-                'last_updated': datetime.now().isoformat()
-            })
-            return
-
-        # CRITICAL FIX: Check if the method exists before calling it
-        if hasattr(analyzer, '_fix_database_inconsistencies'):
-            analyzer._fix_database_inconsistencies()
-        else:
-            logger.warning("Analyzer missing _fix_database_inconsistencies method")
+        # First perform quick scan
+        logger.info(f"Starting quick scan of pending files...")
+        result = analyzer.quick_scan(folder_path, recursive)
         
-        # First count the total number of files to be analyzed
-        db_stats = execute_query_row(
-            DB_PATH,
-            '''SELECT 
-                COUNT(*) as total_in_db,
-                COALESCE(SUM(CASE WHEN analysis_status = 'analyzed' THEN 1 ELSE 0 END), 0) as already_analyzed
-               FROM audio_files''',
-            in_memory=DB_IN_MEMORY,
-            cache_size_mb=DB_CACHE_SIZE_MB
+        # Then analyze audio features
+        logger.info(f"Starting full analysis of pending files...")
+        analysis_result = analyzer.analyze_pending_files(
+            status_dict=ANALYSIS_STATUS
         )
         
-        total_in_db = db_stats['total_in_db'] if db_stats else 0
-        already_analyzed = db_stats['already_analyzed'] if db_stats else 0
-        pending_count = total_in_db - already_analyzed
-            
-        # Log counts
-        logger.info(f"Database status: {total_in_db} total files, {already_analyzed} already analyzed, {pending_count} pending analysis")
-            
-        # Update status with these counts *before* starting analysis
-        ANALYSIS_STATUS.update({
-            'running': True,
-            'start_time': datetime.now().isoformat(),
-            'files_processed': already_analyzed,
-            'total_files': total_in_db,
-            'current_file': '',
-            'percent_complete': 0,
-            'last_updated': datetime.now().isoformat(),
-            'error': None,
-            'scan_complete': True  # ADD THIS LINE to change the display text
-        })
-        
-        # Run analysis, passing the ANALYSIS_STATUS dictionary
-        logger.info(f"Starting full analysis of pending files...")
-        
-        # Store the start time to calculate progress accurately
-        start_time = time.time()
-        
-        # FIXED: Pass ANALYSIS_STATUS instead of importing it
-        result = analyzer.analyze_pending_files(batch_size=5, status_dict=ANALYSIS_STATUS)
-        
-        # Update final status
-        ANALYSIS_STATUS.update({
-            'running': False,
-            'percent_complete': 100,
-            'last_updated': datetime.now().isoformat(),
-            'error': None
-        })
-        
-        # Save database changes if in-memory mode is active
-        if DB_IN_MEMORY and main_thread_conn:
-            from db_operations import trigger_db_save
-            trigger_db_save(main_thread_conn, DB_PATH)
-            
-        logger.info(f"Analysis completed successfully. Total files: {total_in_db}, Analyzed: {result.get('analyzed', 0)}, Errors: {result.get('errors', 0)}, Pending: {result.get('pending', 0)}")
-        
+        return {
+            'status': 'success',
+            'message': 'Analysis completed successfully',
+            'scanned': result.get('processed', 0),
+            'added': result.get('added', 0),
+            'analyzed': analysis_result.get('analyzed', 0)
+        }
     except Exception as e:
         logger.error(f"Error running analysis: {e}")
-        # Update status with error
-        ANALYSIS_STATUS.update({
-            'running': False,
-            'error': str(e),
-            'last_updated': datetime.now().isoformat()
-        })
+        return {
+            'status': 'error',
+            'message': f'Analysis failed: {str(e)}'
+        }
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
@@ -2786,15 +2674,7 @@ def run_metadata_update(skip_existing=False):
             'last_updated': datetime.now().isoformat()
         })
         
-        # Save database changes if in-memory mode is active
-        if DB_IN_MEMORY and main_thread_conn:
-            try:
-                from db_operations import trigger_db_save
-                trigger_db_save(main_thread_conn, DB_PATH)
-                logger.info("Saved in-memory database after metadata update completion")
-            except Exception as e:
-                logger.error(f"Error saving database after metadata update: {e}")
-                # Log error but don't re-raise to prevent thread termination
+
         
         logger.info(f"Metadata update completed successfully: {result.get('processed', 0)} processed, {result.get('updated', 0)} updated")
         
@@ -3071,10 +2951,7 @@ def run_quick_scan(folder_path, recursive=True):
             'last_updated': datetime.now().isoformat()
         })
         
-        # Save database changes if in-memory mode is active
-        if DB_IN_MEMORY and main_thread_conn:
-            from db_operations import trigger_db_save
-            trigger_db_save(main_thread_conn, DB_PATH)
+
             
         logger.info(f"Quick scan completed successfully. Processed {result.get('processed', 0)} files, added {result.get('added', 0)} tracks.")
         
@@ -3087,10 +2964,7 @@ def run_quick_scan(folder_path, recursive=True):
             'last_updated': datetime.now().isoformat()
         })
         
-        # Save any partial changes to database
-        if DB_IN_MEMORY and main_thread_conn:
-            from db_operations import trigger_db_save
-            trigger_db_save(main_thread_conn, DB_PATH)
+
 
 @app.route('/api/quick-scan/status')
 def quick_scan_status():
@@ -3449,24 +3323,17 @@ def get_next_scheduled_run():
     return jsonify({'next_run': next_run})
 
 def setup_liked_tracks_column():
-    """Ensure the database has the necessary liked column"""
+    """Add a 'liked' column to the tracks table if it doesn't exist"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        
-        # Check if the liked column exists
-        cursor.execute("PRAGMA table_info(audio_files)")
-        columns = [col[1] for col in cursor.fetchall()]
-        
-        if 'liked' not in columns:
-            logger.info("Adding 'liked' column to audio_files table")
-            cursor.execute("ALTER TABLE audio_files ADD COLUMN liked INTEGER DEFAULT 0")
-            conn.commit()
-            
-        conn.close()
-        logger.info("Database setup for liked tracks complete")
+        logger.info("Adding 'liked' column to tracks table")
+        # Use direct execute_write function instead of connection/DB_PATH
+        execute_write(
+            "ALTER TABLE tracks ADD COLUMN IF NOT EXISTS liked BOOLEAN DEFAULT FALSE"
+        )
+        return True
     except Exception as e:
         logger.error(f"Error setting up liked tracks column: {e}")
+        return False
 
 # Then call it during app initialization (add this near where you create your app)
 with app.app_context():
@@ -3586,19 +3453,45 @@ def get_all_status():
 # Add this function near the end of the file
 
 def create_indexes():
-    """Create indexes for commonly searched fields"""
+    """Create database indexes for better performance"""
     try:
-        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
-            cursor = conn.cursor()
-            
-            # Create indexes if they don't exist
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_artist ON audio_files(artist)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_album ON audio_files(album)")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_title ON audio_files(title)")
-            
+        logger.info("Creating database indexes")
+        
+        # Use transaction_context from db_operations
+        conn = get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # Create indexes for tracks table
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_title ON tracks(title)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_date_added ON tracks(date_added)")
+                
+                # First check if playlist_items table exists
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'playlist_items'
+                    )
+                """)
+                table_exists = cursor.fetchone()[0]
+                
+                # Only create indexes if the table exists
+                if table_exists:
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_playlist_items_playlist_id ON playlist_items(playlist_id)")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_playlist_items_track_id ON playlist_items(track_id)")
+                    
+            conn.commit()
             logger.info("Database indexes created successfully")
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            release_connection(conn)
+        return True
     except Exception as e:
         logger.error(f"Error creating database indexes: {e}")
+        return False
 
 # Then call it directly during app initialization:
 # Add this near line 270-300 where you initialize other components
@@ -3747,7 +3640,8 @@ def debug_info():
         # Get table info
         tables = []
         if os.path.exists(DB_PATH):
-            with sqlite3.connect(DB_PATH) as conn:
+            conn = get_connection()
+            try:
                 cursor = conn.cursor()
                 cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
                 tables = [row[0] for row in cursor.fetchall()]
@@ -3757,6 +3651,8 @@ def debug_info():
                 for table in tables:
                     cursor.execute(f"SELECT COUNT(*) FROM {table}")
                     counts[table] = cursor.fetchone()[0]
+            finally:
+                release_connection(conn)
         
         return jsonify({
             'database': db_info,
@@ -3841,37 +3737,21 @@ def run_server():
 
 
 @app.route('/api/reset-locks', methods=['POST'])
-def reset_database_locks():
+def reset_all_locks():
     """Emergency endpoint to reset all locks and stop background processes"""
     global ANALYSIS_STATUS, METADATA_UPDATE_STATUS, QUICK_SCAN_STATUS
     global analysis_thread, DB_WRITE_RUNNING, DB_SAVE_IN_PROGRESS
     
     try:
-        # 1. Stop all running processes
-        ANALYSIS_STATUS.update({
-            'running': False,
-            'error': 'Manually stopped',
-            'last_updated': datetime.now().isoformat()
-        })
+        # Reset status dicts
+        ANALYSIS_STATUS = {'running': False, 'error': None}
+        METADATA_UPDATE_STATUS = {'running': False, 'error': None}
+        QUICK_SCAN_STATUS = {'running': False, 'error': None}
         
-        METADATA_UPDATE_STATUS.update({
-            'running': False, 
-            'error': 'Manually stopped',
-            'last_updated': datetime.now().isoformat()
-        })
-        
-        QUICK_SCAN_STATUS.update({
-            'running': False,
-            'error': 'Manually stopped',
-            'last_updated': datetime.now().isoformat()
-        })
-        
-        # 2. Release locks
-        if DB_SAVE_LOCK.locked():
-            DB_SAVE_LOCK.release()
+        # Stop background processes
         DB_SAVE_IN_PROGRESS = False
         
-        # 3. Clear DB write queue and restart worker
+        # Clear DB write queue and restart worker
         DB_WRITE_RUNNING = False
         while not DB_WRITE_QUEUE.empty():
             try:
@@ -3883,14 +3763,21 @@ def reset_database_locks():
         if ANALYSIS_LOCK.locked():
             ANALYSIS_LOCK.release()
             
-        # 4. Remove lock files
-        lock_file = os.path.join(os.path.dirname(DB_PATH), '.analysis_lock')
-        if os.path.exists(lock_file):
-            os.remove(lock_file)
+        # Remove lock files from the LOCK_FILE_DIR
+        for lock_file in glob.glob(os.path.join(LOCK_FILE_DIR, '.*_lock')):
+            try:
+                os.remove(lock_file)
+                logger.info(f"Removed lock file: {lock_file}")
+            except Exception as e:
+                logger.error(f"Error removing lock file {lock_file}: {e}")
             
-        # 5. Restart DB writer
+        # Restart DB writer
         time.sleep(1)
         start_db_write_worker()
+        
+        # Also call database-specific lock resets
+        if hasattr(db_operations, 'reset_database_locks'):
+            db_operations.reset_database_locks()
         
         return jsonify({"status": "success", "message": "All locks reset"})
     except Exception as e:
@@ -3900,10 +3787,18 @@ def reset_database_locks():
 
 # Set db_operations module variables after DB_PATH is defined
 import db_operations
-db_operations.DB_PATH = DB_PATH
 db_operations.DB_IN_MEMORY = config.getboolean('database_performance', 'in_memory', fallback=False)
 db_operations.DB_CACHE_SIZE_MB = config.getint('database_performance', 'cache_size_mb', fallback=75)
 
+def initialize_memory_db():
+    """PostgreSQL doesn't have in-memory mode, this is a compatibility function"""
+    logger.info("PostgreSQL doesn't support in-memory mode, using regular connection")
+    try:
+        # Use the imported get_connection
+        return get_connection()
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        return None
 
 if __name__ == '__main__':
     run_server()

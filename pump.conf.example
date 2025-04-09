@@ -10,6 +10,39 @@ debug = true
 # Path to the SQLite database file
 path = pump.db
 
+[DATABASE]
+# PostgreSQL database configuration
+host = localhost
+port = 5432
+user = pump
+password = Ge3hgU07bXlBigvTbRSX
+dbname = pump
+min_connections = 1
+max_connections = 10
+
+[MUSIC]
+# Music library paths (comma-separated list)
+library_paths = /path/to/your/music
+
+[LASTFM]
+# Last.fm API configuration (optional)
+api_key = your_api_key
+api_secret = your_api_secret
+username = your_username
+password = your_password
+
+[SPOTIFY]
+# Spotify API configuration (optional)
+client_id = your_client_id
+client_secret = your_client_secret
+redirect_uri = http://localhost:5000/callback
+
+[DISCOGS]
+# Discogs API configuration (optional)
+consumer_key = your_consumer_key
+consumer_secret = your_consumer_secret
+user_agent = PUMP/1.0 +http://github.com/yourname/pump
+
 [app]
 # Default number of songs in generated playlists
 default_playlist_size = 10

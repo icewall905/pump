@@ -1,0 +1,17 @@
+version: '3'
+
+services:
+  postgres:
+    image: postgres:14
+    container_name: pump-postgres
+    environment:
+      POSTGRES_PASSWORD: Ge3hgU07bXlBigvTbRSX
+      POSTGRES_USER: pump
+      POSTGRES_DB: pump
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  postgres_data:
