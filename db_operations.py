@@ -401,27 +401,32 @@ def toggle_track_like(track_id):
         logger.error(f"Error toggling track like status: {e}")
         return False
 
-def is_track_liked(track_id):
-    """Check if a track is liked"""
-    query = "SELECT liked FROM tracks WHERE id = %s"
+@contextmanager
+def optimized_connection(db_path, in_memory=False, cache_size_mb=75):
+    """Context manager that provides an optimized SQLite connection"""
+    conn = None
     try:
-        result = execute_query(query, (track_id,), fetchone=True)
-        return result['liked'] if result else False
-    except Exception as e:
-        logger.error(f"Error checking track liked status: {e}")
-        return False
-
-def record_track_play(track_id):
-    """Record that a track was played"""
-    query = """
-        UPDATE tracks
-        SET play_count = play_count + 1, last_played = CURRENT_TIMESTAMP
-        WHERE id = %s
-    """
-    try:
-        execute_query(query, (track_id,), commit=True)
-    except Exception as e:
-        logger.error(f"Error recording track play: {e}")
+        # If in-memory mode is requested and a connection exists in thread-local storage, use that
+        if in_memory and hasattr(_thread_local, 'conn'):
+            conn = _thread_local.conn
+            # Verify connection is still valid
+            try:
+                conn.execute("SELECT 1")
+            except sqlite3.Error:
+                # Connection is invalid, create a new one
+                logger.warning("In-memory connection was invalid, creating new connection")
+                conn = get_optimized_connection(db_path, in_memory, cache_size_mb)
+                _thread_local.conn = conn
+        else:
+            # Create a new connection
+            conn = get_optimized_connection(db_path, in_memory, cache_size_mb)
+            
+        yield conn
+    finally:
+        # Only close the connection if it's not in-memory
+        # This is the key fix - don't close in-memory connections
+        if conn and not in_memory:
+            conn.close()
 
 def create_playlist(name, description=""):
     """Create a new playlist"""
