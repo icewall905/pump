@@ -3573,6 +3573,41 @@ def db_diagnostic():
         logger.error(f"Error in db diagnostic: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/analysis/database-status', methods=['GET'])
+def get_analysis_database_status():
+    """Get database analysis status (how many tracks are analyzed vs pending)"""
+    try:
+        # Get counts from database
+        analyzed_count = execute_query_row(
+            "SELECT COUNT(*) as count FROM tracks WHERE analysis_status = 'analyzed'"
+        )['count']
+        
+        pending_count = execute_query_row(
+            "SELECT COUNT(*) as count FROM tracks WHERE analysis_status = 'pending'"
+        )['count']
+        
+        failed_count = execute_query_row(
+            "SELECT COUNT(*) as count FROM tracks WHERE analysis_status = 'failed'"
+        )['count']
+        
+        total_count = execute_query_row(
+            "SELECT COUNT(*) as count FROM tracks"
+        )['count']
+        
+        return jsonify({
+            'status': 'success',
+            'analyzed': analyzed_count,
+            'pending': pending_count,
+            'failed': failed_count,
+            'total': total_count
+        })
+    except Exception as e:
+        logger.error(f"Error getting database analysis status: {e}")
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
+
 # Updated run_server function that initializes scheduler and runs startup actions
 def run_server():
     """Run the Flask server"""

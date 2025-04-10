@@ -17,34 +17,41 @@ document.addEventListener('DOMContentLoaded', function() {
     // Add event listeners for sidebar navigation elements
     initializeSidebarNavigation();
     
+    // Make sure PlayerManager is initialized first before using it
+    if (!window.playerManager && typeof PlayerManager === 'function') {
+        console.log("Initializing PlayerManager from sidebar.js");
+        window.playerManager = new PlayerManager();
+    }
+    
     function initializeStatusChecking() {
         // Check analysis status periodically
         function checkAnalysisStatus() {
             fetch('/api/analysis/status')
                 .then(response => response.json())
                 .then(data => {
+                    // Update UI with status
                     if (data.running) {
-                        // Show the progress indicator
-                        analysisStatusIndicator.style.display = 'block';
-                        
-                        // Update progress bar
-                        const progressFill = analysisStatusIndicator.querySelector('.progress-fill');
-                        if (progressFill) {
-                            progressFill.style.width = data.percent_complete + '%';
-                        }
-                        
-                        // Update progress text
-                        const statusText = analysisStatusIndicator.querySelector('.progress-status-text');
-                        if (statusText) {
-                            statusText.textContent = `Analysis in progress: ${data.percent_complete}% complete`;
-                        }
+                        analysisStatusIndicator.classList.add('active');
+                        analysisStatusIndicator.innerHTML = `
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${data.percent_complete}%"></div>
+                            </div>
+                            <div class="progress-status-text">
+                                Analyzing: ${data.percent_complete}% complete
+                            </div>
+                        `;
                     } else {
-                        // Hide the progress indicator when not running
-                        analysisStatusIndicator.style.display = 'none';
+                        analysisStatusIndicator.classList.remove('active');
+                        analysisStatusIndicator.innerHTML = `
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: 0%"></div>
+                            </div>
+                            <div class="progress-status-text">Analysis idle</div>
+                        `;
                     }
                 })
                 .catch(error => {
-                    console.error('Error checking analysis status:', error);
+                    console.error('Error fetching analysis status:', error);
                 });
         }
         
@@ -54,27 +61,27 @@ document.addEventListener('DOMContentLoaded', function() {
                 .then(response => response.json())
                 .then(data => {
                     if (data.running) {
-                        // Show the progress indicator
-                        metadataStatusIndicator.style.display = 'block';
-                        
-                        // Update progress bar
-                        const progressFill = metadataStatusIndicator.querySelector('.progress-fill');
-                        if (progressFill) {
-                            progressFill.style.width = data.percent_complete + '%';
-                        }
-                        
-                        // Update progress text
-                        const statusText = metadataStatusIndicator.querySelector('.progress-status-text');
-                        if (statusText) {
-                            statusText.textContent = `Metadata update: ${data.percent_complete}% complete`;
-                        }
+                        metadataStatusIndicator.classList.add('active');
+                        metadataStatusIndicator.innerHTML = `
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${data.percent_complete}%"></div>
+                            </div>
+                            <div class="progress-status-text">
+                                Updating metadata: ${data.percent_complete}% complete
+                            </div>
+                        `;
                     } else {
-                        // Hide the progress indicator when not running
-                        metadataStatusIndicator.style.display = 'none';
+                        metadataStatusIndicator.classList.remove('active');
+                        metadataStatusIndicator.innerHTML = `
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: 0%"></div>
+                            </div>
+                            <div class="progress-status-text"></div>
+                        `;
                     }
                 })
                 .catch(error => {
-                    console.error('Error checking metadata status:', error);
+                    console.error('Error fetching metadata status:', error);
                 });
         }
         
@@ -95,19 +102,15 @@ document.addEventListener('DOMContentLoaded', function() {
         fetch('/api/library/stats')
             .then(response => response.json())
             .then(stats => {
-                if (stats.error) {
-                    console.error('Error fetching stats:', stats.error);
-                    return;
+                // Update stats in UI
+                if (stats.status === 'success') {
+                    const statData = stats.stats;
+                    statsContainer.innerHTML = `
+                        <div class="stat-item"><span>Tracks:</span> ${statData.total_tracks}</div>
+                        <div class="stat-item"><span>With Metadata:</span> ${statData.tracks_with_metadata}</div>
+                        <div class="stat-item"><span>Analyzed:</span> ${statData.analyzed_tracks}</div>
+                    `;
                 }
-                
-                // Update stats in sidebar
-                const trackCountElement = statsContainer.querySelector('.track-count');
-                const artistCountElement = statsContainer.querySelector('.artist-count');
-                const albumCountElement = statsContainer.querySelector('.album-count');
-                
-                if (trackCountElement) trackCountElement.textContent = stats.track_count || '0';
-                if (artistCountElement) artistCountElement.textContent = stats.artist_count || '0';
-                if (albumCountElement) albumCountElement.textContent = stats.album_count || '0';
             })
             .catch(error => {
                 console.error('Error fetching library stats:', error);
@@ -119,16 +122,11 @@ document.addEventListener('DOMContentLoaded', function() {
         const currentPath = window.location.pathname;
         
         document.querySelectorAll('.sidebar-nav a, .nav-button').forEach(link => {
-            if (link.getAttribute('href') === currentPath) {
+            const href = link.getAttribute('href');
+            if (href === currentPath || 
+                (currentPath === '/' && href === '#') ||
+                (href !== '#' && currentPath.startsWith(href))) {
                 link.classList.add('active');
-            }
-            
-            // For subpages like /home?view=recent
-            if (currentPath.includes('/home') && window.location.search) {
-                const view = new URLSearchParams(window.location.search).get('view');
-                if (view && link.getAttribute('href').includes(`view=${view}`)) {
-                    link.classList.add('active');
-                }
             }
         });
     }

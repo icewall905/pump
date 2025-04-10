@@ -5,6 +5,7 @@ window.initSettingsPage = function() {
     initMetadataControls();
     initCacheControls();
     initDatabasePerformanceSettings();
+    initAnalysisControls();
     
     // Create toast container if it doesn't exist
     if (!document.getElementById('toast-container')) {
@@ -1248,4 +1249,55 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
+
+// Add this function to initialize analysis controls
+function initAnalysisControls() {
+    console.log('Initializing analysis controls');
+    
+    // Get reference to buttons
+    const startAnalysisBtn = document.getElementById('start-analysis');
+    const startQuickScanBtn = document.getElementById('start-quick-scan');
+    const stopAnalysisBtn = document.getElementById('stop-analysis');
+    
+    // Add click handlers
+    if (startAnalysisBtn) {
+        startAnalysisBtn.addEventListener('click', startFullAnalysis);
+        console.log('Added click handler to start analysis button');
+    }
+    
+    if (startQuickScanBtn) {
+        startQuickScanBtn.addEventListener('click', startQuickScan);
+        console.log('Added click handler to quick scan button');
+    }
+    
+    if (stopAnalysisBtn) {
+        stopAnalysisBtn.addEventListener('click', stopAnalysis);
+        console.log('Added click handler to stop analysis button');
+    }
+    
+    // Initialize status polling
+    updateAnalysisStatus();
+    setInterval(updateAnalysisStatus, 3000);
+}
+
+// Add a function to stop analysis
+function stopAnalysis() {
+    console.log('Stopping analysis');
+    
+    fetch('/api/analysis/stop', {
+        method: 'POST'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.status === 'success') {
+            showMessage('Analysis stopped successfully', 'success');
+        } else {
+            showMessage('Failed to stop analysis: ' + data.message, 'error');
+        }
+    })
+    .catch(error => {
+        console.error('Error stopping analysis:', error);
+        showMessage('Error stopping analysis', 'error');
+    });
+}
 
