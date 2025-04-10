@@ -96,14 +96,14 @@ def execute_query(query, params=None, fetchone=False, commit=False):
     """Execute a query and return results"""
     conn = None
     try:
-        # Don't attempt to execute empty queries
+        # Validate query is not empty
         if not query or not query.strip():
-            logger.error("Attempted to execute an empty query")
+            logger.error("Cannot execute empty query")
             return None
-
+            
         conn = get_connection()
         cursor = conn.cursor()
-        cursor.execute(query, params or ())
+        cursor.execute(query, params)
         
         if fetchone:
             result = cursor.fetchone()

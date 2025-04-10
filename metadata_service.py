@@ -32,19 +32,23 @@ class MetadataService:
             try:
                 import pylast
                 self.lastfm_network = pylast.LastFMNetwork(
-                    api_key=self.lastfm_api_key,
+                    api_key=self.lastfm_api_key, 
                     api_secret=self.lastfm_api_secret
                 )
+                self.lastfm_service = LastFMService(self.lastfm_api_key, self.lastfm_api_secret)
                 logger.info("LastFM service initialized successfully")
             except ImportError:
-                logger.warning("pylast module not found. LastFM support will be limited.")
+                logger.warning("pylast module not found - LastFM features will be disabled")
                 self.lastfm_network = None
+                self.lastfm_service = None
             except Exception as e:
-                logger.error(f"Error initializing LastFM service: {e}")
+                logger.error(f"Error initializing LastFM: {e}")
                 self.lastfm_network = None
+                self.lastfm_service = None
         else:
             logger.warning("Last.fm API not configured")
             self.lastfm_network = None
+            self.lastfm_service = None
     
     def _load_config(self):
         """Load API keys from config file"""

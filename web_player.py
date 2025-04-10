@@ -12,6 +12,7 @@ import atexit
 import sys
 import re
 import time
+from psycopg2.extras import DictCursor
 from flask import Flask, render_template, request, jsonify, Response, send_file, g, session, redirect, url_for
 from music_analyzer import MusicAnalyzer
 from werkzeug.serving import run_simple
@@ -49,8 +50,84 @@ import configparser
 import threading
 import queue
 
+def initialize_config():
+    """Initialize configuration with defaults but preserve user settings"""
+    global config
+    
+    config = configparser.ConfigParser()
+    config_file = 'pump.conf'
+    
+    # Default configuration
+    default_config = {
+        'server': {
+            'host': '0.0.0.0',
+            'port': '8080',
+            'debug': 'true'
+        },
+        'database': {
+            'path': 'pump.db'
+        },
+        'app': {
+            'default_playlist_size': '10',
+            'max_search_results': '50'
+        },
+        'music': {
+            'folder_path': './music',  # Set default to ./music
+            'recursive': 'true'
+        },
+        'logging': {
+            'level': 'info',
+            'log_to_file': 'true',
+            'log_dir': 'logs',
+            'max_size_mb': '10',
+            'backup_count': '5'
+        },
+        'DATABASE': {
+            'host': 'localhost',
+            'port': '45432',
+            'user': 'pump',
+            'password': 'Ge3hgU07bXlBigvTbRSX',
+            'dbname': 'pump',
+            'min_connections': '1',
+            'max_connections': '10'
+        }
+    }
+    
+    # Load existing config if it exists
+    config_updated = False
+    if os.path.exists(config_file):
+        logger.info(f"Loading existing configuration from {config_file}")
+        config.read(config_file)
+    else:
+        logger.info(f"Configuration file {config_file} does not exist, creating with defaults")
+        config_updated = True
+        
+    # Add missing sections and options but NEVER overwrite existing values
+    for section, options in default_config.items():
+        if not config.has_section(section):
+            logger.info(f"Adding missing section: {section}")
+            config.add_section(section)
+            config_updated = True
+        
+        for option, value in options.items():
+            if not config.has_option(section, option):
+                logger.info(f"Adding missing option: {section}.{option} = {value}")
+                config.set(section, option, value)
+                config_updated = True
+    
+    # Write config file only if it was changed or didn't exist
+    if config_updated:
+        try:
+            with open(config_file, 'w') as f:
+                config.write(f)
+                logger.info(f"Configuration file saved to {config_file}")
+        except Exception as e:
+            logger.error(f"Failed to save configuration: {e}")
+    
+    return config
+
 # Configuration and database path setup
-config = configparser.ConfigParser()
+config = initialize_config()
 config_file = 'pump.conf'
 
 # Load configuration if exists
@@ -213,15 +290,12 @@ default_config = {
         'port': '8080',
         'debug': 'true'
     },
-    'database': {
-        'path': 'pump.db'
-    },
     'app': {
         'default_playlist_size': '10',
         'max_search_results': '50'
     },
     'music': {
-        'folder_path': '',
+        'folder_path': './music',
         'recursive': 'true'
     },
     # Add logging configuration defaults
@@ -244,18 +318,18 @@ if os.path.exists(config_file):
     logger.info(f"Loading existing configuration from {config_file}")
     config.read(config_file)
 
-# Add any missing sections or options from defaults
+# Add any missing sections or options from defaults but don't overwrite existing values
 config_updated = False
 for section, options in default_config.items():
     if not config.has_section(section):
-        logger.info(f"Adding missing section: {section}")
         config.add_section(section)
         config_updated = True
+    
     for option, value in options.items():
         if not config.has_option(section, option):
-            logger.info(f"Adding missing option: {section}.{option}")
             config.set(section, option, value)
             config_updated = True
+        # Don't overwrite existing values, especially folder_path
 
 # Add API keys section if it doesn't exist
 if not config.has_section('api_keys'):
@@ -2326,26 +2400,17 @@ def run_scheduled_full_analysis():
             pending_count = cursor.fetchone()[0]
             
             if pending_count > 0:
+                # Add your code here for what should happen when pending_count > 0
+                logger.info(f"Found {pending_count} files needing analysis")
+                # For example:
+                analyzer = MusicAnalyzer()
+                analyzer.analyze_pending_files(limit=100)
+                
+        except Exception as e:
+            logger.error(f"Error in full analysis: {e}")
             
-        # Extract image URLs
-        images = artist.get('images', [])
-        image_urls = [{'url': img.get('url'), 'width': img.get('width'), 'height': img.get('height')}
-                      for img in images]
-        
-        return jsonify({
-            'success': True,
-            'artist_name': artist_name,
-            'spotify_name': artist.get('name'),
-            'popularity': artist.get('popularity'),
-            'spotify_id': artist.get('id'),
-            'image_count': len(image_urls),
-            'images': image_urls,
-            'external_url': artist.get('external_urls', {}).get('spotify')
-        })
-        
     except Exception as e:
-        logger.error(f"Error testing Spotify API: {e}")
-        return jsonify({'error': str(e)}), 500
+        logger.error(f"Error in scheduled analysis: {e}")
 
 @app.route('/station/<int:seed_track_id>')
 def create_station(seed_track_id):
@@ -2515,38 +2580,68 @@ def download_logs():
 
 @app.route('/scan_library', methods=['POST'])
 def scan_library_endpoint():
-    """Start a quick scan of the music library without analyzing audio features"""
     try:
-        data = request.get_json()
-        directory = data.get('directory')
-        recursive = data.get('recursive', True)
+        # Add more verbose debugging
+        logger.debug(f"Scan library request received: {request.get_data(as_text=True)}")
         
-        if not directory:
-            return jsonify({"success": False, "error": "No directory specified"}), 400
+        # Support both JSON and form data
+        if request.is_json:
+            data = request.get_json()
+            logger.debug(f"JSON data received: {data}")
+        else:
+            data = request.form.to_dict()
+            logger.debug(f"Form data received: {data}")
+        
+        # Get folder path from POST data
+        folder_path = data.get('folder_path')
+        logger.debug(f"Extracted folder_path: {folder_path}")
+        
+        # If folder_path is not in the request, try to get it from configuration
+        if not folder_path:
+            folder_path = config.get('music', 'folder_path', fallback=None)
+            logger.debug(f"Using folder_path from config: {folder_path}")
             
-        # Don't start if already running
-        global QUICK_SCAN_STATUS
-        if QUICK_SCAN_STATUS['running']:
+            if not folder_path:
+                logger.warning("No music folder path specified in request or config")
+                return jsonify({
+                    'status': 'error',
+                    'message': 'No music folder path specified. Please configure a music folder first.'
+                }), 400
+        
+        # Check if folder exists
+        if not os.path.exists(folder_path):
             return jsonify({
-                "success": False, 
-                "error": "A scan is already in progress"
-            })
-            
-        # Start quick scan in a background thread
-        thread = threading.Thread(
-            target=run_quick_scan,
-            args=(directory, recursive)
-        )
-        thread.daemon = True
-        thread.start()
+                'status': 'error',
+                'message': f'Music folder not found: {folder_path}'
+            }), 404
         
-        logger.info(f"Started quick scan for directory: {directory} (recursive={recursive})")
+        # Get recursive parameter with proper type handling
+        recursive_param = data.get('recursive', True)
         
-        return jsonify({"success": True})
+        # Handle both string and boolean values
+        if isinstance(recursive_param, str):
+            recursive = recursive_param.lower() in ('true', '1', 't', 'y', 'yes')
+        else:
+            recursive = bool(recursive_param)
+        
+        # Start the scan process
+        analyzer = MusicAnalyzer()
+        result = analyzer.scan_library(folder_path, recursive)
+        
+        # Return success response
+        return jsonify({
+            'status': 'success',
+            'message': f"Scan complete: {result.get('files_processed', 0)} files processed",
+            'files_processed': result.get('files_processed', 0),
+            'tracks_added': result.get('tracks_added', 0)
+        })
         
     except Exception as e:
-        logger.error(f"Error starting quick scan: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+        logger.error(f"Error scanning library: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': f"Error scanning library: {str(e)}"
+        }), 500
 
 @app.route('/start_background_analysis', methods=['POST'])
 def start_background_analysis():
@@ -2621,24 +2716,38 @@ def get_analysis_progress():
     })
 
 @app.route('/analysis_status')
-def get_analysis_count_status():  # Changed function name
-    global analyzer
-    
-    conn = sqlite3.connect(analyzer.db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'pending'")
-    pending = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'analyzed'")
-    analyzed = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM audio_files WHERE analysis_status = 'failed'")
-    failed = cursor.fetchone()[0]
-    conn.close()
-    
-    return jsonify({
-        'pending': pending,
-        'analyzed': analyzed,
-        'failed': failed
-    })
+def get_analysis_count_status():
+    """Get counts of pending, analyzed, and failed tracks"""
+    try:
+        conn = get_connection()  # Use PostgreSQL connection
+        cursor = conn.cursor()
+        
+        # Get counts for different analysis statuses
+        cursor.execute("SELECT COUNT(*) FROM tracks WHERE id NOT IN (SELECT track_id FROM audio_features)")
+        pending = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM audio_features")
+        analyzed = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM tracks WHERE analysis_error IS NOT NULL")
+        failed = cursor.fetchone()[0]
+        
+        # Make sure to release the connection
+        release_connection(conn)
+        
+        return jsonify({
+            'pending': pending,
+            'analyzed': analyzed,
+            'failed': failed
+        })
+    except Exception as e:
+        logger.error(f"Error getting analysis status: {e}")
+        return jsonify({
+            'pending': 0,
+            'analyzed': 0,
+            'failed': 0,
+            'error': str(e)
+        })
 
 def should_stop():
     global analysis_progress
@@ -2646,33 +2755,57 @@ def should_stop():
 
 @app.route('/api/settings/save_music_path', methods=['POST'])
 def save_music_path():
-    """Save music folder path to config file"""
+    """Save music folder path setting"""
     try:
+        # Get path from JSON request
         data = request.get_json()
-        
         if not data or 'path' not in data:
-            return jsonify({"success": False, "message": "No path provided"}), 400
+            return jsonify({
+                'status': 'error',
+                'message': 'No path provided'
+            }), 400
         
-        music_path = data['path']
+        path = data['path']
         recursive = data.get('recursive', True)
         
-        # Make sure music section exists
-        if not config.has_section('music'):
-            config.add_section('music')
+        logger.info(f"Saving music path: {path}, recursive: {recursive}")
+        
+        # Convert to absolute path if it's a relative path
+        if not os.path.isabs(path):
+            path = os.path.abspath(path)
+            logger.info(f"Converted to absolute path: {path}")
             
+        # Ensure the path exists, create if needed
+        if not os.path.exists(path):
+            try:
+                os.makedirs(path)
+                logger.info(f"Created music directory: {path}")
+            except Exception as e:
+                return jsonify({
+                    'status': 'error',
+                    'message': f"Failed to create directory: {str(e)}"
+                }), 500
+        
         # Update configuration
-        config.set('music', 'folder_path', music_path)
+        config.set('music', 'folder_path', path)
         config.set('music', 'recursive', str(recursive).lower())
         
-        # Write to config file
-        with open(config_file, 'w') as f:
+        # Save to file
+        with open('pump.conf', 'w') as f:
             config.write(f)
         
-        logger.info(f"Saved music folder path: {music_path} (recursive={recursive})")
-        return jsonify({"success": True})
+        return jsonify({
+            'status': 'success',
+            'message': 'Music folder path saved successfully',
+            'path': path,
+            'recursive': recursive
+        })
     except Exception as e:
         logger.error(f"Error saving music path: {e}")
-        return jsonify({"success": False, "message": str(e)}), 500
+        return jsonify({
+            'status': 'error',
+            'message': f"Error saving music path: {str(e)}"
+        }), 500
 
 @app.route('/api/update-metadata', methods=['POST'])
 def update_metadata():

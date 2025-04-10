@@ -181,14 +181,14 @@ function initCacheControls() {
     updateLibraryStats();
 }
 
-// Start the full analysis process
+// Replace the startFullAnalysis function with this corrected version
 function startFullAnalysis() {
     const analyzeBtn = document.getElementById('analyze-button');
     const path = document.getElementById('music-directory').value;
     const recursive = document.getElementById('recursive-scan').checked;
     
     if (!path) {
-        showMessage('Please enter and save a music folder path first', 'error');
+        showMessage('Please enter a music folder path', 'error');
         return;
     }
     
@@ -209,8 +209,8 @@ function startFullAnalysis() {
     })
     .then(response => response.json())
     .then(data => {
-        if (data.success) {
-            // Now start the analysis
+        if (data.status === 'success') {
+            // Now make the request to analyze
             return fetch('/analyze', {
                 method: 'POST',
                 headers: {
@@ -222,30 +222,27 @@ function startFullAnalysis() {
                 })
             });
         } else {
-            throw new Error(data.message || 'Failed to save path');
+            throw new Error(data.message || 'Failed to save music path');
         }
     })
     .then(response => response.json())
     .then(data => {
-        if (data.success) {
+        analyzeBtn.disabled = false;
+        analyzeBtn.textContent = 'Full Analysis';
+        
+        if (data.status === 'success') {
             showMessage('Analysis started successfully', 'success');
-            updateAnalysisStatus(); // Start polling for status updates
-            
-            // Also update the global status indicator in layout.html
-            if (window.checkGlobalAnalysisStatus) {
-                window.checkGlobalAnalysisStatus();
-            }
+            // Start polling for status updates
+            updateAnalysisStatus();
         } else {
-            showMessage(`Error: ${data.error || 'Unknown error'}`, 'error');
-            analyzeBtn.disabled = false;
-            analyzeBtn.textContent = 'Full Analysis';
+            showMessage(data.message || 'Failed to start analysis', 'error');
         }
     })
     .catch(error => {
-        console.error('Error:', error);
-        showMessage(`Failed to start analysis: ${error.message}`, 'error');
         analyzeBtn.disabled = false;
         analyzeBtn.textContent = 'Full Analysis';
+        showMessage(`Error: ${error.message}`, 'error');
+        console.error('Analysis error:', error);
     });
 }
 
@@ -260,24 +257,25 @@ function debugLog(message, data) {
 }
 
 function startQuickScan() {
-    debugLog('Starting quick scan');
-    
     const quickScanBtn = document.getElementById('quick-scan-btn');
-    const path = document.getElementById('music-directory').value;
+    const pathInput = document.getElementById('music-directory');
+    const path = pathInput ? pathInput.value.trim() : '';
+    const recursiveInput = document.getElementById('recursive-scan');
+    const recursive = recursiveInput ? recursiveInput.checked : true;
     
-    debugLog('Path:', path);
-    const recursive = document.getElementById('recursive-scan').checked;
+    console.log('Starting quick scan with path:', path);
     
+    // Validate path exists
     if (!path) {
-        showMessage('Please enter and save a music folder path first', 'error');
+        showMessage('Please enter a music folder path first', 'error');
         return;
     }
     
     // Show loading state
     quickScanBtn.disabled = true;
-    quickScanBtn.textContent = 'Starting Scan...';
+    quickScanBtn.textContent = 'Scanning...';
     
-    // First save the path
+    // First save the path to configuration
     fetch('/api/settings/save_music_path', {
         method: 'POST',
         headers: {
@@ -290,45 +288,39 @@ function startQuickScan() {
     })
     .then(response => response.json())
     .then(data => {
-        if (data.success) {
-            // Now start the quick scan in background
-            return fetch('/scan_library', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    directory: path,
-                    recursive: recursive
-                })
+        console.log('Path saved response:', data);
+        
+        // Now initiate the scan with explicit path parameter
+        return fetch('/scan_library', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                folder_path: path,
+                recursive: recursive
+            })
+        });
+    })
+    .then(response => {
+        if (!response.ok) {
+            return response.json().then(errData => {
+                throw new Error(errData.message || `HTTP error ${response.status}`);
             });
-        } else {
-            throw new Error(data.message || 'Failed to save path');
         }
+        return response.json();
     })
-    .then(response => response.json())
     .then(data => {
-        if (data.success) {
-            showMessage('Quick scan started in background', 'success');
-            
-            // Start polling for updates
-            startPollingQuickScanStatus();
-            
-            // Also update the global status indicator
-            if (window.checkGlobalAnalysisStatus) {
-                window.checkGlobalAnalysisStatus();
-            }
-        } else {
-            showMessage(`Error: ${data.error || 'Unknown error'}`, 'error');
-            quickScanBtn.disabled = false;
-            quickScanBtn.textContent = 'Quick Scan';
-        }
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        showMessage(`Failed to start scan: ${error.message}`, 'error');
         quickScanBtn.disabled = false;
         quickScanBtn.textContent = 'Quick Scan';
+        showMessage(`Scan complete: ${data.files_processed || 0} files processed`, 'success');
+        startPollingQuickScanStatus();
+    })
+    .catch(error => {
+        quickScanBtn.disabled = false;
+        quickScanBtn.textContent = 'Quick Scan';
+        showMessage(`Error: ${error.message}`, 'error');
+        console.error('Quick scan error:', error);
     });
 }
 
