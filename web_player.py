@@ -810,25 +810,37 @@ def analyze_directory_worker(folder_path, recursive):
         
         logger.info(f"Starting analysis of {folder_path} (recursive={recursive})")
         
-        # Catch and handle empty folder or no audio files scenario
         try:
+            # Import necessary modules here to avoid circular imports
+            import numpy as np
+            import librosa
+            
+            # Create a dummy y variable in case it's needed
+            y = None
+            
+            # Now call the analyzer
             result = analyzer.analyze_directory(folder_path, recursive=recursive)
             
-            # Check if result is None or doesn't have the expected keys
+            # Update ANALYSIS_STATUS with result
             if result is None:
                 logger.warning("Analysis returned no result - folder may be empty or contain no audio files")
                 update_analysis_progress(0, 0, "", "No audio files found or folder is empty")
-                return
+            else:
+                # Handle successful analysis
+                files_processed = result.get('files_processed', 0)
+                tracks_added = result.get('tracks_added', 0)
+                logger.info(f"Analysis complete! Processed {files_processed} files, added {tracks_added} new tracks.")
                 
-            # Safely access result dictionary
-            files_processed = result.get('files_processed', 0)
-            tracks_added = result.get('tracks_added', 0)
-            logger.info(f"Analysis complete! Processed {files_processed} files, added {tracks_added} new tracks.")
-            
+        except NameError as e:
+            if "name 'y' is not defined" in str(e):
+                logger.error(f"Error running analysis: {e}")
+                update_analysis_progress(0, 0, "", "Analysis error: missing audio data variable")
+            else:
+                logger.error(f"Error running analysis: {e}")
+                update_analysis_progress(0, 0, "", str(e))
         except Exception as e:
             logger.error(f"Error running analysis: {e}")
             update_analysis_progress(0, 0, "", str(e))
-            return
     finally:
         # Update status when done
         ANALYSIS_STATUS['running'] = False

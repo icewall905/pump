@@ -16,8 +16,7 @@ from spotify_service import SpotifyService
 from metadata_service import MetadataService
 from db_operations import get_connection, release_connection, execute_query_dict
 from db_operations import optimized_connection, transaction_context, execute_query_row, execute_write
-
-
+from db_operations import execute_query  # Add this import for execute_query
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -33,6 +32,20 @@ analysis_progress = {
     'pending_count': 0,
     'last_run_completed': False,
     'stop_requested': False
+}
+
+# Quick Scan status tracking
+QUICK_SCAN_STATUS = {
+    'running': False,
+    'start_time': None,
+    'files_processed': 0,
+    'tracks_added': 0,
+    'total_files': 0,
+    'current_file': '',
+    'percent_complete': 0,
+    'last_updated': None,
+    'error': None,
+    'scan_complete': False
 }
 
 # Add near other global variables
@@ -262,193 +275,110 @@ class MusicAnalyzer:
     
     def scan_library(self, directory: str, recursive: bool = True) -> Dict:
         """
-        Estimate danceability based on rhythm regularity and energy.
+        Quickly scan directory for audio files and add them to the database without analysis.
         
-        This is a simplified implementation - commercial services use more complex algorithms.
+        Args:
+            directory (str): Path to the directory containing audio files
+            recursive (bool): Whether to scan subdirectories recursively
+            
+        Returns:
+            Dict: Results with files_processed and tracks_added counts
         """
-        # Get onset strength
-        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+        logger.info(f"Starting quick scan of {directory} (recursive={recursive})")
         
-        # Calculate pulse clarity (rhythm regularity)
-        ac = librosa.autocorrelate(onset_env, max_size=sr // 2)
-        # Find second peak (first peak is at lag 0)
-        peaks = librosa.util.peak_pick(ac, pre_max=20, post_max=20, pre_avg=20, 
-                                      post_avg=20, delta=0.1, wait=1)
-        if len(peaks) > 0:
-            # Use height of second peak as rhythm regularity indicator
-            rhythm_regularity = ac[peaks[0]] / ac[0] if peaks[0] > 0 else 0
+        # Initialize counters
+        files_processed = 0
+        tracks_added = 0
+        
+        # Collect audio files
+        audio_files = []
+        
+        # Find all audio files matching the extensions
+        extensions = ['.mp3', '.wav', '.flac', '.ogg']
+        
+        if recursive:
+            for root, _, files in os.walk(directory):
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in extensions):
+                        audio_files.append(os.path.join(root, file))
         else:
-            rhythm_regularity = 0
-            
-        # Combine with tempo and energy information
-        tempo_factor = np.clip((tempo - 60) / (180 - 60), 0, 1)  # Normalize tempo between 60-180 BPM
-        energy = np.mean(librosa.feature.rms(y=y))
-        energy_factor = np.clip(energy / 0.1, 0, 1)  # Normalize energy
+            if os.path.exists(directory):
+                for file in os.listdir(directory):
+                    if any(file.lower().endswith(ext) for ext in extensions):
+                        audio_files.append(os.path.join(directory, file))
         
-        danceability = (0.5 * rhythm_regularity + 0.3 * tempo_factor + 0.2 * energy_factor)
+        # If no audio files found, return early with empty results
+        if not audio_files:
+            logger.info(f"Found 0 audio files to process")
+            logger.info(f"Quick scan complete! Processed 0 files, added 0 new tracks.")
+            return {
+                'files_processed': 0,
+                'tracks_added': 0
+            }
         
-        # Fix: ensure danceability is a scalar value
-        danceability_value = danceability.item() if hasattr(danceability, 'item') else float(danceability)
-        return danceability_value
-    
-    def _save_to_db(self, features: Dict):
-        """Save audio features to database using the new db_operations module"""
-        try:
-            # First, save or update the file metadata in audio_files table
-            file_path = features["file_path"]
-            
-            # Insert or replace the audio file info
-            file_id = execute_write(
-                self.db_path,
-                '''INSERT OR REPLACE INTO audio_files 
-                   (file_path, title, artist, album, album_art_url, metadata_source, duration, artist_image_url) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                (
-                    file_path,
-                    features.get("title", ""),
-                    features.get("artist", ""),
-                    features.get("album", ""),
-                    features.get("album_art_url", ""),
-                    features.get("metadata_source", "unknown"),
-                    features.get("duration", 0),
-                    features.get("artist_image_url", "")
-                ),
-                in_memory=self.in_memory,
-                cache_size_mb=self.cache_size_mb
-            )
-            
-            # Insert or replace the audio features
-            execute_write(
-                self.db_path,
-                '''INSERT OR REPLACE INTO audio_features
-                   (file_id, tempo, key, mode, time_signature, energy, danceability, brightness, noisiness)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                (
-                    file_id,
-                    features.get("tempo", 0),
-                    features.get("key", 0),
-                    features.get("mode", 0),
-                    features.get("time_signature", 4),
-                    features.get("energy", 0),
-                    features.get("danceability", 0),
-                    features.get("brightness", 0),
-                    features.get("noisiness", 0)
-                ),
-                in_memory=self.in_memory,
-                cache_size_mb=self.cache_size_mb
-            )
-            
-            return file_id
-        except Exception as e:
-            logger.error(f"Error saving features to database: {e}")
-            raise
-    
-def analyze_directory(self, directory: str, recursive: bool = True) -> Dict:
-    """
-    Analyze audio files in a directory and extract their features.
-    
-    Args:
-        directory (str): Path to the directory containing audio files
-        recursive (bool): Whether to scan subdirectories recursively
+        logger.info(f"Found {len(audio_files)} audio files to process")
         
-    Returns:
-        Dict: Results with files_processed and tracks_added counts
-    """
-    logger.info(f"Starting quick scan of {directory} (recursive={recursive})")
-    
-    # Initialize counters
-    files_processed = 0
-    tracks_added = 0
-    
-    # Collect audio files
-    audio_files = []
-    
-    # Find all audio files matching the extensions
-    extensions = ['.mp3', '.wav', '.flac', '.ogg']
-    
-    if recursive:
-        for root, _, files in os.walk(directory):
-            for file in files:
-                if any(file.lower().endswith(ext) for ext in extensions):
-                    audio_files.append(os.path.join(root, file))
-    else:
-        if os.path.exists(directory):
-            for file in os.listdir(directory):
-                if any(file.lower().endswith(ext) for ext in extensions):
-                    audio_files.append(os.path.join(directory, file))
-    
-    # If no audio files found, return early with empty results
-    if not audio_files:
-        logger.info(f"Found 0 audio files to process")
-        logger.info(f"Quick scan complete! Processed 0 files, added 0 new tracks.")
+        # Process files in batches
+        batch_size = 100
+        for i in range(0, len(audio_files), batch_size):
+            batch = audio_files[i:i+batch_size]
+            
+            # Get existing files from database to avoid reprocessing
+            try:
+                conn = get_connection()
+                cursor = conn.cursor()
+                
+                # Create a parameterized query with the right number of placeholders
+                placeholders = ','.join(['%s'] * len(batch))
+                cursor.execute(f"SELECT file_path FROM tracks WHERE file_path IN ({placeholders})", batch)
+                existing_files = {row[0] for row in cursor.fetchall()}
+                
+                # Process only new files
+                for file_path in batch:
+                    files_processed += 1
+                    
+                    # Update progress for the UI
+                    if files_processed % 10 == 0 or files_processed == len(audio_files):
+                        logger.debug(f"Processed {files_processed}/{len(audio_files)} files")
+                    
+                    if file_path in existing_files:
+                        logger.debug(f"Skipping {file_path}, already in database")
+                        continue
+                    
+                    logger.debug(f"Analyzing {file_path}")
+                    try:
+                        # Extract basic metadata without heavy audio analysis
+                        metadata = self._get_basic_metadata(file_path)
+                        if metadata:
+                            # Insert the track into the database
+                            cursor.execute(
+                                """
+                                INSERT INTO tracks 
+                                (file_path, title, artist, album, duration, date_added) 
+                                VALUES (%s, %s, %s, %s, %s, NOW())
+                                """, 
+                                (file_path, 
+                                 metadata.get('title', os.path.basename(file_path)), 
+                                 metadata.get('artist', 'Unknown'), 
+                                 metadata.get('album', 'Unknown'),
+                                 metadata.get('duration', 0))
+                            )
+                            conn.commit()
+                            tracks_added += 1
+                    except Exception as e:
+                        logger.error(f"Error analyzing {file_path}: {e}")
+                        conn.rollback()
+            
+            except Exception as e:
+                logger.error(f"Batch processing error: {e}")
+            finally:
+                release_connection(conn)
+        
+        logger.info(f"Quick scan complete! Processed {files_processed} files, added {tracks_added} new tracks.")
         return {
-            'files_processed': 0,
-            'tracks_added': 0
+            'files_processed': files_processed,
+            'tracks_added': tracks_added
         }
-    
-    logger.info(f"Found {len(audio_files)} audio files to process")
-    
-    # Process files in batches
-    batch_size = 100
-    for i in range(0, len(audio_files), batch_size):
-        batch = audio_files[i:i+batch_size]
-        
-        # Get existing files from database to avoid reprocessing
-        try:
-            conn = get_connection()
-            cursor = conn.cursor()
-            
-            # Create a parameterized query with the right number of placeholders
-            placeholders = ','.join(['%s'] * len(batch))
-            cursor.execute(f"SELECT file_path FROM tracks WHERE file_path IN ({placeholders})", batch)
-            existing_files = {row[0] for row in cursor.fetchall()}
-            
-            # Process only new files
-            for file_path in batch:
-                files_processed += 1
-                
-                # Update progress for the UI
-                if files_processed % 10 == 0 or files_processed == len(audio_files):
-                    logger.debug(f"Processed {files_processed}/{len(audio_files)} files")
-                
-                if file_path in existing_files:
-                    logger.debug(f"Skipping {file_path}, already in database")
-                    continue
-                
-                logger.debug(f"Analyzing {file_path}")
-                try:
-                    # Extract basic metadata without heavy audio analysis
-                    metadata = self._get_basic_metadata(file_path)
-                    if metadata:
-                        # Insert the track into the database
-                        cursor.execute(
-                            """
-                            INSERT INTO tracks 
-                            (file_path, title, artist, album, duration, date_added) 
-                            VALUES (%s, %s, %s, %s, %s, NOW())
-                            """, 
-                            (file_path, 
-                             metadata.get('title', os.path.basename(file_path)), 
-                             metadata.get('artist', 'Unknown'), 
-                             metadata.get('album', 'Unknown'),
-                             metadata.get('duration', 0))
-                        )
-                        conn.commit()
-                        tracks_added += 1
-                except Exception as e:
-                    logger.error(f"Error analyzing {file_path}: {e}")
-                    conn.rollback()
-        
-        except Exception as e:
-            logger.error(f"Batch processing error: {e}")
-        finally:
-            release_connection(conn)
-    
-    logger.info(f"Quick scan complete! Processed {files_processed} files, added {tracks_added} new tracks.")
-    return {
-        'files_processed': files_processed,
-        'tracks_added': tracks_added
-    }
     
     def create_station(self, seed_track_path: str, num_tracks: int = 10) -> List[str]:
         """
@@ -573,7 +503,24 @@ def analyze_directory(self, directory: str, recursive: bool = True) -> Dict:
             enhanced_metadata = self.metadata_service.enrich_metadata(metadata)
             
             # Load the audio file for analysis
-            y, sr = librosa.load(file_path, sr=None)
+            try:
+                y, sr = librosa.load(file_path, sr=None)
+            except Exception as e:
+                logger.error(f"Error loading audio file {file_path}: {e}")
+                y, sr = None, None
+
+            # Ensure y and sr are defined before proceeding
+            if y is None or sr is None:
+                logger.warning(f"Skipping analysis for {file_path} due to missing audio data")
+                return {
+                    "file_path": file_path,
+                    "title": enhanced_metadata.get("title", ""),
+                    "artist": enhanced_metadata.get("artist", ""),
+                    "album": enhanced_metadata.get("album", ""),
+                    "album_art_url": enhanced_metadata.get("album_art_url", ""),
+                    "metadata_source": enhanced_metadata.get("metadata_source", "unknown"),
+                    "duration": 0,
+                }
             
             # Basic audio properties
             duration = librosa.get_duration(y=y, sr=sr)
@@ -769,24 +716,21 @@ def analyze_directory(self, directory: str, recursive: bool = True) -> Dict:
         # Create a new connection in this thread
         try:
             # Create thread-local connection
-            from db_operations import get_optimized_connection
-            thread_conn = get_optimized_connection(self.db_path, self.in_memory, self.cache_size_mb)
+            thread_conn = get_connection()
             
             # Get all pending files from database
-            thread_conn.row_factory = sqlite3.Row
-            cursor = thread_conn.cursor()
-            
-            if recursive:
-                # Use recursive path matching with wildcards
-                query = "SELECT id, file_path FROM audio_files WHERE analysis_status = 'pending' AND file_path LIKE ?"
-                cursor.execute(query, (f"{directory}%",))
-            else:
-                # For non-recursive, match only files directly in the directory
-                query = "SELECT id, file_path FROM audio_files WHERE analysis_status = 'pending' AND file_path LIKE ? AND file_path NOT LIKE ?"
-                cursor.execute(query, (f"{directory}/%", f"{directory}/%/%"))
-            
-            pending_files = cursor.fetchall()
-            total_files = len(pending_files)
+            with thread_conn.cursor() as cursor:
+                if recursive:
+                    # Use recursive path matching with wildcards
+                    query = "SELECT id, file_path FROM tracks WHERE analysis_status = 'pending' AND file_path LIKE %s"
+                    cursor.execute(query, (f"{directory}%",))
+                else:
+                    # For non-recursive, match only files directly in the directory
+                    query = "SELECT id, file_path FROM tracks WHERE analysis_status = 'pending' AND file_path LIKE %s AND file_path NOT LIKE %s"
+                    cursor.execute(query, (f"{directory}/%", f"{directory}/%/%"))
+                
+                pending_files = cursor.fetchall()
+                total_files = len(pending_files)
             
             # Update progress
             analysis_progress['total_files'] = total_files
@@ -807,8 +751,9 @@ def analyze_directory(self, directory: str, recursive: bool = True) -> Dict:
             
             # Analyze each file
             for i, file_data in enumerate(pending_files):
-                file_id = file_data['id']
-                file_path = file_data['file_path']
+                # With PostgreSQL DictCursor, we access by column name
+                file_id = file_data['id'] if isinstance(file_data, dict) else file_data[0]
+                file_path = file_data['file_path'] if isinstance(file_data, dict) else file_data[1]
                 
                 # Check if stop requested
                 if analysis_progress['stop_requested']:
@@ -832,7 +777,8 @@ def analyze_directory(self, directory: str, recursive: bool = True) -> Dict:
                     # Check if file exists
                     if not os.path.exists(file_path):
                         logger.warning(f"File not found: {file_path}")
-                        cursor.execute("UPDATE audio_files SET analysis_status = 'missing' WHERE id = ?", (file_id,))
+                        with thread_conn.cursor() as cursor:
+                            cursor.execute("UPDATE tracks SET analysis_status = 'missing' WHERE id = %s", (file_id,))
                         thread_conn.commit()
                         analysis_progress['failed_count'] += 1
                         continue
@@ -842,50 +788,58 @@ def analyze_directory(self, directory: str, recursive: bool = True) -> Dict:
                     
                     if features:
                         # Save features to database directly with this connection
-                        cursor.execute('''
-                        INSERT INTO audio_features
-                        (file_id, file_path, tempo, key, mode, time_signature,
-                        acousticness, danceability, energy, instrumentalness, loudness, speechiness, valence)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            file_id, file_path, 
-                            features['tempo'], features['key'], features['mode'], features['time_signature'],
-                            features['acousticness'], features['danceability'], features['energy'],
-                            features['instrumentalness'], features['loudness'], features['speechiness'], features['valence']
-                        ))
+                        with thread_conn.cursor() as cursor:
+                            cursor.execute('''
+                            INSERT INTO audio_features
+                            (track_id, tempo, key, mode, time_signature,
+                            acousticness, danceability, energy, instrumentalness, loudness, valence)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (track_id) DO UPDATE SET
+                                tempo = EXCLUDED.tempo,
+                                key = EXCLUDED.key,
+                                mode = EXCLUDED.mode,
+                                time_signature = EXCLUDED.time_signature,
+                                acousticness = EXCLUDED.acousticness,
+                                danceability = EXCLUDED.danceability,
+                                energy = EXCLUDED.energy,
+                                instrumentalness = EXCLUDED.instrumentalness,
+                                loudness = EXCLUDED.loudness,
+                                valence = EXCLUDED.valence
+                            ''', (
+                                file_id, 
+                                features.get('tempo', 0), 
+                                features.get('key', 0), 
+                                features.get('mode', 0), 
+                                features.get('time_signature', 4),
+                                features.get('acousticness', 0), 
+                                features.get('danceability', 0), 
+                                features.get('energy', 0),
+                                features.get('instrumentalness', 0), 
+                                features.get('loudness', 0), 
+                                features.get('valence', 0)
+                            ))
+                            
+                            # Update analysis status
+                            cursor.execute("UPDATE tracks SET analysis_status = 'analyzed' WHERE id = %s", (file_id,))
                         
-                        # Update analysis status
-                        cursor.execute("UPDATE audio_files SET analysis_status = 'analyzed' WHERE id = ?", (file_id,))
                         thread_conn.commit()
-                        
                         analysis_progress['analyzed_count'] += 1
                     else:
                         logger.warning(f"Failed to extract features from {file_path}")
-                        cursor.execute("UPDATE audio_files SET analysis_status = 'failed' WHERE id = ?", (file_id,))
+                        with thread_conn.cursor() as cursor:
+                            cursor.execute("UPDATE tracks SET analysis_status = 'failed' WHERE id = %s", (file_id,))
                         thread_conn.commit()
                         analysis_progress['failed_count'] += 1
-                    
-                    # Save changes periodically
-                    if i % 5 == 0 and self.in_memory:
-                        from db_operations import trigger_db_save
-                        trigger_db_save(thread_conn, self.db_path)
                         
                 except Exception as e:
                     logger.error(f"Error analyzing file {file_path}: {e}")
-                    cursor.execute("UPDATE audio_files SET analysis_status = 'failed' WHERE id = ?", (file_id,))
+                    with thread_conn.cursor() as cursor:
+                        cursor.execute("UPDATE tracks SET analysis_status = 'failed' WHERE id = %s", (file_id,))
                     thread_conn.commit()
                     analysis_progress['failed_count'] += 1
             
-            # Final commit
-            thread_conn.commit()
-            
-            # Final database save
-            if self.in_memory:
-                from db_operations import trigger_db_save
-                trigger_db_save(thread_conn, self.db_path)
-            
-            # Close thread connection
-            thread_conn.close()
+            # Release the thread connection
+            release_connection(thread_conn)
             
             # Update final status
             analysis_progress['is_running'] = False
@@ -1200,10 +1154,7 @@ def analyze_directory(self, directory: str, recursive: bool = True) -> Dict:
         
         # Get count of already analyzed files
         already_analyzed = execute_query_row(
-            self.db_path,
-            "SELECT COUNT(*) as count FROM audio_files WHERE analysis_status = 'analyzed'",
-            in_memory=self.in_memory,
-            cache_size_mb=self.cache_size_mb
+            "SELECT COUNT(*) as count FROM tracks WHERE analysis_status = 'analyzed'"
         )['count']
         
         analysis_progress['analyzed_count'] = already_analyzed
@@ -1212,13 +1163,10 @@ def analyze_directory(self, directory: str, recursive: bool = True) -> Dict:
         
         # CRITICAL FIX: Get the pending files BEFORE using total_pending
         pending_files = execute_query(
-            self.db_path,
             '''SELECT id, file_path
-               FROM audio_files
+               FROM tracks
                WHERE analysis_status = 'pending'
-               ORDER BY date_added DESC''',
-            in_memory=self.in_memory,
-            cache_size_mb=self.cache_size_mb
+               ORDER BY date_added DESC'''
         )
         
         # NOW calculate total_pending
@@ -1272,22 +1220,32 @@ def analyze_directory(self, directory: str, recursive: bool = True) -> Dict:
             
             try:
                 # Use a separate transaction for each file
-                with transaction_context(self.db_path, self.in_memory, self.cache_size_mb) as (conn, cursor):
+                with transaction_context() as (conn, cursor):
                     # Analyze the file
                     features = self._analyze_file_without_db_check(file_path)
                     
                     if features and 'error' not in features:
                         # Update the file's analysis status
                         cursor.execute(
-                            "UPDATE audio_files SET analysis_status = 'analyzed' WHERE id = ?",
+                            "UPDATE tracks SET analysis_status = 'analyzed' WHERE id = %s",
                             (file_id,)
                         )
                         
                         # Insert the features
                         cursor.execute(
-                            '''INSERT OR REPLACE INTO audio_features
-                               (file_id, tempo, key, mode, time_signature, energy, danceability, brightness, noisiness, loudness)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                            '''INSERT INTO audio_features 
+                               (track_id, tempo, key, mode, time_signature, energy, danceability, brightness, noisiness, loudness)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                               ON CONFLICT (track_id) DO UPDATE SET
+                               tempo = EXCLUDED.tempo,
+                               key = EXCLUDED.key,
+                               mode = EXCLUDED.mode,
+                               time_signature = EXCLUDED.time_signature,
+                               energy = EXCLUDED.energy,
+                               danceability = EXCLUDED.danceability,
+                               brightness = EXCLUDED.brightness,
+                               noisiness = EXCLUDED.noisiness,
+                               loudness = EXCLUDED.loudness''',
                             (
                                 file_id,
                                 features.get("tempo", 0),
@@ -1309,7 +1267,7 @@ def analyze_directory(self, directory: str, recursive: bool = True) -> Dict:
                     else:
                         # Mark as failed
                         cursor.execute(
-                            "UPDATE audio_files SET analysis_status = 'failed' WHERE id = ?",
+                            "UPDATE tracks SET analysis_status = 'failed' WHERE id = %s",
                             (file_id,)
                         )
                         error_count += 1
@@ -1317,19 +1275,12 @@ def analyze_directory(self, directory: str, recursive: bool = True) -> Dict:
                         consecutive_errors += 1
                         logger.warning(f"Failed to analyze: {os.path.basename(file_path)} - {features.get('error', 'Unknown error')}")
                 
-                # Save in-memory database every 5 files
-                if self.in_memory and analyzed_count % 5 == 0:
-                    with optimized_connection(self.db_path, in_memory=self.in_memory, cache_size_mb=self.cache_size_mb) as conn:
-                        from db_operations import trigger_db_save
-                        trigger_db_save(conn, self.db_path)
-                        logger.info(f"Saved in-memory database after {analyzed_count} files")
-                    
             except Exception as e:
                 logger.error(f"Error analyzing {file_path}: {e}")
                 # Use a separate transaction to update the status
-                with transaction_context(self.db_path, self.in_memory, self.cache_size_mb) as (conn, cursor):
+                with transaction_context() as (conn, cursor):
                     cursor.execute(
-                        "UPDATE audio_files SET analysis_status = 'failed' WHERE id = ?",
+                        "UPDATE tracks SET analysis_status = 'failed' WHERE id = %s",
                         (file_id,)
                     )
                 error_count += 1
@@ -1343,13 +1294,10 @@ def analyze_directory(self, directory: str, recursive: bool = True) -> Dict:
         
         # Get updated pending count
         remaining_pending = len(execute_query(
-            self.db_path,
-            '''SELECT af.id
-               FROM audio_files af
-               LEFT JOIN audio_features feat ON af.id = feat.file_id
-               WHERE feat.file_id IS NULL''',
-            in_memory=self.in_memory,
-            cache_size_mb=self.cache_size_mb
+            '''SELECT t.id
+               FROM tracks t
+               LEFT JOIN audio_features feat ON t.id = feat.track_id
+               WHERE feat.track_id IS NULL'''
         ))
         
         analysis_progress['pending_count'] = remaining_pending
@@ -1357,13 +1305,6 @@ def analyze_directory(self, directory: str, recursive: bool = True) -> Dict:
         analysis_progress['last_run_completed'] = True
         
         logger.info(f"Analysis complete: {analyzed_count} files analyzed, {error_count} errors, {remaining_pending} still pending")
-        
-        # Final save of in-memory database
-        if self.in_memory:
-            with optimized_connection(self.db_path, in_memory=self.in_memory, cache_size_mb=self.cache_size_mb) as conn:
-                from db_operations import trigger_db_save
-                trigger_db_save(conn, self.db_path)
-                logger.info("Saved in-memory database after completing analysis")
         
         return {
             'success': True,
@@ -1730,49 +1671,171 @@ def analyze_directory(self, directory: str, recursive: bool = True) -> Dict:
         logger.info(f"Running quick scan (alias for scan_library) on {directory}")
         return self.scan_library(directory, recursive)
 
-    def estimate_danceability(self, y=None, sr=None):
-        """
-        Estimate danceability based on rhythm regularity and energy.
+def estimate_danceability(self, y=None, sr=None):
+    """
+    Estimate danceability based on rhythm regularity and energy.
+    
+    This is a simplified implementation - commercial services use more complex algorithms.
+    """
+    # Check if y is defined, if not return a default value
+    if y is None:
+        logger.warning("No audio data provided for danceability estimation, returning default value")
+        return 0.5
+    
+    try:
+        # Get onset strength
+        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
         
-        This is a simplified implementation - commercial services use more complex algorithms.
-        """
-        # Check if y is defined, if not return a default value
-        if y is None:
-            logger.warning("No audio data provided for danceability estimation, returning default value")
-            return 0.5
+        # Calculate pulse clarity (rhythm regularity)
+        ac = librosa.autocorrelate(onset_env, max_size=sr // 2)
+        # Find second peak (first peak is at lag 0)
+        peaks = librosa.util.peak_pick(ac, pre_max=20, post_max=20, pre_avg=20, 
+                                      post_avg=20, delta=0.1, wait=1)
+        if len(peaks) > 0:
+            # Use the highest peak as rhythm regularity measure
+            rhythm_regularity = ac[peaks[0]] / ac[0]
+        else:
+            rhythm_regularity = 0.1  # Low danceability if no clear rhythm
+        
+        # Calculate tempo - the missing piece causing the error!
+        tempo_data = librosa.beat.tempo(onset_envelope=onset_env, sr=sr)
+        tempo = tempo_data[0] if hasattr(tempo_data, '__len__') else tempo_data
+        
+        # Combine with tempo and energy information
+        tempo_factor = np.clip((tempo - 60) / (180 - 60), 0, 1)  # Normalize tempo between 60-180 BPM
+        energy = np.mean(librosa.feature.rms(y=y))
+        energy_factor = np.clip(energy / 0.1, 0, 1)  # Normalize energy
+        
+        danceability = (0.5 * rhythm_regularity + 0.3 * tempo_factor + 0.2 * energy_factor)
+        
+        # Fix: ensure danceability is a scalar value
+        return float(danceability)
+    except Exception as e:
+        logger.error(f"Error estimating danceability: {e}")
+        return 0.5  # Return default value on error
+
+def _extract_time_domain_features(self, y, sr):
+        """Extract features from the time domain"""
+        features = {}
         
         try:
-            # Get onset strength
-            onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+            # RMS energy
+            rms = librosa.feature.rms(y=y)
+            features["energy"] = float(np.mean(rms))
             
-            # Calculate pulse clarity (rhythm regularity)
-            ac = librosa.autocorrelate(onset_env, max_size=sr // 2)
-            # Find second peak (first peak is at lag 0)
-            peaks = librosa.util.peak_pick(ac, pre_max=20, post_max=20, pre_avg=20, 
-                                          post_avg=20, delta=0.1, wait=1)
-            if len(peaks) > 0:
-                # Use the highest peak as rhythm regularity measure
-                rhythm_regularity = ac[peaks[0]] / ac[0]
-            else:
-                rhythm_regularity = 0.1  # Low danceability if no clear rhythm
+            # Zero-crossing rate for noisiness
+            zcr = librosa.feature.zero_crossing_rate(y=y)
+            features["noisiness"] = float(np.mean(zcr))
             
-            # Calculate tempo if not provided
-            tempo_data = librosa.beat.tempo(onset_envelope=onset_env, sr=sr)
-            tempo = tempo_data[0] if hasattr(tempo_data, '__len__') else tempo_data
-            
-            # Combine with tempo and energy information
-            tempo_factor = np.clip((tempo - 60) / (180 - 60), 0, 1)  # Normalize tempo between 60-180 BPM
-            energy = np.mean(librosa.feature.rms(y=y))
-            energy_factor = np.clip(energy / 0.1, 0, 1)  # Normalize energy
-            
-            danceability = (0.5 * rhythm_regularity + 0.3 * tempo_factor + 0.2 * energy_factor)
-            
-            # Fix: ensure danceability is a scalar value
-            return float(danceability)
+            return features
         except Exception as e:
-            logger.error(f"Error estimating danceability: {e}")
-            return 0.5  # Return default value on error
+            logger.error(f"Error extracting time domain features: {e}")
+            return {
+                "energy": 0.5,
+                "noisiness": 0.5
+            }
+    
+def _extract_frequency_domain_features(self, y, sr):
+    """Extract features from the frequency domain"""
+    features = {}
+    
+    try:
+        # Spectral centroid (brightness)
+        cent = librosa.feature.spectral_centroid(y=y, sr=sr)
+        features["brightness"] = float(np.mean(cent)) / 10000.0  # Normalize to 0-1 range
+        
+        # Spectral contrast
+        contrast = librosa.feature.spectral_contrast(y=y, sr=sr)
+        features["spectral_contrast"] = float(np.mean(contrast))
+        
+        # Spectral bandwidth
+        bandwidth = librosa.feature.spectral_bandwidth(y=y, sr=sr)
+        features["spectral_bandwidth"] = float(np.mean(bandwidth))
+        
+        # Loudness
+        S = librosa.stft(y)
+        db = librosa.amplitude_to_db(abs(S))
+        features["loudness"] = float(np.mean(db))
+        
+        # MFCCs
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+        features["mfcc"] = np.mean(mfcc, axis=1).tolist()
+        
+        return features
+    except Exception as e:
+        logger.error(f"Error extracting frequency domain features: {e}")
+        return {
+            "brightness": 0.5,
+            "spectral_contrast": 0.5,
+            "spectral_bandwidth": 0.5,
+            "loudness": -20.0,
+            "mfcc": [0.0] * 13
+        }
 
+def _extract_rhythm_features(self, y, sr):
+    """Extract rhythm-related features"""
+    features = {}
+    
+    try:
+        # Tempo
+        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+        tempo = librosa.beat.tempo(onset_envelope=onset_env, sr=sr)
+        if hasattr(tempo, "__len__"):
+            features["tempo"] = float(tempo[0])
+        else:
+            features["tempo"] = float(tempo)
+        
+        # Time signature estimation
+        features["time_signature"] = 4  # Default to 4/4
+        
+        # Danceability estimate
+        features["danceability"] = self.estimate_danceability(y=y, sr=sr)
+        
+        return features
+    except Exception as e:
+        logger.error(f"Error extracting rhythm features: {e}")
+        return {
+            "tempo": 120.0,
+            "time_signature": 4,
+            "danceability": 0.5
+        }
+
+def _extract_harmonic_features(self, y, sr):
+    """Extract harmony-related features"""
+    features = {}
+    
+    try:
+        # Chromagram
+        chroma = librosa.feature.chroma_stft(y=y, sr=sr)
+        
+        # Key estimation
+        chroma_avg = np.mean(chroma, axis=1)
+        key = np.argmax(chroma_avg)
+        features["key"] = int(key)
+        
+        # Minor or Major mode estimation
+        minor_template = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
+        major_template = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1])
+        
+        # Rotate templates to match the key
+        minor_template = np.roll(minor_template, key)
+        major_template = np.roll(major_template, key)
+        
+        # Correlate with chroma
+        minor_corr = np.corrcoef(minor_template, chroma_avg)[0, 1]
+        major_corr = np.corrcoef(major_template, chroma_avg)[0, 1]
+        
+        # Determine mode (0 for minor, 1 for major)
+        mode = 1 if major_corr > minor_corr else 0
+        features["mode"] = mode
+        
+        return features
+    except Exception as e:
+        logger.error(f"Error extracting harmonic features: {e}")
+        return {
+            "key": 0,
+            "mode": 1  # Default to major
+        }
 
 def main():
     """Command line interface for music analysis"""
@@ -1785,7 +1848,7 @@ def main():
     args = parser.parse_args()
     
     try:
-        analyzer = MusicAnalyzer(args.database)
+        analyzer = MusicAnalyzer()
         
         if args.scan_only:
             logger.info("Performing quick scan...")
@@ -1803,7 +1866,6 @@ def main():
         
     return 0
 
-
 if __name__ == "__main__":
     # Configure logging
     logging.basicConfig(
@@ -1811,22 +1873,15 @@ if __name__ == "__main__":
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    # Replace your current analyzer initialization
+    # Initialize the analyzer
     try:
-        if os.path.exists(DB_PATH):
-            # Initialize database if needed (make sure tables exist)
-            from db_operations import initialize_database
-            initialize_database(DB_PATH)
-            
-            # Now initialize the analyzer
-            analyzer = MusicAnalyzer(DB_PATH)
-            logger.info("Music analyzer initialized successfully")
-        else:
-            # Create a new database file
-            from db_operations import initialize_database
-            initialize_database(DB_PATH)
-            analyzer = MusicAnalyzer(DB_PATH)
-            logger.info("Music analyzer initialized with new database")
+        # Initialize database if needed
+        from db_operations import initialize_database
+        initialize_database()
+        
+        # Now initialize the analyzer
+        analyzer = MusicAnalyzer()
+        logger.info("Music analyzer initialized successfully")
     except Exception as e:
         analyzer = None
         logger.error(f"Error initializing music analyzer: {e}")
