@@ -273,104 +273,100 @@ class MusicAnalyzer:
             if conn:
                 release_connection(conn)
     
-    def scan_library(self, directory: str, recursive: bool = True) -> Dict:
+    def scan_library(self, directory: str, recursive: bool = True, 
+                     extensions: List[str] = ['.mp3', '.wav', '.flac', '.ogg'], 
+                     batch_size: int = 100):
         """
-        Quickly scan directory for audio files and add them to the database without analysis.
-        
-        Args:
-            directory (str): Path to the directory containing audio files
-            recursive (bool): Whether to scan subdirectories recursively
-            
-        Returns:
-            Dict: Results with files_processed and tracks_added counts
+        Analyze audio files in a directory using batch processing for DB checks.
         """
         logger.info(f"Starting quick scan of {directory} (recursive={recursive})")
-        
-        # Initialize counters
-        files_processed = 0
-        tracks_added = 0
         
         # Collect audio files
         audio_files = []
         
-        # Find all audio files matching the extensions
-        extensions = ['.mp3', '.wav', '.flac', '.ogg']
-        
         if recursive:
-            for root, _, files in os.walk(directory):
+            for root, dirs, files in os.walk(directory):
                 for file in files:
                     if any(file.lower().endswith(ext) for ext in extensions):
                         audio_files.append(os.path.join(root, file))
         else:
             if os.path.exists(directory):
                 for file in os.listdir(directory):
-                    if any(file.lower().endswith(ext) for ext in extensions):
-                        audio_files.append(os.path.join(directory, file))
+                    file_path = os.path.join(directory, file)
+                    if os.path.isfile(file_path) and any(file.lower().endswith(ext) for ext in extensions):
+                        audio_files.append(file_path)
         
-        # If no audio files found, return early with empty results
+        logger.info(f"Found {len(audio_files)} audio files to process")
+        
+        # Early return if no files found
         if not audio_files:
-            logger.info(f"Found 0 audio files to process")
             logger.info(f"Quick scan complete! Processed 0 files, added 0 new tracks.")
             return {
                 'files_processed': 0,
                 'tracks_added': 0
             }
         
-        logger.info(f"Found {len(audio_files)} audio files to process")
+        # Process files in batches using the optimized connection
+        files_processed = 0
+        tracks_added = 0
         
-        # Process files in batches
-        batch_size = 100
         for i in range(0, len(audio_files), batch_size):
             batch = audio_files[i:i+batch_size]
             
-            # Get existing files from database to avoid reprocessing
+            # Extract file paths for this batch
+            file_paths = [path for path in batch]
+            
+            # Check which files are already in the database using a cursor
+            conn = get_connection()
             try:
-                conn = get_connection()
-                cursor = conn.cursor()
+                with conn.cursor() as cursor:
+                    # Convert list to string for SQL IN clause with proper escaping
+                    placeholders = ','.join(['%s'] * len(file_paths))
+                    
+                    if placeholders:  # Only query if we have files
+                        query = f"SELECT file_path FROM tracks WHERE file_path IN ({placeholders})"
+                        cursor.execute(query, file_paths)
+                        existing_files = {row[0] for row in cursor.fetchall()}
+                    else:
+                        existing_files = set()
                 
-                # Create a parameterized query with the right number of placeholders
-                placeholders = ','.join(['%s'] * len(batch))
-                cursor.execute(f"SELECT file_path FROM tracks WHERE file_path IN ({placeholders})", batch)
-                existing_files = {row[0] for row in cursor.fetchall()}
+                # Process files that aren't in the database
+                new_files = [path for path in file_paths if path not in existing_files]
                 
-                # Process only new files
-                for file_path in batch:
-                    files_processed += 1
-                    
-                    # Update progress for the UI
-                    if files_processed % 10 == 0 or files_processed == len(audio_files):
-                        logger.debug(f"Processed {files_processed}/{len(audio_files)} files")
-                    
-                    if file_path in existing_files:
-                        logger.debug(f"Skipping {file_path}, already in database")
-                        continue
-                    
-                    logger.debug(f"Analyzing {file_path}")
+                for file_path in new_files:
                     try:
-                        # Extract basic metadata without heavy audio analysis
+                        # Extract and save basic metadata
                         metadata = self._get_basic_metadata(file_path)
                         if metadata:
-                            # Insert the track into the database
-                            cursor.execute(
+                            # Insert using execute_write
+                            execute_write(
                                 """
                                 INSERT INTO tracks 
-                                (file_path, title, artist, album, duration, date_added) 
-                                VALUES (%s, %s, %s, %s, %s, NOW())
+                                (file_path, title, artist, album, genre, year, duration)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT (file_path) DO NOTHING
                                 """, 
-                                (file_path, 
-                                 metadata.get('title', os.path.basename(file_path)), 
-                                 metadata.get('artist', 'Unknown'), 
-                                 metadata.get('album', 'Unknown'),
-                                 metadata.get('duration', 0))
+                                (
+                                    file_path, 
+                                    metadata.get('title', os.path.basename(file_path)),
+                                    metadata.get('artist', 'Unknown Artist'),
+                                    metadata.get('album', 'Unknown Album'),
+                                    metadata.get('genre', ''),
+                                    metadata.get('year', None),
+                                    metadata.get('duration', 0)
+                                )
                             )
-                            conn.commit()
                             tracks_added += 1
                     except Exception as e:
-                        logger.error(f"Error analyzing {file_path}: {e}")
-                        conn.rollback()
-            
+                        logger.error(f"Error processing file {file_path}: {e}")
+                
+                files_processed += len(batch)
+                # Log progress
+                if i % (batch_size * 5) == 0:
+                    logger.info(f"Processed {files_processed}/{len(audio_files)} files, added {tracks_added} new tracks")
+                    
             except Exception as e:
-                logger.error(f"Batch processing error: {e}")
+                logger.error(f"Error during batch processing: {e}")
             finally:
                 release_connection(conn)
         
@@ -1041,99 +1037,6 @@ class MusicAnalyzer:
             features.get("noisiness", 0),
             features.get("loudness", 0)
         ))
-
-    def scan_library(self, directory: str, recursive: bool = True, 
-                     extensions: List[str] = ['.mp3', '.wav', '.flac', '.ogg'], 
-                     batch_size: int = 100):
-        """
-        Analyze audio files in a directory using batch processing for DB checks.
-        """
-        logger.info(f"Starting quick scan of {directory} (recursive={recursive})")
-        
-        # Collect audio files
-        audio_files = []
-        
-        if recursive:
-            for root, dirs, files in os.walk(directory):
-                for file in files:
-                    if any(file.lower().endswith(ext) for ext in extensions):
-                        audio_files.append(os.path.join(root, file))
-        else:
-            for file in os.listdir(directory):
-                if os.path.isfile(os.path.join(directory, file)) and any(file.lower().endswith(ext) for ext in extensions):
-                    audio_files.append(os.path.join(directory, file))
-        
-        logger.info(f"Found {len(audio_files)} audio files to process")
-        
-        # Process files in batches using the optimized connection
-        files_processed = 0
-        tracks_added = 0
-        
-        for i in range(0, len(audio_files), batch_size):
-            batch = audio_files[i:i+batch_size]
-            
-            # Extract file paths for this batch
-            file_paths = [path for path in batch]
-            
-            # Check which files are already in the database using a cursor
-            conn = get_connection()
-            try:
-                with conn.cursor() as cursor:
-                    # Convert list to string for SQL IN clause with proper escaping
-                    placeholders = ','.join(['%s'] * len(file_paths))
-                    
-                    if placeholders:  # Only query if we have files
-                        query = f"SELECT file_path FROM tracks WHERE file_path IN ({placeholders})"
-                        cursor.execute(query, file_paths)
-                        existing_files = {row[0] for row in cursor.fetchall()}
-                    else:
-                        existing_files = set()
-                
-                # Process files that aren't in the database
-                new_files = [path for path in file_paths if path not in existing_files]
-                
-                for file_path in new_files:
-                    try:
-                        # Extract and save basic metadata
-                        metadata = self._get_basic_metadata(file_path)
-                        if metadata:
-                            # Insert using execute_write
-                            execute_write(
-                                """
-                                INSERT INTO tracks 
-                                (file_path, title, artist, album, genre, year, duration)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                                ON CONFLICT (file_path) DO NOTHING
-                                """, 
-                                (
-                                    file_path, 
-                                    metadata.get('title', os.path.basename(file_path)),
-                                    metadata.get('artist', 'Unknown Artist'),
-                                    metadata.get('album', 'Unknown Album'),
-                                    metadata.get('genre', ''),
-                                    metadata.get('year', None),
-                                    metadata.get('duration', 0)
-                                )
-                            )
-                            tracks_added += 1
-                    except Exception as e:
-                        logger.error(f"Error processing file {file_path}: {e}")
-                
-                files_processed += len(batch)
-                # Log progress
-                if i % (batch_size * 5) == 0:
-                    logger.info(f"Processed {files_processed}/{len(audio_files)} files, added {tracks_added} new tracks")
-                    
-            except Exception as e:
-                logger.error(f"Error during batch processing: {e}")
-            finally:
-                release_connection(conn)
-        
-        logger.info(f"Quick scan complete! Processed {files_processed} files, added {tracks_added} new tracks.")
-        return {
-            'files_processed': files_processed,
-            'tracks_added': tracks_added
-        }
 
     def analyze_pending_files(self, limit: Optional[int] = None, 
                          batch_size: int = 10, 
