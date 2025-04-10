@@ -52,8 +52,6 @@ import queue
 
 def initialize_config():
     """Initialize configuration with defaults but preserve user settings"""
-    global config
-    
     config = configparser.ConfigParser()
     config_file = 'pump.conf'
     
@@ -72,7 +70,7 @@ def initialize_config():
             'max_search_results': '50'
         },
         'music': {
-            'folder_path': './music',  # Set default to ./music
+            'folder_path': './music',
             'recursive': 'true'
         },
         'logging': {
@@ -90,49 +88,79 @@ def initialize_config():
             'dbname': 'pump',
             'min_connections': '1',
             'max_connections': '10'
+        },
+        'api_keys': {
+            'lastfm_api_key': '',
+            'lastfm_api_secret': ''
+        },
+        'cache': {
+            'image_cache_dir': 'album_art_cache',
+            'max_cache_size_mb': '500'
+        },
+        'scheduler': {
+            'startup_action': 'none',
+            'schedule_frequency': 'never',
+            'last_run': ''
+        },
+        'database_performance': {
+            'in_memory': 'false',
+            'cache_size_mb': '75',
+            'optimize_connections': 'true'
         }
     }
     
     # Load existing config if it exists
     config_updated = False
     if os.path.exists(config_file):
-        logger.info(f"Loading existing configuration from {config_file}")
+        print(f"Loading existing configuration from {config_file}")
         config.read(config_file)
     else:
-        logger.info(f"Configuration file {config_file} does not exist, creating with defaults")
+        print(f"Configuration file {config_file} does not exist, creating with defaults")
         config_updated = True
         
     # Add missing sections and options but NEVER overwrite existing values
     for section, options in default_config.items():
         if not config.has_section(section):
-            logger.info(f"Adding missing section: {section}")
+            print(f"Adding missing section: {section}")
             config.add_section(section)
             config_updated = True
         
         for option, value in options.items():
             if not config.has_option(section, option):
-                logger.info(f"Adding missing option: {section}.{option} = {value}")
+                print(f"Adding missing option: {section}.{option} = {value}")
                 config.set(section, option, value)
                 config_updated = True
     
+    # Add API keys section if it doesn't exist
+    if not config.has_section('api_keys'):
+        print("Adding api_keys section")
+        config.add_section('api_keys')
+        config.set('api_keys', 'lastfm_api_key', '')
+        config.set('api_keys', 'lastfm_api_secret', '')
+        config_updated = True
+
+    # Add configuration for image caching
+    if not config.has_section('cache'):
+        print("Adding cache section")
+        config.add_section('cache')
+        config.set('cache', 'image_cache_dir', 'album_art_cache')
+        config.set('cache', 'max_cache_size_mb', '500')  # 500MB default cache size
+        config_updated = True
+
     # Write config file only if it was changed or didn't exist
     if config_updated:
         try:
             with open(config_file, 'w') as f:
                 config.write(f)
-                logger.info(f"Configuration file saved to {config_file}")
+                print(f"Configuration file saved to {config_file}")
         except Exception as e:
-            logger.error(f"Failed to save configuration: {e}")
+            print(f"Failed to save configuration: {e}")
     
-    return config
+    # Return both the config object AND whether it was updated
+    return config, config_updated
 
-# Configuration and database path setup
-config = initialize_config()
-config_file = 'pump.conf'
-
-# Load configuration if exists
-if os.path.exists(config_file):
-    config.read(config_file)
+# REMOVE ALL OTHER CONFIG INITIALIZATION CODE BELOW THIS LINE AND JUST USE:
+config, config_updated = initialize_config()
 
 # Define DB_PATH from configuration or use default
 DB_PATH = config.get('database', 'path', fallback='pump.db')
@@ -282,86 +310,6 @@ def init_logging(config):
 
 # Initialize a placeholder logger that will be properly configured later
 logger = logging.getLogger('web_player')
-
-# Default configuration
-default_config = {
-    'server': {
-        'host': '0.0.0.0',
-        'port': '8080',
-        'debug': 'true'
-    },
-    'app': {
-        'default_playlist_size': '10',
-        'max_search_results': '50'
-    },
-    'music': {
-        'folder_path': './music',
-        'recursive': 'true'
-    },
-    # Add logging configuration defaults
-    'logging': {
-        'level': 'info',
-        'log_to_file': 'true',
-        'log_dir': 'logs',
-        'max_size_mb': '10',
-        'backup_count': '5'
-    }
-}
-
-
-# Load configuration
-config = configparser.ConfigParser()
-config_file = 'pump.conf'
-
-# Check if config file exists and read it first
-if os.path.exists(config_file):
-    logger.info(f"Loading existing configuration from {config_file}")
-    config.read(config_file)
-
-# Add any missing sections or options from defaults but don't overwrite existing values
-config_updated = False
-for section, options in default_config.items():
-    if not config.has_section(section):
-        config.add_section(section)
-        config_updated = True
-    
-    for option, value in options.items():
-        if not config.has_option(section, option):
-            config.set(section, option, value)
-            config_updated = True
-        # Don't overwrite existing values, especially folder_path
-
-# Add API keys section if it doesn't exist
-if not config.has_section('api_keys'):
-    logger.info("Adding api_keys section")
-    config.add_section('api_keys')
-    config.set('api_keys', 'lastfm_api_key', '')
-    config.set('api_keys', 'lastfm_api_secret', '')
-    config_updated = True
-
-# Add configuration for image caching
-if not config.has_section('cache'):
-    logger.info("Adding cache section")
-    config.add_section('cache')
-    config.set('cache', 'image_cache_dir', 'album_art_cache')
-    config.set('cache', 'max_cache_size_mb', '500')  # 500MB default cache size
-    config_updated = True
-
-# Add scheduler configuration section if needed
-if not config.has_section('scheduler'):
-    config.add_section('scheduler')
-    config.set('scheduler', 'startup_action', 'nothing')
-    config.set('scheduler', 'schedule_frequency', 'never')
-    config.set('scheduler', 'last_run', '')
-    config_updated = True
-
-# Add database performance configuration section if needed
-if not config.has_section('database_performance'):
-    config.add_section('database_performance')
-    config.set('database_performance', 'in_memory', 'false')  # Keep in memory?
-    config.set('database_performance', 'cache_size_mb', '75')  # Cache size in MB
-    config.set('database_performance', 'optimize_connections', 'true')  # Apply optimizations?
-    config_updated = True
 
 
 # Write config file only if it was changed or didn't exist
@@ -1091,108 +1039,46 @@ def get_db_schema():
                 
         return jsonify(schema)
     except Exception as e:
+        logger.error(f"Error getting database schema: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/explore')
 def explore():
     """Get random tracks for exploration"""
     try:
-        # Use a PostgreSQL compatible approach
         conn = get_connection()
         try:
-            with conn.cursor(cursor_factory=DictCursor) as cursor:
-                # Get total count of tracks
-                cursor.execute("SELECT COUNT(*) FROM tracks")
-                count = cursor.fetchone()[0]
+            cursor = conn.cursor(cursor_factory=DictCursor)
+            
+            # Count tracks
+            cursor.execute("SELECT COUNT(*) FROM tracks")
+            count = cursor.fetchone()[0]
+            
+            # Get random tracks
+            random_tracks = []
+            if count > 0:
+                sample_size = min(6, count)
+                cursor.execute(
+                    """SELECT id, file_path, title, artist, album, album_art_url, duration
+                       FROM tracks
+                       ORDER BY RANDOM()
+                       LIMIT %s""",
+                    (sample_size,)
+                )
+                random_tracks = [dict(track) for track in cursor.fetchall()]
                 
-                # Get random tracks
-                random_tracks = []
-                if count > 0:
-                    sample_size = min(6, count)
-                    cursor.execute(
-                        """SELECT id, file_path, title, artist, album, album_art_url, duration
-                           FROM tracks
-                           ORDER BY RANDOM()
-                           LIMIT %s""",
-                        (sample_size,)
-                    )
-                    random_tracks = [dict(track) for track in cursor.fetchall()]
-                    
-                    # Set default titles for tracks without titles
-                    for track in random_tracks:
-                        if not track['title']:
-                            track['title'] = os.path.basename(track['file_path'])
-                
-                logger.info(f"Returning {len(random_tracks)} random tracks for exploration")
-                return jsonify(random_tracks)
+                # Set default titles for tracks without titles
+                for track in random_tracks:
+                    if not track['title']:
+                        track['title'] = os.path.basename(track['file_path'])
+            
+            logger.info(f"Returning {len(random_tracks)} random tracks for exploration")
+            return jsonify(random_tracks)
         finally:
             release_connection(conn)
-    
     except Exception as e:
-        logger.error(f"Error exploring tracks: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/analyze', methods=['POST'])
-def analyze():
-    """Start audio file analysis"""
-    try:
-        data = request.get_json()
-        folder_path = data.get('folder_path')
-        recursive = data.get('recursive', True)
-        
-        if not folder_path:
-            folder_path = config.get('music', 'folder_path')
-            
-        if not folder_path:
-            return jsonify({"error": "No music folder specified"}), 400
-            
-        logger.info(f"Starting audio analysis for {folder_path} (recursive={recursive})")
-        
-        # Use the run_analysis function with locking
-        result = run_analysis(folder_path, recursive)
-        
-        return jsonify(result)
-    except Exception as e:
-        logger.error(f"Error starting analysis: {e}")
+        logger.error(f"Error exploring tracks: {e}")
         return jsonify({"error": str(e)}), 500
-
-def _fix_database_inconsistencies():
-    """Fix any inconsistencies between tracks and audio_features tables"""
-    try:
-        # Use PostgreSQL compatible connection handling
-        conn = get_connection()
-        try:
-            with conn.cursor() as cursor:
-                # Get count before fix
-                cursor.execute("SELECT COUNT(*) FROM tracks WHERE analysis_status = 'pending'")
-                before_count = cursor.fetchone()[0]
-                
-                # Update analysis status
-                cursor.execute('''
-                    UPDATE tracks 
-                    SET analysis_status = 'analyzed'
-                    WHERE analysis_status = 'pending' 
-                    AND id IN (SELECT track_id FROM audio_features WHERE 
-                               tempo > 0 OR energy > 0 OR danceability > 0)
-                ''')
-                
-                # Commit the changes
-                conn.commit()
-                
-                # Get count after fix
-                cursor.execute("SELECT COUNT(*) FROM tracks WHERE analysis_status = 'pending'")
-                after_count = cursor.fetchone()[0]
-                
-                logger.info(f"Fixed database inconsistencies: {before_count - after_count} records updated")
-        except Exception as e:
-            conn.rollback()
-            logger.error(f"Error fixing database inconsistencies: {e}")
-            raise
-        finally:
-            release_connection(conn)
-            
-    except Exception as e:
-        logger.error(f"Error fixing database inconsistencies: {e}")
 
 def run_analysis(folder_path, recursive):
     """Run the analysis with proper locking to prevent duplicates"""

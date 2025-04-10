@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import configparser
+import logging
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import DictCursor, execute_values
@@ -9,11 +10,10 @@ from contextlib import contextmanager
 import json
 import re
 
-# Removed sqlite3 import since we are now using PostgreSQL exclusively
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('db_operations')
 
 # PostgreSQL connection pool
 pg_pool = None
