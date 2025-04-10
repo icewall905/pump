@@ -1,28 +1,33 @@
-[server]
-# Host address to bind the server to. Use 0.0.0.0 to listen on all interfaces.
-host = 0.0.0.0
-# Port number for the web interface
+[SERVER]
+host = 127.0.0.1
 port = 8080
-# Enable debug mode for development
-debug = true
-
-[database]
-# Path to the SQLite database file
-path = pump.db
+debug = false
 
 [DATABASE]
-# PostgreSQL database configuration
 host = localhost
-port = 5432
+port = 45432
 user = pump
 password = Ge3hgU07bXlBigvTbRSX
 dbname = pump
 min_connections = 1
 max_connections = 10
 
+[CACHE]
+directory = cache
+max_size_mb = 500
+
 [MUSIC]
-# Music library paths (comma-separated list)
-library_paths = /path/to/your/music
+library = /path/to/your/music
+recursive = true
+
+[API]
+lastfm_api_key = 
+lastfm_api_secret = 
+spotify_client_id = 
+spotify_client_secret = 
+
+[SCANNER]
+exclude_dirs = [".git", "node_modules", "__pycache__", "System Volume Information", "$RECYCLE.BIN"]
 
 [LASTFM]
 # Last.fm API configuration (optional)

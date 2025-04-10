@@ -16,6 +16,8 @@ import sqlite3  # Add this import
 from datetime import datetime  # Add this import
 import shutil
 from db_operations import get_connection, release_connection, execute_query, execute_query_dict, execute_write
+# Add this import
+from lastfm_service import LastFMService
 
 logger = logging.getLogger('metadata_service')
 
@@ -35,8 +37,12 @@ class MetadataService:
                     api_key=self.lastfm_api_key, 
                     api_secret=self.lastfm_api_secret
                 )
-                self.lastfm_service = LastFMService(self.lastfm_api_key, self.lastfm_api_secret)
-                logger.info("LastFM service initialized successfully")
+                # Make sure to pass the API keys to the LastFMService
+                self.lastfm_service = LastFMService(
+                    api_key=self.lastfm_api_key,
+                    api_secret=self.lastfm_api_secret
+                )
+                logger.info(f"LastFM service initialized with API key: {self.lastfm_api_key[:5]}...")
             except ImportError:
                 logger.warning("pylast module not found - LastFM features will be disabled")
                 self.lastfm_network = None
@@ -49,6 +55,9 @@ class MetadataService:
             logger.warning("Last.fm API not configured")
             self.lastfm_network = None
             self.lastfm_service = None
+        
+        # Set Spotify service to None since we're not using it
+        self.spotify_service = None
     
     def _load_config(self):
         """Load API keys from config file"""
@@ -74,9 +83,9 @@ class MetadataService:
         
         # Add fallback keys if not configured
         if not self.lastfm_api_key or not self.lastfm_api_secret:
-            # These are example keys - you should replace with valid ones
-            self.lastfm_api_key = '5ae3c562f8e41f790c8f5503d98f9108'
-            self.lastfm_api_secret = '95a1a83537706b56c0d322361841e8b0'
+            # Updated default keys
+            self.lastfm_api_key = 'b8b4d3c72ac643dbd9e069c6474a0b0b'
+            self.lastfm_api_secret = 'de0459d5ee5c5dd9f838735774d41f9e'
             logger.info("Using fallback Last.fm API credentials")
         
         self.musicbrainz_user = config.get('musicbrainz', 'user', fallback='pump_app')
@@ -623,48 +632,26 @@ class MetadataService:
         """Get metadata for a track from external services"""
         metadata = {}
         
-        # Try LastFM first if available
+        # Only use LastFM for metadata
         if self.lastfm_service:
             try:
                 lastfm_data = self.lastfm_service.get_track_info(artist, title)
                 if lastfm_data:
-                    # Extract album art URL
-                    if 'album_art_url' in lastfm_data and lastfm_data['album_art_url']:
-                        metadata['album_art_url'] = lastfm_data['album_art_url']
-                    
-                    # Extract artist image URL
-                    if 'artist_image_url' in lastfm_data and lastfm_data['artist_image_url']:
-                        metadata['artist_image_url'] = lastfm_data['artist_image_url']
-                    
-                    # Extract genre if available
-                    if 'genre' in lastfm_data and lastfm_data['genre']:
+                    # Extract relevant metadata
+                    if 'album' in lastfm_data:
+                        metadata['album'] = lastfm_data['album']
+                    if 'image' in lastfm_data:
+                        metadata['album_art_url'] = lastfm_data['image']
+                    if 'genre' in lastfm_data:
                         metadata['genre'] = lastfm_data['genre']
-                        
-                    metadata['metadata_source'] = 'lastfm'
+                    if 'year' in lastfm_data:
+                        metadata['year'] = lastfm_data['year']
+                    metadata['source'] = 'lastfm'
+                    logger.info(f"Retrieved metadata for {artist} - {title} from LastFM")
             except Exception as e:
                 logger.error(f"Error getting LastFM metadata for {artist} - {title}: {e}")
-        
-        # Try Spotify if available and LastFM didn't provide what we need
-        if self.spotify_service and (not metadata.get('album_art_url') or not metadata.get('genre')):
-            try:
-                spotify_data = self.spotify_service.get_track_info(artist, title, album)
-                if spotify_data:
-                    # Only add fields that LastFM didn't provide
-                    if 'album_art_url' not in metadata and 'album_art_url' in spotify_data:
-                        metadata['album_art_url'] = spotify_data['album_art_url']
-                        
-                    if 'artist_image_url' not in metadata and 'artist_image_url' in spotify_data:
-                        metadata['artist_image_url'] = spotify_data['artist_image_url']
-                        
-                    if 'genre' not in metadata and 'genre' in spotify_data:
-                        metadata['genre'] = spotify_data['genre']
-                        
-                    if 'metadata_source' not in metadata:
-                        metadata['metadata_source'] = 'spotify'
-                    else:
-                        metadata['metadata_source'] += '+spotify'
-            except Exception as e:
-                logger.error(f"Error getting Spotify metadata for {artist} - {title}: {e}")
+        else:
+            logger.debug(f"LastFM service not available for {artist} - {title}")
         
         return metadata
 

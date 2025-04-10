@@ -919,8 +919,6 @@ function initDatabasePerformanceSettings() {
                     // Update the display
                     document.getElementById('db-size').textContent = data.db_size_mb;
                     document.getElementById('track-count').textContent = data.track_count;
-                    document.getElementById('in-memory-mode').textContent = data.in_memory_mode ? 'Enabled' : 'Disabled';
-                    document.getElementById('memory-usage').textContent = data.approx_memory_usage_mb;
                     
                     // Show the status display
                     dbStatusDisplay.style.display = 'block';

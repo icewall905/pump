@@ -379,7 +379,7 @@ if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; th
 fi
 
 # Start PostgreSQL with Docker Compose
-print_message "green" "Starting PostgreSQL database on port 85432..."
+print_message "green" "Starting PostgreSQL database on port 45432..."
 $DOCKER_COMPOSE_CMD up -d
 
 # Wait a moment for PostgreSQL to fully initialize

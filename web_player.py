@@ -53,7 +53,7 @@ import queue
 def initialize_config():
     """Initialize configuration with defaults but preserve user settings"""
     config = configparser.ConfigParser()
-    config_file = 'pump.conf'
+    config_file = 'pump.conf'  # Define config_file inside the function
     
     # Default configuration
     default_config = {
@@ -89,9 +89,9 @@ def initialize_config():
             'min_connections': '1',
             'max_connections': '10'
         },
-        'api_keys': {
-            'lastfm_api_key': '',
-            'lastfm_api_secret': ''
+        'lastfm': {
+            'api_key': 'b8b4d3c72ac643dbd9e069c6474a0b0b',
+            'api_secret': 'de0459d5ee5c5dd9f838735774d41f9e'
         },
         'cache': {
             'image_cache_dir': 'album_art_cache',
@@ -135,8 +135,8 @@ def initialize_config():
     if not config.has_section('api_keys'):
         print("Adding api_keys section")
         config.add_section('api_keys')
-        config.set('api_keys', 'lastfm_api_key', '')
-        config.set('api_keys', 'lastfm_api_secret', '')
+        config.set('api_keys', 'lastfm_api_key', 'b8b4d3c72ac643dbd9e069c6474a0b0b')
+        config.set('api_keys', 'lastfm_api_secret', 'de0459d5ee5c5dd9f838735774d41f9e')
         config_updated = True
 
     # Add configuration for image caching
@@ -156,11 +156,11 @@ def initialize_config():
         except Exception as e:
             print(f"Failed to save configuration: {e}")
     
-    # Return both the config object AND whether it was updated
-    return config, config_updated
+    # Return the configuration, whether it was updated, and the file path
+    return config, config_updated, config_file
 
-# REMOVE ALL OTHER CONFIG INITIALIZATION CODE BELOW THIS LINE AND JUST USE:
-config, config_updated = initialize_config()
+# Then when you call the function, capture all three return values:
+config, config_updated, config_file = initialize_config()
 
 # Define DB_PATH from configuration or use default
 DB_PATH = config.get('database', 'path', fallback='pump.db')
@@ -1086,14 +1086,10 @@ def run_analysis(folder_path, recursive):
     
     # Check if analysis is already running
     if ANALYSIS_STATUS['running']:
-        logger.warning("Analysis is already running, ignoring request")
-        return {
-            "status": "already_running", 
-            "message": "Analysis already in progress"
-        }
+        logger.warning("Analysis already running, skipping request")
+        return {"status": "error", "message": "Analysis already running"}
     
     try:
-        # Set the status to running first to prevent race conditions
         ANALYSIS_STATUS.update({
             'running': True,
             'start_time': datetime.now(),
@@ -1105,46 +1101,53 @@ def run_analysis(folder_path, recursive):
             'error': None
         })
         
-        # Run quick scan first
+        logger.info(f"Starting music analysis for {folder_path} (recursive={recursive})")
+        
+        # Create analyzer
         analyzer = MusicAnalyzer()
         
-        # Then do full analysis if needed
-        try:
-            conn = get_connection()
-            cursor = conn.cursor()
-            
-            # Get count of files with no analysis
-            cursor.execute("""
-                SELECT COUNT(*) FROM tracks 
-                WHERE id NOT IN (SELECT track_id FROM audio_features)
-            """)
-            
-            result = cursor.fetchone()
-            pending_count = result[0] if result else 0
-            
-            if pending_count > 0:
-                logger.info(f"Found {pending_count} tracks needing audio analysis")
-                analyzer.analyze_pending_files(limit=200)
-            else:
-                logger.info("No pending tracks to analyze")
-                
-            release_connection(conn)
-        except Exception as e:
-            logger.error(f"Error running analysis: {e}")
+        # First do a quick scan to get file count and add basic metadata
+        scan_result = analyzer.scan_library(folder_path, recursive)
+        
+        # Check if scan_result is None or doesn't have expected keys
+        if not scan_result:
+            logger.error("Scan library returned None")
             ANALYSIS_STATUS.update({
                 'running': False,
-                'error': str(e),
+                'error': "Scan failed - no result returned",
                 'last_updated': datetime.now()
             })
+            return {"status": "error", "message": "Scan failed - no result returned"}
+        
+        # Now analyze pending files
+        result = analyzer.analyze_pending_files(
+            limit=None,  # Analyze all
+            progress_callback=update_analysis_progress,
+            status_dict=ANALYSIS_STATUS
+        )
+        
+        # Check if result is None or doesn't have expected keys
+        if not result:
+            logger.error("Analyze pending files returned None")
+            ANALYSIS_STATUS.update({
+                'running': False,
+                'error': "Analysis failed - no result returned",
+                'last_updated': datetime.now()
+            })
+            return {"status": "error", "message": "Analysis failed - no result returned"}
             
-        # Update status when complete
         ANALYSIS_STATUS.update({
             'running': False,
             'percent_complete': 100,
             'last_updated': datetime.now()
         })
         
-        return {"status": "success"}
+        logger.info(f"Analysis complete: {result.get('analyzed', 0)} tracks analyzed")
+        return {
+            "status": "success",
+            "analyzed": result.get('analyzed', 0),
+            "failed": result.get('failed', 0)
+        }
     except Exception as e:
         logger.error(f"Error running analysis: {e}")
         ANALYSIS_STATUS.update({
@@ -1297,6 +1300,62 @@ def debug_metadata():
     except Exception as e:
         logger.error(f"Error fetching debug metadata: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/analyze', methods=['POST'])
+def analyze_endpoint():
+    """API endpoint to start full music analysis"""
+    try:
+        # Support both JSON and form data
+        if request.is_json:
+            data = request.get_json()
+        else:
+            data = request.form.to_dict()
+        
+        # Get folder path from POST data or config
+        folder_path = data.get('folder_path')
+        if not folder_path:
+            folder_path = config.get('music', 'folder_path', fallback=None)
+            if not folder_path:
+                return jsonify({
+                    'status': 'error',
+                    'message': 'No music folder path specified. Please configure a music folder first.'
+                }), 400
+        
+        # Check if folder exists
+        if not os.path.exists(folder_path):
+            return jsonify({
+                'status': 'error',
+                'message': f'Music folder not found: {folder_path}'
+            }), 404
+        
+        # Get recursive parameter
+        recursive_param = data.get('recursive', True)
+        recursive = recursive_param if isinstance(recursive_param, bool) else str(recursive_param).lower() in ('true', '1', 't', 'y', 'yes')
+        
+        # Start analysis in background thread to avoid blocking the response
+        threading.Thread(
+            target=run_analysis,
+            args=(folder_path, recursive),
+            daemon=True
+        ).start()
+        
+        # Return immediate success response
+        return jsonify({
+            'status': 'success',
+            'message': 'Analysis started successfully',
+            'folder_path': folder_path,
+            'recursive': recursive
+        })
+        
+    except Exception as e:
+        logger.error(f"Error starting analysis: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': f"Error starting analysis: {str(e)}"
+        }), 500
+
+
 
 @app.route('/albumart/<path:url>')
 def album_art_proxy(url):
@@ -1835,27 +1894,19 @@ def get_recent_tracks():
 
 @app.route('/api/tracks/<int:track_id>')
 def get_track_info(track_id):
-    """Get track information for playback"""
+    """Get track information by ID"""
     try:
-        # Get track data from database using PostgreSQL functions
-        track = execute_query_dict(
-            """SELECT id, title, artist, album, file_path, album_art_url
-               FROM tracks
-               WHERE id = %s""",
-            (track_id,),
-            fetchone=True
-        )
+        # Get track from database
+        track = execute_query_row("SELECT * FROM tracks WHERE id = %s", (track_id,))
         
         if not track:
             return jsonify({"error": "Track not found"}), 404
             
-        # Track data is already in dict format
+        # Return track data as JSON
         return jsonify(track)
     except Exception as e:
-        logger.error(f"Error getting track info for {track_id}: {e}")
+        logger.error(f"Error getting track info: {e}")
         return jsonify({"error": str(e)}), 500
-
-# Add caching headers to streaming route to improve playback
 
 @app.route('/stream/<int:track_id>')
 def stream(track_id):
@@ -2276,27 +2327,30 @@ def run_scheduled_full_analysis():
         # Then full analysis
         try:
             conn = get_connection()
-            cursor = conn.cursor()
-            
-            # Get count of files with no analysis
-            cursor.execute("""
-                SELECT COUNT(*) FROM tracks 
-                WHERE id NOT IN (SELECT track_id FROM audio_features)
-            """)
-            pending_count = cursor.fetchone()[0]
-            
-            if pending_count > 0:
-                # Add your code here for what should happen when pending_count > 0
-                logger.info(f"Found {pending_count} files needing analysis")
-                # For example:
-                analyzer = MusicAnalyzer()
-                analyzer.analyze_pending_files(limit=100)
+            try:
+                cursor = conn.cursor()
                 
+                # Get count of files with no analysis
+                cursor.execute("""
+                    SELECT COUNT(*) FROM tracks 
+                    WHERE id NOT IN (SELECT track_id FROM audio_features)
+                """)
+                pending_count = cursor.fetchone()
+                
+                if pending_count and pending_count[0] > 0:
+                    logger.info(f"Found {pending_count[0]} tracks needing audio analysis")
+                    # Start analysis in a background thread
+                    analyzer = MusicAnalyzer()
+                    analyzer.analyze_pending_files()
+            finally:
+                release_connection(conn)
         except Exception as e:
             logger.error(f"Error in full analysis: {e}")
             
     except Exception as e:
         logger.error(f"Error in scheduled analysis: {e}")
+    
+    logger.info("Scheduled full analysis completed")
 
 @app.route('/station/<int:seed_track_id>')
 def create_station(seed_track_id):
@@ -3635,184 +3689,19 @@ create_indexes()
 def get_db_status():
     """Get database performance statistics"""
     try:
-        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
-            cursor = conn.cursor()
-            
-            # Get database size
-            if os.path.exists(DB_PATH):
-                db_size = os.path.getsize(DB_PATH) / (1024 * 1024)  # Size in MB
-            else:
-                db_size = 0
-                
-            # Get table counts
-            cursor.execute("SELECT COUNT(*) FROM audio_files")
-            track_count = cursor.fetchone()[0]
-            
-            try:
-                cursor.execute("SELECT COUNT(*) FROM audio_features")
-                feature_count = cursor.fetchone()[0]
-            except:
-                feature_count = 0
-            
-            # Get SQLite's cache statistics
-            cursor.execute("PRAGMA cache_size")
-            cache_size = cursor.fetchone()[0]
-            
-            cursor.execute("PRAGMA page_size")
-            page_size = cursor.fetchone()[0]
-            
-            # Calculate memory usage
-            approx_memory_usage = (abs(cache_size) * page_size) / (1024 * 1024)  # in MB
-            
-            return jsonify({
-                'db_size_mb': round(db_size, 2),
-                'track_count': track_count,
-                'feature_count': feature_count,
-                'in_memory_mode': DB_IN_MEMORY,
-                'cache_size_mb': DB_CACHE_SIZE_MB,
-                'approx_memory_usage_mb': round(approx_memory_usage, 2),
-                'page_size_bytes': page_size
-            })
-            
-    except Exception as e:
-        logger.error(f"Error getting DB status: {e}")
-        return jsonify({'error': str(e)}), 500
-
-
-
-@app.route('/api/analysis/database-status')
-def database_analysis_status():
-    """Get analysis status from database counts"""
-    try:
-        # Use get_connection instead of optimized_connection
-        conn = get_connection()
-        try:
-            with conn.cursor() as cursor:
-                # Get total track count
-                cursor.execute("SELECT COUNT(*) FROM tracks")
-                total_count = cursor.fetchone()[0]
-                
-                # Get count of analyzed tracks
-                cursor.execute("SELECT COUNT(*) FROM audio_features")
-                analyzed_count = cursor.fetchone()[0]
-                
-                # Get count of tracks with metadata
-                cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist IS NOT NULL AND artist != ''")
-                metadata_count = cursor.fetchone()[0]
-                
-                # Calculate percentages with error handling
-                analyzed_percent = round((analyzed_count / total_count * 100) if total_count > 0 else 0, 1)
-                metadata_percent = round((metadata_count / total_count * 100) if total_count > 0 else 0, 1)
-                
-                return jsonify({
-                    'total': total_count,
-                    'analyzed': analyzed_count,
-                    'with_metadata': metadata_count,
-                    'analyzed_percent': analyzed_percent,
-                    'metadata_percent': metadata_percent
-                })
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        logger.error(f"Error getting database analysis status: {e}")
-        return jsonify({'error': str(e)}), 500
-
-
-def run_full_analysis_workflow():
-    """Run the full analysis workflow: quick scan, metadata update, and audio analysis"""
-    logger.info("Starting full analysis workflow as startup action")
-    
-    # Step 1: Quick scan
-    run_quick_scan_task()
-    
-    # Save database before next step
-    if DB_IN_MEMORY and main_thread_conn:
-        throttled_save_to_disk(force=True)
-    
-    # Step 2: Metadata and analysis
-    logger.info("Starting both metadata update and analysis concurrently")
-    
-    # Run metadata update
-    logger.info("Running scheduled metadata update")
-    run_metadata_update_task()
-    
-    # Run analysis (use a delay to prevent thread contention)
-    time.sleep(5)  # Short delay to prevent database contention
-    
-    # Get folder path from config
-    folder_path = config.get('music', 'folder_path', fallback='./music')
-    recursive = config.getboolean('music', 'recursive', fallback=True)
-    
-    logger.info("Running scheduled full analysis")
-    run_analysis(folder_path, recursive)
-    
-    # Save after all operations
-    if DB_IN_MEMORY and main_thread_conn:
-        throttled_save_to_disk(force=True)
-
-@app.errorhandler(Exception)
-def handle_exception(e):
-    """Handle all uncaught exceptions"""
-    logger.error(f"Unhandled exception: {str(e)}", exc_info=True)
-    return jsonify({
-        "error": "Internal server error",
-        "message": str(e)
-    }), 500
-
-@app.route('/debug')
-def debug_info():
-    """Return PostgreSQL debugging information"""
-    try:
-        # Get database info
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        # Get database size
-        cursor.execute("""
-            SELECT pg_size_pretty(pg_database_size(current_database())) as size,
-                   pg_database_size(current_database()) as size_bytes
-        """)
-        size_info = cursor.fetchone()
-        db_size = size_info[1] if size_info else 0
-        db_size_pretty = size_info[0] if size_info else '0 KB'
-        
-        # Get database info
-        db_info = {
-            'type': 'PostgreSQL',
-            'size': db_size_pretty,
-            'size_bytes': db_size
-        }
-        
-        # Get PostgreSQL tables
-        cursor.execute("""
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_schema = 'public'
-        """)
-        tables = [row[0] for row in cursor.fetchall()]
-        
-        # Get row counts
-        counts = {}
-        for table in tables:
-            cursor.execute(f"SELECT COUNT(*) FROM {table}")
-            counts[table] = cursor.fetchone()[0]
-        
-        # Release the connection
-        release_connection(conn)
+        stats = check_database_stats()
         
         return jsonify({
-            'database': db_info,
-            'tables': tables,
-            'counts': counts,
+            'db_size_mb': stats['db_size'],
+            'track_count': stats['track_count'],
             'environment': {
-                'in_memory': DB_IN_MEMORY,
-                'cache_size': DB_CACHE_SIZE_MB,
                 'python_version': sys.version,
                 'working_directory': os.getcwd()
             }
         })
+            
     except Exception as e:
-        logger.error(f"Error in debug info: {e}")
+        logger.error(f"Error getting DB status: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/db-diagnostic')
@@ -3822,42 +3711,56 @@ def db_diagnostic():
         conn = get_connection()
         cursor = conn.cursor()
         
+        # Get PostgreSQL version
+        cursor.execute("SELECT version();")
+        version = cursor.fetchone()[0]
+        
         # Get database size
-        cursor.execute("""
-            SELECT pg_size_pretty(pg_database_size(current_database())) as size,
-                   pg_database_size(current_database()) as size_bytes
-        """)
+        cursor.execute("SELECT pg_size_pretty(pg_database_size(current_database())) as size")
         size_info = cursor.fetchone()
-        db_size = size_info[1] if size_info else 0
         
-        # Get PostgreSQL tables (replacing sqlite_master)
-        cursor.execute("""
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_schema = 'public'
-        """)
-        tables = [row[0] for row in cursor.fetchall()]
+        # Get table counts 
+        tables_query = """
+            SELECT table_name, 
+                   (SELECT count(*) FROM information_schema.columns WHERE table_name=t.table_name) as column_count
+            FROM information_schema.tables t
+            WHERE table_schema='public' AND table_type='BASE TABLE'
+            ORDER BY table_name;
+        """
+        cursor.execute(tables_query)
+        table_info = cursor.fetchall()
         
-        # Count rows in each table
+        # Build table structure
+        tables = []
         counts = {}
-        for table in tables:
-            cursor.execute(f"SELECT COUNT(*) FROM {table}")
-            counts[table] = cursor.fetchone()[0]
         
-        # Release the connection
+        for table in table_info:
+            table_name = table[0]
+            column_count = table[1]
+            
+            # Count rows in this table
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            row_count = cursor.fetchone()[0]
+            
+            tables.append({
+                'name': table_name,
+                'columns': column_count,
+                'rows': row_count
+            })
+            
+            counts[table_name] = row_count
+        
         release_connection(conn)
         
         return jsonify({
+            'postgres_version': version,
             'database': {
-                'type': 'PostgreSQL',
-                'size_kb': round(db_size / 1024, 2),
+                'name': conn.info.dbname,
                 'size_pretty': size_info[0] if size_info else '0 KB'
             },
             'tables': tables,
             'counts': counts,
             'environment': {
-                'in_memory': DB_IN_MEMORY,
-                'cache_size': DB_CACHE_SIZE_MB,
                 'python_version': sys.version,
                 'working_directory': os.getcwd()
             }
@@ -3865,7 +3768,6 @@ def db_diagnostic():
     except Exception as e:
         logger.error(f"Error in db diagnostic: {e}")
         return jsonify({'error': str(e)}), 500
-
 
 # Updated run_server function that initializes scheduler and runs startup actions
 def run_server():
@@ -3887,4 +3789,3 @@ def run_server():
 
 if __name__ == '__main__':
     run_server()
-

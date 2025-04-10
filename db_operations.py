@@ -87,10 +87,14 @@ def get_connection():
     raise Exception("Failed to get database connection")
 
 def release_connection(conn):
-    """Return a connection to the pool"""
+    """Return a connection to the pool with safety checks"""
     global pg_pool
-    if pg_pool is not None and conn is not None:
-        pg_pool.putconn(conn)
+    try:
+        if pg_pool is not None and conn is not None:
+            pg_pool.putconn(conn)
+    except Exception as e:
+        logger.error(f"Error returning connection to pool: {e}")
+        # Don't re-raise, just log the error to prevent cascading failures
 
 def execute_query(query, params=None, fetchone=False, commit=False):
     """Execute a query and return results"""
@@ -99,7 +103,7 @@ def execute_query(query, params=None, fetchone=False, commit=False):
         # Validate query is not empty
         if not query or not query.strip():
             logger.error("Cannot execute empty query")
-            return None
+            return [] if not fetchone else None
             
         conn = get_connection()
         cursor = conn.cursor()
@@ -109,17 +113,22 @@ def execute_query(query, params=None, fetchone=False, commit=False):
             result = cursor.fetchone()
         else:
             result = cursor.fetchall()
-        
+            
         if commit:
             conn.commit()
             
         return result
     except Exception as e:
         logger.error(f"Error executing query: {e}")
-        return None
+        if conn and commit:
+            conn.rollback()
+        return [] if not fetchone else None
     finally:
         if conn:
-            release_connection(conn)
+            try:
+                release_connection(conn)
+            except Exception as e:
+                logger.error(f"Error releasing connection: {e}")
 
 def execute_many(query, params_list, commit=True):
     """Execute many operations in a single transaction"""
