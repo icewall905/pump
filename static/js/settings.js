@@ -41,19 +41,9 @@ function initLibraryManagement() {
     
     if (savePathBtn) {
         savePathBtn.addEventListener('click', function() {
-            const path = document.getElementById('music-directory').value;
-            const recursive = document.getElementById('recursive-scan').checked;
+            const pathInput = document.getElementById('music-directory');
+            const path = pathInput.value;
             
-            if (!path) {
-                showMessage('Please enter a music folder path', 'error');
-                return;
-            }
-            
-            // Show loading state
-            savePathBtn.disabled = true;
-            savePathBtn.textContent = 'Saving...';
-            
-            // Save the path
             fetch('/api/settings/save_music_path', {
                 method: 'POST',
                 headers: {
@@ -61,35 +51,37 @@ function initLibraryManagement() {
                 },
                 body: JSON.stringify({
                     path: path,
-                    recursive: recursive
+                    recursive: document.getElementById('recursive-scan').checked
                 })
             })
             .then(response => response.json())
             .then(data => {
-                if (data.success) {
-                    showMessage('Music path saved successfully', 'success');
+                if (data.status === 'success') {
+                    showMessage('Music path saved successfully!', 'success');
                 } else {
-                    showMessage(`Error: ${data.message || 'Unknown error'}`, 'error');
+                    showMessage('Failed to save music path: ' + data.error, 'error');
                 }
             })
             .catch(error => {
-                console.error('Error:', error);
-                showMessage('Failed to save music path', 'error');
-            })
-            .finally(() => {
-                // Reset button
-                savePathBtn.disabled = false;
-                savePathBtn.textContent = 'Save Path';
+                showMessage('Failed to save music path: ' + error, 'error');
             });
         });
     }
     
     if (analyzeBtn) {
-        analyzeBtn.addEventListener('click', startFullAnalysis);
+        // Add console log for debugging
+        console.log('Adding click event listener to analyze button');
+        
+        analyzeBtn.addEventListener('click', function() {
+            console.log('Analyze button clicked');
+            startFullAnalysis();
+        });
     }
     
     if (quickScanBtn) {
-        quickScanBtn.addEventListener('click', startQuickScan);
+        quickScanBtn.addEventListener('click', function() {
+            startQuickScan();
+        });
     }
 }
 
@@ -187,8 +179,10 @@ function startFullAnalysis() {
     const path = document.getElementById('music-directory').value;
     const recursive = document.getElementById('recursive-scan').checked;
     
+    console.log('Starting analysis with path:', path, 'recursive:', recursive);
+    
     if (!path) {
-        showMessage('Please enter a music folder path', 'error');
+        showMessage('Please enter a music folder path first', 'error');
         return;
     }
     
@@ -196,8 +190,8 @@ function startFullAnalysis() {
     analyzeBtn.disabled = true;
     analyzeBtn.textContent = 'Starting Analysis...';
     
-    // First save the path
-    fetch('/api/settings/save_music_path', {
+    // Make a direct request to /analyze endpoint
+    fetch('/analyze', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
@@ -209,40 +203,23 @@ function startFullAnalysis() {
     })
     .then(response => response.json())
     .then(data => {
-        if (data.status === 'success') {
-            // Now make the request to analyze
-            return fetch('/analyze', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    folder_path: path,
-                    recursive: recursive
-                })
-            });
-        } else {
-            throw new Error(data.message || 'Failed to save music path');
-        }
-    })
-    .then(response => response.json())
-    .then(data => {
-        analyzeBtn.disabled = false;
-        analyzeBtn.textContent = 'Full Analysis';
+        console.log('Analysis response:', data);
         
         if (data.status === 'success') {
-            showMessage('Analysis started successfully', 'success');
-            // Start polling for status updates
+            showMessage('Analysis started!', 'success');
+            // Start polling to update progress
             updateAnalysisStatus();
         } else {
-            showMessage(data.message || 'Failed to start analysis', 'error');
+            showMessage('Error starting analysis: ' + (data.error || 'Unknown error'), 'error');
+            analyzeBtn.disabled = false;
+            analyzeBtn.textContent = 'Full Analysis';
         }
     })
     .catch(error => {
+        console.error('Error starting analysis:', error);
+        showMessage('Error starting analysis: ' + error, 'error');
         analyzeBtn.disabled = false;
         analyzeBtn.textContent = 'Full Analysis';
-        showMessage(`Error: ${error.message}`, 'error');
-        console.error('Analysis error:', error);
     });
 }
 
@@ -1152,7 +1129,6 @@ document.addEventListener('DOMContentLoaded', function() {
     initMetadataControls();
     
     // These functions are likely already being called
-    initQuickScanListeners();
     initAnalysisControls();
     
     // Any other initialization functions should also be called here

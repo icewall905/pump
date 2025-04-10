@@ -64,7 +64,6 @@
                         <label for="skip-existing-metadata">Skip existing metadata</label>
                     </div>
                     <button type="button" id="update-lastfm-btn" class="btn secondary-button">Update via LastFM</button>
-                    <button type="button" id="update-spotify-btn" class="btn secondary-button">Update via Spotify</button>
                 </div>
                 
                 <div id="metadata-status" class="status-container">
@@ -146,17 +145,6 @@
                 </div>
             </div>
             
-            <div class="settings-group">
-                <h3>Spotify API</h3>
-                <div class="form-group">
-                    <label for="spotify_client_id">Client ID:</label>
-                    <input type="text" id="spotify_client_id" name="spotify_client_id" value="{{ spotify_client_id }}">
-                </div>
-                <div class="form-group">
-                    <label for="spotify_client_secret">Client Secret:</label>
-                    <input type="text" id="spotify_client_secret" name="spotify_client_secret" value="{{ spotify_client_secret }}">
-                </div>
-            </div>
             
             <div class="form-group button-group">
                 <button type="button" id="test-api-connections" class="btn secondary-button">Test API Connections</button>
@@ -164,35 +152,6 @@
         </div>
         
         <!-- Database Performance Section - MOVED INSIDE the form -->
-        <div class="settings-section">
-            <h2>Database Performance</h2>
-            <p>Optimize SQLite database performance for large music libraries</p>
-            
-            <div class="settings-group">
-                <div class="form-group">
-                    <label for="in_memory">Keep Database in Memory:</label>
-                    <input type="checkbox" id="in_memory" name="in_memory" {% if in_memory %}checked{% endif %}>
-                    <span class="helper-text">Loads entire database into RAM for faster access (requires restart)</span>
-                </div>
-                
-                <div class="form-group">
-                    <label for="cache_size_mb">Database Cache Size (MB):</label>
-                    <input type="number" id="cache_size_mb" name="cache_size_mb" min="10" max="1000" value="{{ cache_size_mb }}">
-                </div>
-                
-                <div class="form-group">
-                    <button type="button" id="check-db-status" class="secondary-button">Check Database Status</button>
-                </div>
-                
-                <div id="db-status-display" class="status-display" style="display:none;">
-                    <h4>Database Status</h4>
-                    <p>Size: <span id="db-size">-</span> MB</p>
-                    <p>Tracks: <span id="track-count">-</span></p>
-                    <p>Memory Mode: <span id="in-memory-mode">-</span></p>
-                    <p>Memory Usage: <span id="memory-usage">-</span> MB</p>
-                </div>
-            </div>
-        </div>
         
         <!-- Move Save All button to the bottom -->
         <div class="form-group">

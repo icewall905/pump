@@ -100,13 +100,13 @@ def execute_query(query, params=None, fetchone=False, commit=False):
     """Execute a query and return results"""
     conn = None
     try:
-        # Validate query is not empty
-        if not query or not query.strip():
-            logger.error("Cannot execute empty query")
+        # Add check for empty query
+        if not query or query.strip() == '':
+            logger.error("Attempted to execute an empty query")
             return [] if not fetchone else None
             
         conn = get_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=DictCursor)
         cursor.execute(query, params)
         
         if fetchone:
@@ -120,15 +120,43 @@ def execute_query(query, params=None, fetchone=False, commit=False):
         return result
     except Exception as e:
         logger.error(f"Error executing query: {e}")
-        if conn and commit:
+        if commit:
             conn.rollback()
         return [] if not fetchone else None
     finally:
         if conn:
-            try:
-                release_connection(conn)
-            except Exception as e:
-                logger.error(f"Error releasing connection: {e}")
+            release_connection(conn)
+
+def execute_query_dict(query, params=None, fetchone=False, commit=False):
+    """Execute a query and return results as dictionaries"""
+    conn = None
+    try:
+        # Add check for empty query
+        if not query or query.strip() == '':
+            logger.error("Attempted to execute an empty query")
+            return [] if not fetchone else None
+            
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=DictCursor)
+        cursor.execute(query, params)
+        
+        if fetchone:
+            result = cursor.fetchone()
+        else:
+            result = cursor.fetchall()
+            
+        if commit:
+            conn.commit()
+            
+        return result
+    except Exception as e:
+        logger.error(f"Error executing query: {e}")
+        if commit:
+            conn.rollback()
+        return [] if not fetchone else None
+    finally:
+        if conn:
+            release_connection(conn)
 
 def execute_many(query, params_list, commit=True):
     """Execute many operations in a single transaction"""
@@ -914,27 +942,33 @@ def execute_with_retry(query, params=None, max_retries=3, retry_delay=1, commit=
             if conn:
                 release_connection(conn)
 
-def execute_query_dict(query, params=None, fetchone=False):
-    """Execute a query and return results as a list of dictionaries or a single dictionary."""
+def execute_query_row(query, params=None, commit=False):
+    """Execute a query and return a single row result"""
+    conn = None
     try:
-        conn = get_connection()
-        try:
-            with conn.cursor(cursor_factory=DictCursor) as cursor:
-                cursor.execute(query, params if params else [])
-                
-                if fetchone:
-                    result = cursor.fetchone()
-                    return dict(result) if result else None
-                else:
-                    results = cursor.fetchall()
-                    return [dict(row) for row in results]
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        logger.error(f"Error executing query: {e}", exc_info=True)
-        if fetchone:
+        # Add check for empty query
+        if not query or query.strip() == '':
+            logger.error("Attempted to execute an empty query")
             return None
-        return []
+            
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=DictCursor)
+        cursor.execute(query, params)
+        
+        result = cursor.fetchone()
+            
+        if commit:
+            conn.commit()
+            
+        return result
+    except Exception as e:
+        logger.error(f"Error executing query: {e}")
+        if commit and conn:
+            conn.rollback()
+        return None
+    finally:
+        if conn:
+            release_connection(conn)
 
 def transaction_context():
     """Context manager for transactions"""
@@ -950,26 +984,6 @@ def transaction_context():
                 self.conn.rollback()
             release_connection(self.conn)
     return TransactionContextManager()
-
-def execute_query_row(query, params=None, **kwargs):
-    """
-    Execute a query and return a single row result
-    
-    This version ignores legacy SQLite parameters like in_memory for PostgreSQL compatibility
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute(query, params or ())
-        result = cursor.fetchone()
-        return result
-    except Exception as e:
-        logger.error(f"Error executing query: {e}")
-        return None
-    finally:
-        if conn:
-            release_connection(conn)
 
 def sanitize_for_postgres(value):
     """Remove null bytes and other problematic characters from strings for PostgreSQL"""
