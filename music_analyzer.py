@@ -43,13 +43,10 @@ class MusicAnalyzer:
     
     def __init__(self, db_path=None, in_memory=False, cache_size_mb=75):
         """Initialize the analyzer with database path"""
-        # These parameters are kept for compatibility but not used
-        self.db_path = db_path
-        self.in_memory = in_memory
-        self.cache_size_mb = cache_size_mb
-        self.lastfm_service = None
-        self.spotify_service = None
-        self.metadata_service = None
+        # These parameters are kept for compatibility but not used with PostgreSQL
+        self.db_path = None  # Not used with PostgreSQL
+        self.in_memory = False  # Not applicable to PostgreSQL
+        self.cache_size_mb = 75  # Not applicable to PostgreSQL
         
         # Create database connection for this instance
         self.db_conn = get_connection()
@@ -58,29 +55,11 @@ class MusicAnalyzer:
         self._ensure_tables_exist()
         
         try:
-            # Initialize LastFM and Spotify services if available
-            import configparser
-            config = configparser.ConfigParser()
-            if os.path.exists('pump.conf'):
-                config.read('pump.conf')
-                
-                # LastFM service
-                lastfm_key = config.get('lastfm', 'api_key', fallback='')
-                lastfm_secret = config.get('lastfm', 'api_secret', fallback='')
-                if lastfm_key and lastfm_secret:
-                    self.lastfm_service = LastFMService(lastfm_key, lastfm_secret)
-                
-                # Spotify service
-                spotify_id = config.get('spotify', 'client_id', fallback='')
-                spotify_secret = config.get('spotify', 'client_secret', fallback='')
-                if spotify_id and spotify_secret:
-                    self.spotify_service = SpotifyService(spotify_id, spotify_secret)
-                    
-                # Metadata service for getting album art, etc.
-                self.metadata_service = MetadataService(config_file='pump.conf')
+            self.lastfm_service = LastFMService()
+            self.spotify_service = SpotifyService()
+            self.metadata_service = MetadataService()
         except Exception as e:
-            print(f"Error in _initialize_services: {e}")
-            logging.error(f"Error initializing services: {e}")
+            logger.error(f"Error initializing services: {e}")
         
     def _initialize_db(self):
         """Initialize the database with necessary tables"""
@@ -216,22 +195,22 @@ class MusicAnalyzer:
         """
         Analyze a music file and extract its features, but skip if it's already in the database.
         """
-        # 1) Check if file has already been analyzed
-        row = execute_query_row(
-            self.db_path,
-            "SELECT id FROM audio_files WHERE file_path = ?",
-            (file_path,),
-            in_memory=self.in_memory,
-            cache_size_mb=self.cache_size_mb
-        )
-
-        if row is not None:
-            # The file already exists in the database; skip re-analysis
-            print(f"Skipping {file_path}, it already exists in the database.")
-            return {"status": "skipped"}
-
-        # 2) If not found in DB, proceed with the usual analysis
+        conn = None
         try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            # Check if file has already been analyzed
+            cursor.execute("SELECT id FROM tracks WHERE file_path = %s", (file_path,))
+            row = cursor.fetchone()
+            
+            if row is not None:
+                # Already in database, skip analysis
+                track_id = row[0]
+                logger.info(f"Track already in database (id={track_id}): {file_path}")
+                return {"id": track_id, "file_path": file_path, "status": "already_exists"}
+            
+            # If not found in DB, proceed with analysis
             # First, get metadata from the file itself
             metadata = self.metadata_service.get_metadata_from_file(file_path)
 
@@ -275,7 +254,11 @@ class MusicAnalyzer:
             return features
 
         except Exception as e:
-            logger.error(f"Error initializing database tables: {e}")
+            logger.error(f"Error analyzing file {file_path}: {e}")
+            return {"error": str(e), "file_path": file_path, "status": "error"}
+        finally:
+            if conn:
+                release_connection(conn)
     
     def scan_library(self, directory: str, recursive: bool = True) -> Dict:
         """

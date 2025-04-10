@@ -4,7 +4,15 @@ import random
 import configparser
 import logging
 import hashlib
-from flask import Flask, render_template, request, jsonify, Response, send_file
+import glob  # Add missing glob import
+import threading
+import queue
+import signal
+import atexit
+import sys
+import re
+import time
+from flask import Flask, render_template, request, jsonify, Response, send_file, g, session, redirect, url_for
 from music_analyzer import MusicAnalyzer
 from werkzeug.serving import run_simple
 import requests
@@ -14,22 +22,11 @@ from metadata_service import MetadataService
 from lastfm_service import LastFMService
 from spotify_service import SpotifyService  # Add this import at the top
 from datetime import datetime, timedelta
-from flask import redirect, url_for
-import time  # For sleep between API calls
-import threading  # Add this import
-from flask import jsonify, request, g  # Add this import
-import re
 from db_operations import (
     save_memory_db_to_disk, import_disk_db_to_memory, 
     execute_query_dict, execute_with_retry, execute_query_row,
     get_optimized_connection, trigger_db_save, optimized_connection, reset_database_locks
 )
-import queue
-import random
-import time
-import signal
-import atexit
-import sys
 
 # Add near the top of your file
 import os
@@ -44,7 +41,6 @@ from db_operations import (
     transaction_context, release_connection
 )
 
-# Add near the top of the file after imports but before other configuration
 
 import os
 import logging
@@ -71,6 +67,7 @@ from db_operations import set_db_config
 if 'set_db_config' in dir():
     try:
         set_db_config(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB)
+        logger.info(f"Database configuration set: in_memory={DB_IN_MEMORY}, cache_size={DB_CACHE_SIZE_MB}MB")
     except Exception as e:
         logger = logging.getLogger('web_player')
         logger.error(f"Error setting database configuration: {e}")
@@ -707,13 +704,23 @@ def clean_shutdown(signum=None, frame=None):
         if DB_IN_MEMORY and main_thread_conn:
             try:
                 # Verify connection is still valid before trying to save
+                # Use cursor for PostgreSQL connections instead of direct execute
                 try:
-                    main_thread_conn.execute("SELECT 1")
+                    # Check if this is a PostgreSQL connection
+                    if hasattr(main_thread_conn, 'cursor'):
+                        # PostgreSQL connection - use cursor
+                        cursor = main_thread_conn.cursor()
+                        cursor.execute("SELECT 1")
+                        cursor.close()
+                    else:
+                        # SQLite connection - direct execute
+                        main_thread_conn.execute("SELECT 1")
+                        
                     logger.info("Saving in-memory database to disk before exit...")
                     save_memory_db_to_disk(main_thread_conn, DB_PATH)
                     logger.info("Database saved successfully")
-                except sqlite3.Error:
-                    logger.warning("Database connection already closed, skipping save")
+                except Exception as conn_err:
+                    logger.warning(f"Database connection error: {conn_err}")
             except Exception as e:
                 logger.error(f"Error during database shutdown: {e}")
     except Exception as e:
@@ -1016,124 +1023,64 @@ def get_db_schema():
 def explore():
     """Get random tracks for exploration"""
     try:
-        # Count total tracks using execute_query instead of direct SQL
-        result = execute_query("SELECT COUNT(*) FROM tracks")
-        count = result[0][0] if result else 0
-        
-        # Get random tracks
-        random_tracks = []
-        if count > 0:
-            sample_size = min(6, count)
-            # Use PostgreSQL compatible query and parameter style
-            random_tracks = execute_query_dict(
-                """SELECT id, file_path, title, artist, album, album_art_url, duration
-                   FROM tracks
-                   ORDER BY RANDOM()
-                   LIMIT %s""",
-                (sample_size,)
-            )
-            
-            # Set default titles for tracks without titles
-            for track in random_tracks:
-                if not track['title']:
-                    track['title'] = os.path.basename(track['file_path'])
-        
-        logger.info(f"Returning {len(random_tracks)} random tracks for exploration")
-        return jsonify(random_tracks)
+        # Use a PostgreSQL compatible approach
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=DictCursor) as cursor:
+                # Get total count of tracks
+                cursor.execute("SELECT COUNT(*) FROM tracks")
+                count = cursor.fetchone()[0]
+                
+                # Get random tracks
+                random_tracks = []
+                if count > 0:
+                    sample_size = min(6, count)
+                    cursor.execute(
+                        """SELECT id, file_path, title, artist, album, album_art_url, duration
+                           FROM tracks
+                           ORDER BY RANDOM()
+                           LIMIT %s""",
+                        (sample_size,)
+                    )
+                    random_tracks = [dict(track) for track in cursor.fetchall()]
+                    
+                    # Set default titles for tracks without titles
+                    for track in random_tracks:
+                        if not track['title']:
+                            track['title'] = os.path.basename(track['file_path'])
+                
+                logger.info(f"Returning {len(random_tracks)} random tracks for exploration")
+                return jsonify(random_tracks)
+        finally:
+            release_connection(conn)
     
     except Exception as e:
-        logger.error(f"Error exploring tracks: {e}")
+        logger.error(f"Error exploring tracks: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/analyze', methods=['POST'])
-def analyze_music():
-    """Analyze music directory - Step 1: Quick scan, Step 2: Feature extraction"""
-    global analyzer, ANALYSIS_STATUS
-    
-    # Check for running analysis using a file-based lock
-    lock_file = os.path.join(LOCK_FILE_DIR, '.analysis_lock')
-    
-    if os.path.exists(lock_file):
-        # Check if the process is actually running
-        try:
-            with open(lock_file, 'r') as f:
-                pid = int(f.read().strip())
-            
-            # Try to check if process exists
-            try:
-                os.kill(pid, 0)  # This will raise an exception if process doesn't exist
-                # Process exists, analysis is running
-                return jsonify({
-                    'success': False,
-                    'message': 'Analysis is already running in another process'
-                })
-            except OSError:
-                # Process doesn't exist, remove stale lock
-                os.remove(lock_file)
-        except:
-            # Invalid lock file, remove it
-            os.remove(lock_file)
-    
-    # Create lock file
-    with open(lock_file, 'w') as f:
-        f.write(str(os.getpid()))
-    
-    if not analyzer:
-        return jsonify({"success": False, "error": "Analyzer not initialized"})
-    
-    data = request.get_json()
-    folder_path = data.get('folder_path', '')
-    recursive = data.get('recursive', True)
-    
-    # Don't start another analysis if one is already running
-    if ANALYSIS_STATUS['running']:
-        return jsonify({
-            'success': False,
-            'message': 'Analysis is already running'
-        })
-    
+def analyze():
+    """Start audio file analysis"""
     try:
-        # Reset status
-        ANALYSIS_STATUS.update({
-            'running': True,
-            'start_time': datetime.now().isoformat(),
-            'files_processed': 0,
-            'total_files': 0,
-            'current_file': '',
-            'percent_complete': 0,
-            'last_updated': datetime.now().isoformat(),
-            'error': None
-        })
+        data = request.get_json()
+        folder_path = data.get('folder_path')
+        recursive = data.get('recursive', True)
         
-        # Start analysis in background thread
-        analysis_thread = threading.Thread(
-            target=run_analysis, 
-            args=(folder_path, recursive)
-        )
-        analysis_thread.daemon = True
-        analysis_thread.start()
-
-        # Indicate the database will be modified (actual modification happens in the thread)
-        g.db_modified = True
-
-        return jsonify({
-            'success': True,
-            'message': 'Analysis started in background. This is a two-step process: 1) Quick scan to identify files, 2) Analysis of audio features',
-            'status': ANALYSIS_STATUS
-        })
+        if not folder_path:
+            folder_path = config.get('music', 'folder_path')
+            
+        if not folder_path:
+            return jsonify({"error": "No music folder specified"}), 400
+            
+        logger.info(f"Starting audio analysis for {folder_path} (recursive={recursive})")
+        
+        # Use the run_analysis function with locking
+        result = run_analysis(folder_path, recursive)
+        
+        return jsonify(result)
     except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Error starting analysis: {error_msg}")
-        ANALYSIS_STATUS.update({
-            'running': False,
-            'error': error_msg,
-            'last_updated': datetime.now().isoformat()
-        })
-        return jsonify({
-            'success': False,
-            'error': error_msg
-        })
-
+        logger.error(f"Error starting analysis: {e}")
+        return jsonify({"error": str(e)}), 500
 
 def _fix_database_inconsistencies():
     """Fix any inconsistencies between tracks and audio_features tables"""
@@ -1174,96 +1121,121 @@ def _fix_database_inconsistencies():
         logger.error(f"Error fixing database inconsistencies: {e}")
 
 def run_analysis(folder_path, recursive):
-    """Run full analysis in a background thread"""
-    global analysis_thread
-    global analyzer
+    """Run the analysis with proper locking to prevent duplicates"""
+    global ANALYSIS_STATUS
     
-    if not analyzer:
-        logger.error("Cannot run analysis: Music analyzer not available")
+    # Check if analysis is already running
+    if ANALYSIS_STATUS['running']:
+        logger.warning("Analysis is already running, ignoring request")
         return {
-            'status': 'error',
-            'message': 'Music analyzer not available'
+            "status": "already_running", 
+            "message": "Analysis already in progress"
         }
     
     try:
-        # First perform quick scan
-        logger.info(f"Starting quick scan of pending files...")
-        result = analyzer.quick_scan(folder_path, recursive)
+        # Set the status to running first to prevent race conditions
+        ANALYSIS_STATUS.update({
+            'running': True,
+            'start_time': datetime.now(),
+            'files_processed': 0,
+            'total_files': 0,
+            'current_file': '',
+            'percent_complete': 0,
+            'last_updated': datetime.now(),
+            'error': None
+        })
         
-        # Then analyze audio features
-        logger.info(f"Starting full analysis of pending files...")
-        analysis_result = analyzer.analyze_pending_files(
-            status_dict=ANALYSIS_STATUS
-        )
+        # Run quick scan first
+        analyzer = MusicAnalyzer()
         
-        return {
-            'status': 'success',
-            'message': 'Analysis completed successfully',
-            'scanned': result.get('processed', 0),
-            'added': result.get('added', 0),
-            'analyzed': analysis_result.get('analyzed', 0)
-        }
+        # Then do full analysis if needed
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            # Get count of files with no analysis
+            cursor.execute("""
+                SELECT COUNT(*) FROM tracks 
+                WHERE id NOT IN (SELECT track_id FROM audio_features)
+            """)
+            
+            result = cursor.fetchone()
+            pending_count = result[0] if result else 0
+            
+            if pending_count > 0:
+                logger.info(f"Found {pending_count} tracks needing audio analysis")
+                analyzer.analyze_pending_files(limit=200)
+            else:
+                logger.info("No pending tracks to analyze")
+                
+            release_connection(conn)
+        except Exception as e:
+            logger.error(f"Error running analysis: {e}")
+            ANALYSIS_STATUS.update({
+                'running': False,
+                'error': str(e),
+                'last_updated': datetime.now()
+            })
+            
+        # Update status when complete
+        ANALYSIS_STATUS.update({
+            'running': False,
+            'percent_complete': 100,
+            'last_updated': datetime.now()
+        })
+        
+        return {"status": "success"}
     except Exception as e:
         logger.error(f"Error running analysis: {e}")
-        return {
-            'status': 'error',
-            'message': f'Analysis failed: {str(e)}'
-        }
+        ANALYSIS_STATUS.update({
+            'running': False,
+            'error': str(e),
+            'last_updated': datetime.now()
+        })
+        return {"status": "error", "message": str(e)}
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
+    error = request.args.get('error')
+    message = request.args.get('message')
+    
     if request.method == 'POST':
         try:
-            # Get form data
-            music_folder_path = request.form.get('music_folder_path', '')
-            recursive = request.form.get('recursive') == 'on'
+            # Process form data
+            # Update music path
+            music_path = request.form.get('music_directory', '')
+            recursive = 'recursive' in request.form
             
-            # Update Last.fm API keys
-            lastfm_api_key = request.form.get('lastfm_api_key', '')
-            lastfm_api_secret = request.form.get('lastfm_api_secret', '')
+            # Save to config
+            config.set('music', 'folder_path', music_path)
+            config.set('music', 'recursive', str(recursive).lower())
             
-            # Update Spotify API keys
-            spotify_client_id = request.form.get('spotify_client_id', '')
-            spotify_client_secret = request.form.get('spotify_client_secret', '')
+            # LastFM API settings
+            if 'lastfm_api_key' in request.form:
+                config.set('lastfm', 'api_key', request.form.get('lastfm_api_key', ''))
+            if 'lastfm_api_secret' in request.form:
+                config.set('lastfm', 'api_secret', request.form.get('lastfm_api_secret', ''))
             
-            # Get default playlist size
-            default_playlist_size = request.form.get('default_playlist_size', '10')
+            # Spotify API settings
+            if 'spotify_client_id' in request.form:
+                config.set('spotify', 'client_id', request.form.get('spotify_client_id', ''))
+            if 'spotify_client_secret' in request.form:
+                config.set('spotify', 'client_secret', request.form.get('spotify_client_secret', ''))
             
-            # Get scheduler settings
-            startup_action = request.form.get('startup_action', 'nothing')
-            schedule_frequency = request.form.get('schedule_frequency', 'never')
+            # Playlist size setting
+            if 'default_playlist_size' in request.form:
+                config.set('app', 'default_playlist_size', request.form.get('default_playlist_size', '10'))
             
-            # Make sure sections exist
-            if not config.has_section('music'):
-                config.add_section('music')
-            if not config.has_section('lastfm'):
-                config.add_section('lastfm')
-            if not config.has_section('spotify'):
-                config.add_section('spotify')
-            if not config.has_section('app'):
-                config.add_section('app')
-            if not config.has_section('scheduler'):
-                config.add_section('scheduler')
+            # Scheduler settings
+            if 'startup_action' in request.form:
+                config.set('scheduler', 'startup_action', request.form.get('startup_action', 'nothing'))
             
-            # Update configuration
-            config.set('music', 'folder_path', music_folder_path)
-            config.set('music', 'recursive', 'true' if recursive else 'false')
-            
-            config.set('lastfm', 'api_key', lastfm_api_key)
-            config.set('lastfm', 'api_secret', lastfm_api_secret)
-            
-            config.set('spotify', 'client_id', spotify_client_id)
-            config.set('spotify', 'client_secret', spotify_client_secret)
-            
-            config.set('app', 'default_playlist_size', default_playlist_size)
-            
-            # Update scheduler configuration
-            config.set('scheduler', 'startup_action', startup_action)
-            config.set('scheduler', 'schedule_frequency', schedule_frequency)
-            
-            # If schedule is active, update the last run time to now
-            if schedule_frequency != 'never':
-                config.set('scheduler', 'last_run', datetime.now().isoformat())
+            if 'schedule_frequency' in request.form:
+                config.set('scheduler', 'schedule_frequency', request.form.get('schedule_frequency', 'never'))
+                
+                # Update last run if schedule is being changed
+                if request.form.get('schedule_frequency') != 'never':
+                    config.set('scheduler', 'last_run', datetime.now().isoformat())
             
             # Database performance settings
             if 'in_memory' in request.form:
@@ -1281,67 +1253,67 @@ def settings():
                     # If not a valid number, keep existing value
                     pass
             
-            # Save changes
-            with open(config_file, 'w') as f:
+            # Save config to file
+            with open('pump.conf', 'w') as f:
                 config.write(f)
             
             # Update the scheduler
             update_scheduler()
             
-            # Mark database as modified (in case config db is stored in memory)
-            if hasattr(g, 'db_modified'):  # Check if g exists
-                g.db_modified = True
-            
             logger.info("Settings saved successfully")
-            return redirect(url_for('settings', message='Settings saved successfully'))
+            return redirect(url_for('settings', message='Settings updated successfully'))
             
         except Exception as e:
             logger.error(f"Error updating settings: {e}")
+            # Redirect with error
             return redirect(url_for('settings', error=str(e)))
     
-    # For GET request or after POST, render the template with current settings
-    music_folder_path = config.get('music', 'folder_path', fallback='')
-    recursive = config.getboolean('music', 'recursive', fallback=True)
-    
-    lastfm_api_key = config.get('lastfm', 'api_key', fallback='')
-    lastfm_api_secret = config.get('lastfm', 'api_secret', fallback='')
-    
-    spotify_client_id = config.get('spotify', 'client_id', fallback='')
-    spotify_client_secret = config.get('spotify', 'client_secret', fallback='')
-    
-    default_playlist_size = config.get('app', 'default_playlist_size', fallback='10')
-    
-    # Get scheduler settings
-    startup_action = config.get('scheduler', 'startup_action', fallback='nothing')
-    schedule_frequency = config.get('scheduler', 'schedule_frequency', fallback='never')
-    
-    # Get database performance settings
-    in_memory = config.getboolean('database_performance', 'in_memory', fallback=False)
-    cache_size_mb = config.get('database_performance', 'cache_size_mb', fallback='75')
-    
-    # Calculate next scheduled run time for display
-    next_run_time = calculate_next_run_time()
-    
-    # Get message and error from query parameters
-    message = request.args.get('message', '')
-    error = request.args.get('error', '')
-    
-    return render_template('settings.html',
-        music_folder_path=music_folder_path,
-        recursive=recursive,
-        lastfm_api_key=lastfm_api_key,
-        lastfm_api_secret=lastfm_api_secret,
-        spotify_client_id=spotify_client_id,
-        spotify_client_secret=spotify_client_secret,
-        default_playlist_size=default_playlist_size,
-        startup_action=startup_action,
-        schedule_frequency=schedule_frequency,
-        next_run_time=next_run_time,
-        in_memory=in_memory,
-        cache_size_mb=cache_size_mb,
-        message=message,
-        error=error
-    )
+    # GET request - display the settings page with current values
+    # Load current values from config
+    try:
+        music_folder = config.get('music', 'folder_path', fallback='')
+        recursive = config.getboolean('music', 'recursive', fallback=True)
+        
+        # Load LastFM and Spotify API settings
+        lastfm_api_key = config.get('lastfm', 'api_key', fallback='')
+        lastfm_api_secret = config.get('lastfm', 'api_secret', fallback='')
+        
+        spotify_client_id = config.get('spotify', 'client_id', fallback='')
+        spotify_client_secret = config.get('spotify', 'client_secret', fallback='')
+        
+        # Load app settings
+        default_playlist_size = config.get('app', 'default_playlist_size', fallback='10')
+        
+        # Load scheduler settings
+        startup_action = config.get('scheduler', 'startup_action', fallback='nothing')
+        schedule_frequency = config.get('scheduler', 'schedule_frequency', fallback='never')
+        
+        # Load database settings
+        in_memory = config.getboolean('database_performance', 'in_memory', fallback=False)
+        cache_size_mb = config.get('database_performance', 'cache_size_mb', fallback='75')
+        
+        # Calculate next scheduled run time for display
+        next_run_time = calculate_next_run_time()
+        
+        return render_template('settings.html', 
+                              music_directory=music_folder,
+                              recursive=recursive,
+                              lastfm_api_key=lastfm_api_key,
+                              lastfm_api_secret=lastfm_api_secret,
+                              spotify_client_id=spotify_client_id,
+                              spotify_client_secret=spotify_client_secret,
+                              default_playlist_size=default_playlist_size,
+                              startup_action=startup_action,
+                              schedule_frequency=schedule_frequency,
+                              next_run_time=next_run_time,
+                              in_memory=in_memory,
+                              cache_size_mb=cache_size_mb,
+                              message=message,
+                              error=error)
+                              
+    except Exception as e:
+        logger.error(f"Error loading settings: {e}")
+        return render_template('settings.html', error=str(e))
 
 @app.route('/debug/metadata')
 def debug_metadata():
@@ -1517,7 +1489,8 @@ def shutdown():
     
     try:
         # For PostgreSQL connections, just close the pool
-        if 'pg_pool' in globals() and pg_pool is not None:
+        from db_operations import pg_pool
+        if pg_pool is not None:
             logger.info("Closing PostgreSQL connection pool")
             pg_pool.closeall()
         
@@ -1530,7 +1503,6 @@ def shutdown():
                 logger.error(f"Error during database shutdown: {e}")
     except Exception as e:
         logger.error(f"Error during application shutdown: {e}")
-
 
 def cleanup_cache():
     """Cleanup the image cache if it exceeds the maximum size"""
@@ -1752,36 +1724,38 @@ def save_playlist():
 def get_playlist(playlist_id):
     """Get a specific playlist with its tracks"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
         # Get playlist metadata
-        cursor.execute('SELECT * FROM playlists WHERE id = ?', (playlist_id,))
-        playlist = dict(cursor.fetchone() or {})
+        playlist = execute_query_dict(
+            "SELECT * FROM playlists WHERE id = %s", 
+            (playlist_id,),
+            fetchone=True
+        )
         
         if not playlist:
-            conn.close()
-            return jsonify({'error': 'Playlist not found'}), 404
+            return jsonify({"error": "Playlist not found"}), 404
         
         # Get playlist tracks in order
-        cursor.execute('''
-            SELECT af.id, af.file_path, af.title, af.artist, af.album, af.album_art_url, af.duration
+        tracks = execute_query_dict(
+            DB_PATH,
+            """
+            SELECT t.id, t.file_path, t.title, t.artist, t.album, t.album_art_url, t.duration
             FROM playlist_items pi
-            JOIN audio_files af ON pi.track_id = af.id
+            JOIN audio_files t ON pi.track_id = t.id
             WHERE pi.playlist_id = ?
             ORDER BY pi.position
-        ''', (playlist_id,))
+            """,
+            (playlist_id,),
+            in_memory=DB_IN_MEMORY,
+            cache_size_mb=DB_CACHE_SIZE_MB
+        )
         
-        tracks = [dict(row) for row in cursor.fetchall()]
         playlist['tracks'] = tracks
         
-        conn.close()
         return jsonify(playlist)
         
     except Exception as e:
         logger.error(f"Error getting playlist {playlist_id}: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/playlists/<int:playlist_id>', methods=['PUT'])
 def update_playlist(playlist_id):
@@ -1899,29 +1873,27 @@ def get_recent_tracks():
         logger.error(f"Error getting recent tracks: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/track/<int:track_id>')
+@app.route('/api/tracks/<int:track_id>')
 def get_track_info(track_id):
     """Get track information for playback"""
     try:
-        # Get track data from database
-        track = execute_query_row(
-            DB_PATH,
-            '''SELECT t.id, t.title, t.artist, t.album, t.file_path, t.album_art_url
-               FROM audio_files t
-               WHERE t.id = ?''',
+        # Get track data from database using PostgreSQL functions
+        track = execute_query_dict(
+            """SELECT id, title, artist, album, file_path, album_art_url
+               FROM tracks
+               WHERE id = %s""",
             (track_id,),
-            in_memory=DB_IN_MEMORY,
-            cache_size_mb=DB_CACHE_SIZE_MB
+            fetchone=True
         )
         
         if not track:
-            return jsonify({'error': 'Track not found'}), 404
+            return jsonify({"error": "Track not found"}), 404
             
         # Track data is already in dict format
         return jsonify(track)
     except Exception as e:
         logger.error(f"Error getting track info for {track_id}: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 # Add caching headers to streaming route to improve playback
 
@@ -1970,32 +1942,27 @@ def get_album_tracks(album):
     try:
         artist = request.args.get('artist')
         
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        if (artist):
-            cursor.execute('''
-                SELECT id, file_path, title, artist, album, album_art_url, duration
-                FROM audio_files 
-                WHERE album = ? AND artist = ?
-                ORDER BY title COLLATE NOCASE
-            ''', (album, artist))
+        if artist:
+            tracks = execute_query_dict(
+                """SELECT id, file_path, title, artist, album, album_art_url, duration
+                   FROM tracks
+                   WHERE album = %s AND artist = %s
+                   ORDER BY title""",
+                (album, artist)
+            )
         else:
-            cursor.execute('''
-                SELECT id, file_path, title, artist, album, album_art_url, duration
-                FROM audio_files 
-                WHERE album = ?
-                ORDER BY title COLLATE NOCASE
-            ''', (album,))
-        
-        tracks = [dict(row) for row in cursor.fetchall()]
-        conn.close()
+            tracks = execute_query_dict(
+                """SELECT id, file_path, title, artist, album, album_art_url, duration
+                   FROM tracks
+                   WHERE album = %s
+                   ORDER BY title""",
+                (album,)
+            )
         
         return jsonify(tracks)
     except Exception as e:
         logger.error(f"Error getting album tracks: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/library/artists')
 def get_artists():
@@ -2021,22 +1988,16 @@ def get_artists():
 def get_albums():
     """Get all albums in the library"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT DISTINCT album, artist, COUNT(*) as track_count,
-                   (SELECT album_art_url FROM audio_files WHERE album=a.album AND artist=a.artist LIMIT 1) as album_art_url,
-                   (SELECT file_path FROM audio_files WHERE album=a.album AND artist=a.artist LIMIT 1) as sample_track
-            FROM audio_files a
+        # Use PostgreSQL-compatible query
+        albums = execute_query_dict(
+            """SELECT DISTINCT album, artist, COUNT(*) as track_count,
+                   (SELECT album_art_url FROM tracks WHERE album=a.album AND artist=a.artist LIMIT 1) as album_art_url,
+                   (SELECT file_path FROM tracks WHERE album=a.album AND artist=a.artist LIMIT 1) as sample_track
+            FROM tracks a
             WHERE album IS NOT NULL AND album != ''
             GROUP BY album, artist
-            ORDER BY album COLLATE NOCASE
-        ''')
-        
-        albums = [dict(row) for row in cursor.fetchall()]
-        conn.close()
+            ORDER BY album"""
+        )
         
         return jsonify(albums)
     except Exception as e:
@@ -2047,33 +2008,24 @@ def get_albums():
 def get_songs():
     """Get all songs in the library"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        # Increase limit to get more songs by default
-        cursor.execute('''
-            SELECT id, file_path, title, artist, album, album_art_url, duration
-            FROM audio_files
-            ORDER BY title COLLATE NOCASE
-            LIMIT 50
-        ''')
-        
-        # Make sure to convert the rows to dictionaries
-        songs = [dict(row) for row in cursor.fetchall()]
+        # Use PostgreSQL-compatible query
+        songs = execute_query_dict(
+            """SELECT id, file_path, title, artist, album, album_art_url, duration
+               FROM tracks
+               ORDER BY title
+               LIMIT 50"""
+        )
         
         # Set default title for songs without title
         for song in songs:
-            if not song['title']:
-                song['title'] = os.path.basename(song['file_path'])
+            if not song.get('title'):
+                song['title'] = os.path.basename(song.get('file_path', 'Unknown'))
                 
-        conn.close()
-        
         logger.info(f"Returning {len(songs)} songs for library view")
         return jsonify(songs)
     except Exception as e:
         logger.error(f"Error getting songs: {e}")
-        return jsonify([]), 500  # Return empty array instead of error object
+        return jsonify([])  # Return empty array instead of error object
 
 # Add this route to handle updating artist images
 
@@ -2343,30 +2295,37 @@ def update_artist_images_spotify():
         logger.error(f"Error updating artist images via Spotify: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.route('/api/test-spotify/<artist_name>')
-def test_spotify(artist_name):
-    """Test Spotify API directly"""
+
+def run_scheduled_full_analysis():
+    """Run full analysis of pending files on schedule"""
     try:
-        client_id = config.get('spotify', 'client_id', fallback=None)
-        client_secret = config.get('spotify', 'client_secret', fallback=None)
-        
-        if not client_id or not client_secret:
-            return jsonify({'error': 'Spotify API credentials not configured'}), 400
-        
-        # Initialize and test
-        from spotify_service import SpotifyService
-        spotify = SpotifyService(client_id, client_secret)
-        
-        # Get token
-        token = spotify.get_token()
-        if not token:
-            return jsonify({'error': 'Failed to get Spotify access token'}), 500
-        
-        # Search for artist
-        artist = spotify.search_artist(artist_name)
-        
-        if not artist:
-            return jsonify({'error': 'Artist not found on Spotify'}), 404
+        logger.info("Running scheduled full analysis")
+        # Quick scan first to identify new files
+        try:
+            music_directory = config.get('music', 'folder_path')
+            recursive = config.getboolean('music', 'recursive', fallback=True)
+            
+            if music_directory:
+                analyzer = MusicAnalyzer()  # Don't pass DB_PATH parameter here
+                analyzer.scan_library(music_directory, recursive)
+            else:
+                logger.warning("No music directory configured, skipping quick scan")
+        except Exception as e:
+            logger.error(f"Error running quick scan: {e}")
+
+        # Then full analysis
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            # Get count of files with no analysis
+            cursor.execute("""
+                SELECT COUNT(*) FROM tracks 
+                WHERE id NOT IN (SELECT track_id FROM audio_features)
+            """)
+            pending_count = cursor.fetchone()[0]
+            
+            if pending_count > 0:
             
         # Extract image URLs
         images = artist.get('images', [])
@@ -2895,40 +2854,35 @@ def metadata_update_status():
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/analysis/status')
-def analysis_status():
-    """Get the current status of an analysis"""
+def get_analysis_status():
+    """Get the current analysis status"""
     try:
-        is_running = ANALYSIS_STATUS['running']
+        # Create a copy of the status to avoid race conditions
+        status = dict(ANALYSIS_STATUS)
         
-        # Calculate elapsed time if running
-        elapsed_seconds = 0
-        if is_running and ANALYSIS_STATUS['start_time']:
-            # Parse the ISO format string back to datetime
-            start_time = datetime.fromisoformat(ANALYSIS_STATUS['start_time'])
-            elapsed = datetime.now() - start_time
-            elapsed_seconds = elapsed.total_seconds()
-            
-        # Calculate estimated time remaining if possible
-        remaining_seconds = 0
-        if is_running and ANALYSIS_STATUS['percent_complete'] > 0:
-            # Avoid division by zero
-            percent = max(0.1, ANALYSIS_STATUS['percent_complete'])
-            remaining_seconds = (elapsed_seconds / percent) * (100 - percent)
-            
-        return jsonify({
-            'running': is_running,
-            'files_processed': ANALYSIS_STATUS['files_processed'],
-            'total_files': ANALYSIS_STATUS['total_files'],
-            'current_file': ANALYSIS_STATUS['current_file'],
-            'percent_complete': ANALYSIS_STATUS['percent_complete'],
-            'elapsed_seconds': round(elapsed_seconds),
-            'remaining_seconds': round(remaining_seconds),
-            'error': ANALYSIS_STATUS['error'],
-            'scan_complete': ANALYSIS_STATUS.get('scan_complete', False)  # ADD THIS LINE
-        })
+        # Convert datetime objects to ISO format strings or handle None values
+        if status.get('start_time') is not None:
+            if isinstance(status['start_time'], datetime):
+                status['start_time'] = status['start_time'].isoformat()
+            elif status['start_time'] is None:
+                status['start_time'] = None
+        
+        if status.get('last_updated') is not None:
+            if isinstance(status['last_updated'], datetime):
+                status['last_updated'] = status['last_updated'].isoformat()
+            elif status['last_updated'] is None:
+                status['last_updated'] = None
+        
+        return jsonify(status)
     except Exception as e:
         logger.error(f"Error getting analysis status: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'running': False,
+            'error': str(e),
+            'start_time': None,
+            'last_updated': None,
+            'percent_complete': 0
+        }), 500
 
 @app.route('/api/test-credentials', methods=['GET'])
 def test_credentials():
@@ -3542,7 +3496,7 @@ def like_track(track_id):
         )
         
         if not track:
-            return jsonify({'error': 'Track not found'}), 404
+            return jsonify({"error": "Track not found"}), 404
         
         # Toggle the liked status
         new_status = not track.get('liked', False)
@@ -3559,24 +3513,22 @@ def like_track(track_id):
         })
     except Exception as e:
         logger.error(f"Error updating liked status: {e}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/tracks/<int:track_id>/liked')
 def is_track_liked(track_id):
     """Check if a track is liked"""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+        track = execute_query_dict(
+            "SELECT liked FROM tracks WHERE id = %s",
+            (track_id,),
+            fetchone=True
+        )
         
-        cursor.execute("SELECT liked FROM audio_files WHERE id = ?", (track_id,))
-        result = cursor.fetchone()
-        
-        conn.close()
-        
-        if not result:
-            return jsonify({"liked": False}), 404
+        if not track:
+            return jsonify({"error": "Track not found"}), 404
             
-        return jsonify({"liked": result[0] == 1})
+        return jsonify({"liked": track.get('liked', False)})
     except Exception as e:
         logger.error(f"Error checking liked status for track {track_id}: {e}")
         return jsonify({"error": str(e)}), 500
@@ -3710,36 +3662,41 @@ def get_db_status():
 
 
 @app.route('/api/analysis/database-status')
-def analysis_database_status():
-    """Get the analysis status directly from the database"""
+def database_analysis_status():
+    """Get analysis status from database counts"""
     try:
-        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            # Get count of analyzed vs non-analyzed tracks - FIXED COLUMN NAME AND NULL HANDLING
-            cursor.execute('''
-                SELECT 
-                    COUNT(*) as total_in_db,
-                    COALESCE(SUM(CASE WHEN analysis_status = 'analyzed' THEN 1 ELSE 0 END), 0) as already_analyzed
-                FROM audio_files
-            ''')
-            result = cursor.fetchone()
-            
-            total_in_db = result['total_in_db'] if result else 0
-            already_analyzed = result['already_analyzed'] if result else 0
-            pending_count = total_in_db - already_analyzed
-            
-            return jsonify({
-                'total': total_in_db,
-                'analyzed': already_analyzed,
-                'pending': pending_count,
-                'percent_complete': round((already_analyzed / total_in_db) * 100, 2) if total_in_db > 0 else 0
-            })
+        # Use get_connection instead of optimized_connection
+        conn = get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # Get total track count
+                cursor.execute("SELECT COUNT(*) FROM tracks")
+                total_count = cursor.fetchone()[0]
+                
+                # Get count of analyzed tracks
+                cursor.execute("SELECT COUNT(*) FROM audio_features")
+                analyzed_count = cursor.fetchone()[0]
+                
+                # Get count of tracks with metadata
+                cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist IS NOT NULL AND artist != ''")
+                metadata_count = cursor.fetchone()[0]
+                
+                # Calculate percentages with error handling
+                analyzed_percent = round((analyzed_count / total_count * 100) if total_count > 0 else 0, 1)
+                metadata_percent = round((metadata_count / total_count * 100) if total_count > 0 else 0, 1)
+                
+                return jsonify({
+                    'total': total_count,
+                    'analyzed': analyzed_count,
+                    'with_metadata': metadata_count,
+                    'analyzed_percent': analyzed_percent,
+                    'metadata_percent': metadata_percent
+                })
+        finally:
+            release_connection(conn)
     except Exception as e:
         logger.error(f"Error getting database analysis status: {e}")
         return jsonify({'error': str(e)}), 500
-
 
 
 def run_full_analysis_workflow():
@@ -3911,3 +3868,4 @@ def run_server():
 
 if __name__ == '__main__':
     run_server()
+

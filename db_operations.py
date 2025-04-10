@@ -1,15 +1,15 @@
 import os
-import json
-import logging
 import time
-from pathlib import Path
+import logging
+import configparser
 import psycopg2
 from psycopg2 import pool
 from psycopg2.extras import DictCursor, execute_values
-import configparser
-import sqlite3
-from contextlib import contextmanager  # Add this import
+from contextlib import contextmanager
+import json
 import re
+
+# Removed sqlite3 import since we are now using PostgreSQL exclusively
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -28,37 +28,35 @@ def get_config():
         # Use default configuration
         config['DATABASE'] = {
             'host': 'localhost',
-            'port': '5432',
+            'port': '45432',
             'user': 'pump',
             'password': 'Ge3hgU07bXlBigvTbRSX',
             'dbname': 'pump',
             'min_connections': '1',
             'max_connections': '10'
         }
-    
     return config
 
 def initialize_connection_pool():
     """Initialize PostgreSQL connection pool"""
     global pg_pool
-    
-    if (pg_pool is not None):
+    if pg_pool is not None:
         return pg_pool
-    
+
     config = get_config()
     db_config = config['DATABASE']
-    
+
     try:
         pg_pool = psycopg2.pool.SimpleConnectionPool(
             minconn=int(db_config.get('min_connections', 1)),
             maxconn=int(db_config.get('max_connections', 10)),
             host=db_config.get('host', 'localhost'),
-            port=db_config.get('port', '5432'),
+            port=db_config.get('port', '45432'),
             user=db_config.get('user', 'pump'),
             password=db_config.get('password', 'Ge3hgU07bXlBigvTbRSX'),
             dbname=db_config.get('dbname', 'pump')
         )
-        logger.info("PostgreSQL connection pool initialized")
+        logger.info(f"PostgreSQL connection pool initialized on port {db_config.get('port', '45432')}")
         return pg_pool
     except Exception as e:
         logger.error(f"Error initializing PostgreSQL connection pool: {e}")
@@ -67,13 +65,12 @@ def initialize_connection_pool():
 def get_connection():
     """Get a connection from the pool with retry logic"""
     global pg_pool
-    
     if pg_pool is None:
         pg_pool = initialize_connection_pool()
-    
+
     max_retries = 5
     retry_delay = 1
-    
+
     for attempt in range(max_retries):
         try:
             conn = pg_pool.getconn()
@@ -86,13 +83,12 @@ def get_connection():
             else:
                 logger.error(f"Failed to get connection after {max_retries} attempts: {e}")
                 raise
-    
+
     raise Exception("Failed to get database connection")
 
 def release_connection(conn):
     """Return a connection to the pool"""
     global pg_pool
-    
     if pg_pool is not None and conn is not None:
         pg_pool.putconn(conn)
 
@@ -100,26 +96,27 @@ def execute_query(query, params=None, fetchone=False, commit=False):
     """Execute a query and return results"""
     conn = None
     try:
-        conn = get_connection()
-        with conn.cursor(cursor_factory=DictCursor) as cursor:
-            cursor.execute(query, params)
-            
-            if commit:
-                conn.commit()
-            
-            if cursor.description:
-                if fetchone:
-                    result = dict(cursor.fetchone()) if cursor.rowcount > 0 else None
-                else:
-                    result = [dict(row) for row in cursor.fetchall()]
-                return result
-            
+        # Don't attempt to execute empty queries
+        if not query or not query.strip():
+            logger.error("Attempted to execute an empty query")
             return None
+
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(query, params or ())
+        
+        if fetchone:
+            result = cursor.fetchone()
+        else:
+            result = cursor.fetchall()
+        
+        if commit:
+            conn.commit()
+            
+        return result
     except Exception as e:
-        if conn:
-            conn.rollback()
-        logger.error(f"Database error: {e}")
-        raise
+        logger.error(f"Error executing query: {e}")
+        return None
     finally:
         if conn:
             release_connection(conn)
@@ -131,10 +128,8 @@ def execute_many(query, params_list, commit=True):
         conn = get_connection()
         with conn.cursor() as cursor:
             execute_values(cursor, query, params_list)
-            
             if commit:
                 conn.commit()
-            
             return cursor.rowcount
     except Exception as e:
         if conn:
@@ -173,7 +168,7 @@ def initialize_database():
                     metadata_updated_at TIMESTAMP
                 )
             """)
-            
+
             # Create audio_features table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS audio_features (
@@ -191,7 +186,7 @@ def initialize_database():
                     analysis_version TEXT
                 )
             """)
-            
+
             # Create playlists table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS playlists (
@@ -202,8 +197,8 @@ def initialize_database():
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            
-            # Create playlist_items table
+
+            # Create playlist_items table (note: using playlist_items in all queries)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS playlist_items (
                     playlist_id INTEGER REFERENCES playlists(id) ON DELETE CASCADE,
@@ -212,13 +207,49 @@ def initialize_database():
                     PRIMARY KEY (playlist_id, track_id)
                 )
             """)
-            
+
+            # Optionally, create additional tables if they don't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS artist_images (
+                    artist TEXT PRIMARY KEY,
+                    image_url TEXT,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS metadata_cache (
+                    artist TEXT,
+                    album TEXT,
+                    title TEXT,
+                    source TEXT,
+                    data TEXT,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (artist, album, title, source)
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS cache_stats (
+                    cache_type TEXT PRIMARY KEY,
+                    total_entries INTEGER DEFAULT 0,
+                    hits INTEGER DEFAULT 0,
+                    misses INTEGER DEFAULT 0,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             conn.commit()
             logger.info("Database initialized")
     except Exception as e:
         if conn:
             conn.rollback()
         logger.error(f"Error initializing database: {e}")
+        raise
     finally:
         if conn:
             release_connection(conn)
@@ -255,7 +286,6 @@ def insert_track(track_data):
 def update_track_audio_features(track_id, features):
     """Update audio features for a track"""
     features['track_id'] = track_id
-    
     query = """
         INSERT INTO audio_features (
             track_id, tempo, key, energy, danceability, acousticness,
@@ -324,7 +354,6 @@ def search_tracks(search_term, limit=50, offset=0):
         ORDER BY t.title
         LIMIT %s OFFSET %s
     """
-    
     params = (search_pattern, search_pattern, search_pattern, limit, offset)
     try:
         return execute_query(query, params)
@@ -341,18 +370,13 @@ def get_all_tracks(limit=None, offset=None):
             LEFT JOIN audio_features af ON t.id = af.track_id
             ORDER BY t.artist, t.album, t.title
         """
-        
-        # Add pagination if specified
+        params = None
         if limit is not None:
             query += " LIMIT %s"
             params = (limit,)
-            
             if offset is not None:
                 query += " OFFSET %s"
                 params = (limit, offset)
-        else:
-            params = None
-            
         return execute_query(query, params)
     except Exception as e:
         logger.error(f"Error getting all tracks: {e}")
@@ -404,31 +428,17 @@ def toggle_track_like(track_id):
         return False
 
 @contextmanager
-def optimized_connection(db_path, in_memory=False, cache_size_mb=75):
-    """Context manager that provides an optimized SQLite connection"""
-    conn = None
+def optimized_connection():
+    """Context manager for PostgreSQL connections"""
+    conn = get_connection()
     try:
-        # If in-memory mode is requested and a connection exists in thread-local storage, use that
-        if in_memory and hasattr(_thread_local, 'conn'):
-            conn = _thread_local.conn
-            # Verify connection is still valid
-            try:
-                conn.execute("SELECT 1")
-            except sqlite3.Error:
-                # Connection is invalid, create a new one
-                logger.warning("In-memory connection was invalid, creating new connection")
-                conn = get_optimized_connection(db_path, in_memory, cache_size_mb)
-                _thread_local.conn = conn
-        else:
-            # Create a new connection
-            conn = get_optimized_connection(db_path, in_memory, cache_size_mb)
-            
         yield conn
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise
     finally:
-        # Only close the connection if it's not in-memory
-        # This is the key fix - don't close in-memory connections
-        if conn and not in_memory:
-            conn.close()
+        release_connection(conn)
 
 def create_playlist(name, description=""):
     """Create a new playlist"""
@@ -456,9 +466,9 @@ def get_playlist(playlist_id):
 def get_all_playlists():
     """Get all playlists"""
     query = """
-        SELECT p.*, COUNT(pt.track_id) as track_count
+        SELECT p.*, COUNT(pi.track_id) as track_count
         FROM playlists p
-        LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
+        LEFT JOIN playlist_items pi ON p.id = pi.playlist_id
         GROUP BY p.id
         ORDER BY p.name
     """
@@ -471,37 +481,35 @@ def get_all_playlists():
 def add_track_to_playlist(playlist_id, track_id, position=None):
     """Add a track to a playlist"""
     if position is None:
-        # Get the highest position and add 1
         position_query = """
             SELECT COALESCE(MAX(position), 0) + 1 AS next_position
-            FROM playlist_tracks
+            FROM playlist_items
             WHERE playlist_id = %s
         """
         result = execute_query(position_query, (playlist_id,), fetchone=True)
         position = result['next_position'] if result else 1
-    
+
     query = """
-        INSERT INTO playlist_tracks (playlist_id, track_id, position)
+        INSERT INTO playlist_items (playlist_id, track_id, position)
         VALUES (%s, %s, %s)
         ON CONFLICT (playlist_id, track_id) DO UPDATE SET position = EXCLUDED.position
-        RETURNING id
     """
     try:
-        result = execute_query(query, (playlist_id, track_id, position), fetchone=True, commit=True)
-        return result['id'] if result else None
+        execute_query(query, (playlist_id, track_id, position), commit=True)
+        return True
     except Exception as e:
         logger.error(f"Error adding track to playlist: {e}")
-        return None
+        return False
 
 def get_playlist_tracks(playlist_id):
     """Get all tracks in a playlist ordered by position"""
     query = """
-        SELECT t.*, pt.position
-        FROM playlist_tracks pt
-        JOIN tracks t ON pt.track_id = t.id
+        SELECT t.*, pi.position
+        FROM playlist_items pi
+        JOIN tracks t ON pi.track_id = t.id
         LEFT JOIN audio_features af ON t.id = af.track_id
-        WHERE pt.playlist_id = %s
-        ORDER BY pt.position
+        WHERE pi.playlist_id = %s
+        ORDER BY pi.position
     """
     try:
         return execute_query(query, (playlist_id,))
@@ -512,7 +520,7 @@ def get_playlist_tracks(playlist_id):
 def remove_track_from_playlist(playlist_id, track_id):
     """Remove a track from a playlist"""
     query = """
-        DELETE FROM playlist_tracks
+        DELETE FROM playlist_items
         WHERE playlist_id = %s AND track_id = %s
     """
     try:
@@ -615,7 +623,6 @@ def get_album_tracks(album, artist=None):
             ORDER BY t.title
         """
         params = (album,)
-    
     try:
         return execute_query(query, params)
     except Exception as e:
@@ -652,12 +659,9 @@ def get_library_stats():
     """
     try:
         result = execute_query(stats_query, fetchone=True)
-        if result:
-            # Convert total_duration from seconds to hours
-            if result['total_duration']:
-                result['total_duration_hours'] = round(result['total_duration'] / 3600, 1)
-            return result
-        return {}
+        if result and result['total_duration']:
+            result['total_duration_hours'] = round(result['total_duration'] / 3600, 1)
+        return result if result else {}
     except Exception as e:
         logger.error(f"Error getting library stats: {e}")
         return {}
@@ -725,14 +729,12 @@ def clear_cache(cache_type=None):
     try:
         conn = get_connection()
         with conn.cursor() as cursor:
-            # Clear cache entries
             if cache_type:
                 cursor.execute("DELETE FROM metadata_cache WHERE source = %s", (cache_type,))
                 cursor.execute("UPDATE cache_stats SET total_entries=0, hits=0, misses=0 WHERE cache_type = %s", (cache_type,))
             else:
                 cursor.execute("DELETE FROM metadata_cache")
                 cursor.execute("UPDATE cache_stats SET total_entries=0, hits=0, misses=0")
-            
             conn.commit()
         return True
     except Exception as e:
@@ -785,7 +787,6 @@ def get_all_settings():
 
 def get_similar_tracks(track_id, limit=20):
     """Find similar tracks based on audio features"""
-    # First get the audio features of the reference track
     features_query = """
         SELECT 
             track_id,
@@ -797,13 +798,11 @@ def get_similar_tracks(track_id, limit=20):
         FROM audio_features
         WHERE track_id = %s
     """
-    
     try:
         ref_features = execute_query(features_query, (track_id,), fetchone=True)
         if not ref_features:
             return []
-        
-        # Then find similar tracks using a weighted Euclidean distance
+
         similar_query = """
             WITH track_distances AS (
                 SELECT 
@@ -836,7 +835,6 @@ def get_similar_tracks(track_id, limit=20):
             ORDER BY distance ASC
             LIMIT %s
         """
-        
         params = (
             ref_features['energy'], 
             ref_features['danceability'],
@@ -846,7 +844,6 @@ def get_similar_tracks(track_id, limit=20):
             track_id,
             limit
         )
-        
         return execute_query(similar_query, params)
     except Exception as e:
         logger.error(f"Error finding similar tracks: {e}")
@@ -855,239 +852,111 @@ def get_similar_tracks(track_id, limit=20):
 def save_memory_db_to_disk(in_memory_conn, disk_path=None):
     """
     Compatibility function for PostgreSQL (no-op).
-    
-    In SQLite, this would save an in-memory database to disk, but in PostgreSQL
-    all changes are already persisted through transactions.
-    
-    Args:
-        in_memory_conn: Connection object (will be properly released)
-        disk_path: Ignored (kept for compatibility with SQLite)
-    
-    Returns:
-        bool: Always returns True for compatibility
+    In PostgreSQL transactions are already persisted, so this is a no-op.
     """
     logger.info("PostgreSQL compatibility: save_memory_db_to_disk called (no-op)")
-    
-    # Properly release the connection if it's a valid connection
-    if in_memory_conn:
+    if in_memory_conn and hasattr(in_memory_conn, 'cursor'):
         try:
+            in_memory_conn.commit()
             release_connection(in_memory_conn)
+            logger.info("PostgreSQL connection committed and released")
         except Exception as e:
-            logger.error(f"Error releasing connection in save_memory_db_to_disk: {e}")
-    
+            logger.error(f"Error releasing PostgreSQL connection: {e}")
     return True
 
-def import_disk_db_to_memory(disk_path=None, in_memory_conn=None):
+def import_disk_db_to_memory():
     """
     Compatibility function for PostgreSQL that returns a database connection.
-    
-    In SQLite, this would import a disk database to memory, but in PostgreSQL
-    we simply return a connection from the pool since PostgreSQL doesn't have
-    a concept of in-memory databases.
-    
-    Args:
-        disk_path: Ignored (kept for compatibility with SQLite)
-        in_memory_conn: Ignored (kept for compatibility with SQLite)
-        
-    Returns:
-        psycopg2.extensions.connection: A PostgreSQL connection
+    In PostgreSQL we simply return a connection from the pool.
     """
     logger.info("PostgreSQL compatibility: import_disk_db_to_memory called (returning regular connection)")
     try:
-        # Just return a standard connection from the pool
         return get_connection()
     except Exception as e:
         logger.error(f"Error in import_disk_db_to_memory compatibility function: {e}")
         raise
 
-# Add this function to db_operations.py
-def execute_query_dict(connection, query, params=None):
-    """
-    Execute a query and return results as a list of dictionaries.
-    
-    Args:
-        connection: Database connection object
-        query: SQL query string
-        params: Optional parameters for the query
-        
-    Returns:
-        List of dictionaries, where each dictionary represents a row with column names as keys
-    """
-    cursor = connection.cursor()
-    try:
-        if (params):
-            cursor.execute(query, params)
-        else:
-            cursor.execute(query)
-            
-        # Get column names from cursor description
-        columns = [col[0] for col in cursor.description] if cursor.description else []
-        
-        # Convert results to list of dictionaries
-        result = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        return result
-    except Exception as e:
-        print(f"Error executing query: {e}")
-        raise
-    finally:
-        cursor.close()
-
 def execute_with_retry(query, params=None, max_retries=3, retry_delay=1, commit=False):
     """Execute a query with retry logic if it fails"""
     conn = None
     retries = 0
-    
+
     while retries < max_retries:
         try:
             conn = get_connection()
             cursor = conn.cursor()
-            
             cursor.execute(query, params)
-            
             if commit:
                 conn.commit()
-                
             if cursor.description:
                 result = cursor.fetchall()
                 return result
             return None
-                
         except Exception as e:
             retries += 1
             logger.warning(f"Database operation failed, retry {retries}/{max_retries}: {e}")
-            
             if conn:
                 conn.rollback()
-                
             if retries >= max_retries:
                 logger.error(f"Max retries reached, operation failed: {e}")
                 raise
-                
             time.sleep(retry_delay)
         finally:
             if conn:
                 release_connection(conn)
 
-def execute_query_dict(query, params=None, fetchone=False, in_memory=False, cache_size_mb=None):
-    """Execute a query and return results as a list of dictionaries
-    
-    Args:
-        query: SQL query string
-        params: Optional parameters for the query
-        fetchone: Whether to fetch only one row
-        in_memory: Ignored (kept for compatibility with SQLite)
-        cache_size_mb: Ignored (kept for compatibility with SQLite)
-        
-    Returns:
-        A list of dictionaries (or single dictionary if fetchone=True)
-    """
-    conn = None
+def execute_query_dict(query, params=None, fetchone=False):
+    """Execute a query and return results as a list of dictionaries or a single dictionary."""
     try:
         conn = get_connection()
-        cursor = conn.cursor(cursor_factory=DictCursor)
-        
-        cursor.execute(query, params)
-        
-        if fetchone:
-            result = cursor.fetchone()
-            return dict(result) if result else None
-        else:
-            results = cursor.fetchall()
-            return [dict(row) for row in results]
-            
-    except Exception as e:
-        logger.error(f"Error executing query: {e}")
-        raise
-    finally:
-        if conn:
+        try:
+            with conn.cursor(cursor_factory=DictCursor) as cursor:
+                cursor.execute(query, params if params else [])
+                
+                if fetchone:
+                    result = cursor.fetchone()
+                    return dict(result) if result else None
+                else:
+                    results = cursor.fetchall()
+                    return [dict(row) for row in results]
+        finally:
             release_connection(conn)
+    except Exception as e:
+        logger.error(f"Error executing query: {e}", exc_info=True)
+        if fetchone:
+            return None
+        return []
 
-def transaction_context(db_path=None, in_memory=False, cache_size_mb=None):
+def transaction_context():
     """Context manager for transactions"""
     class TransactionContextManager:
         def __enter__(self):
             self.conn = get_connection()
             self.cursor = self.conn.cursor()
             return self.conn, self.cursor
-            
         def __exit__(self, exc_type, exc_val, exc_tb):
             if exc_type is None:
                 self.conn.commit()
             else:
                 self.conn.rollback()
             release_connection(self.conn)
-            
     return TransactionContextManager()
 
-def get_optimized_connection(db_path=None, in_memory=False, cache_size_mb=None, check_same_thread=None):
-    """Get an optimized database connection (PostgreSQL compatibility function)
-    
-    This function provides compatibility with code that was written for SQLite
-    but now works with PostgreSQL.
-    
-    Args:
-        db_path: Ignored (kept for compatibility)
-        in_memory: Ignored (kept for compatibility)
-        cache_size_mb: Ignored (kept for compatibility)
-        check_same_thread: Ignored (kept for compatibility with SQLite)
-        
-    Returns:
-        A database connection from the pool
+def execute_query_row(query, params=None, **kwargs):
     """
-    # Simply get a connection from the pool
-    return get_connection()
-
-def optimized_connection(db_path=None, in_memory=False, cache_size_mb=None):
-    """Context manager for database connections (PostgreSQL compatibility)
+    Execute a query and return a single row result
     
-    This function provides compatibility with code that was written for SQLite
-    but now works with PostgreSQL. It ignores SQLite-specific parameters.
-    
-    Args:
-        db_path: Ignored (kept for compatibility)
-        in_memory: Ignored (kept for compatibility)
-        cache_size_mb: Ignored (kept for compatibility)
-        
-    Returns:
-        A context manager that yields a database connection
-    """
-    class ConnectionContextManager:
-        def __enter__(self):
-            self.conn = get_connection()
-            return self.conn
-            
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            if exc_type is None:
-                self.conn.commit()
-            else:
-                self.conn.rollback()
-            release_connection(self.conn)
-    
-    return ConnectionContextManager()
-
-def execute_query_row(query, params=None, in_memory=False, cache_size_mb=None):
-    """Execute a query and return a single row of results
-    
-    Args:
-        query: SQL query string
-        params: Optional parameters for the query
-        in_memory: Ignored (kept for compatibility with SQLite)
-        cache_size_mb: Ignored (kept for compatibility with SQLite)
-        
-    Returns:
-        A single row of results or None if no results
+    This version ignores legacy SQLite parameters like in_memory for PostgreSQL compatibility
     """
     conn = None
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
-        cursor.execute(query, params)
+        cursor.execute(query, params or ())
         result = cursor.fetchone()
-        
         return result
     except Exception as e:
-        logger.error(f"Error executing query for single row: {e}")
+        logger.error(f"Error executing query: {e}")
         return None
     finally:
         if conn:
@@ -1096,57 +965,42 @@ def execute_query_row(query, params=None, in_memory=False, cache_size_mb=None):
 def sanitize_for_postgres(value):
     """Remove null bytes and other problematic characters from strings for PostgreSQL"""
     if isinstance(value, str):
-        # Replace NUL bytes with spaces
-        return value.replace('\x00', ' ')
+        return value.replace('\x00', '')
     return value
 
-def execute_write(query, params=None, in_memory=False, cache_size_mb=None):
-    """Execute a write query using the appropriate database connection
-    
-    This handles both SQLite and PostgreSQL connections properly
-    """
+def execute_write(query, params=None):
+    """Execute a write operation (INSERT, UPDATE, DELETE)"""
+    conn = None
     try:
         conn = get_connection()
-        # Check if this is a PostgreSQL connection
-        if hasattr(conn, 'cursor'):
-            # PostgreSQL connection - use cursor to execute
-            cursor = conn.cursor()
-            cursor.execute(query, params or ())
-            conn.commit()
-            result = True
-        else:
-            # SQLite connection - direct execution
-            if params:
-                conn.execute(query, params)
+        with conn.cursor() as cursor:
+            # Sanitize parameters if they're a dict or list
+            if isinstance(params, dict):
+                sanitized_params = {k: sanitize_for_postgres(v) for k, v in params.items()}
+            elif isinstance(params, (list, tuple)):
+                sanitized_params = [sanitize_for_postgres(p) for p in params]
             else:
-                conn.execute(query)
+                sanitized_params = params
+                
+            cursor.execute(query, sanitized_params)
             conn.commit()
-            result = True
-        
-        release_connection(conn)
-        return result
     except Exception as e:
         logger.error(f"Error executing write query: {e}")
         if conn:
+            conn.rollback()
+        raise
+    finally:
+        if conn:
             release_connection(conn)
-        return False
 
 def reset_database_locks():
     """
     Reset any database locks (PostgreSQL compatibility function)
-    
-    In a PostgreSQL environment, this primarily involves ensuring connections
-    are properly released back to the pool and any hanging transactions are
-    terminated.
-    
-    Returns:
-        bool: True if successful
     """
     conn = None
     try:
         conn = get_connection()
         with conn.cursor() as cursor:
-            # Check for long-running transactions and terminate if needed
             cursor.execute("""
                 SELECT pg_terminate_backend(pid) 
                 FROM pg_stat_activity 
@@ -1169,71 +1023,73 @@ def reset_database_locks():
 def trigger_db_save():
     """
     Trigger a database save (compatibility function for PostgreSQL)
-    
-    In SQLite with in-memory databases, this would save to disk.
     In PostgreSQL, transactions are already persisted, so this is a no-op.
-    
-    Returns:
-        bool: Always returns True for compatibility
     """
     logger.debug("trigger_db_save called (no-op in PostgreSQL)")
     return True
 
-def check_database_stats(db_path=None, in_memory=False, cache_size_mb=None):
-    """Get database statistics
-    
-    Args:
-        db_path: Ignored (kept for compatibility)
-        in_memory: Ignored (kept for compatibility) 
-        cache_size_mb: Ignored (kept for compatibility)
-        
-    Returns:
-        dict: Database statistics
-    """
+def check_database_stats():
+    """Get database statistics"""
     stats = {
         'track_count': 0,
         'db_size': '0 MB'
     }
-    
     try:
         conn = get_connection()
         cursor = conn.cursor()
-        
-        # Count total tracks
         cursor.execute("SELECT COUNT(*) FROM tracks")
         result = cursor.fetchone()
         stats['track_count'] = result[0] if result else 0
-        
-        # Get database size
         cursor.execute("""
             SELECT pg_size_pretty(pg_database_size(current_database())) as size
         """)
         result = cursor.fetchone()
         stats['db_size'] = result[0] if result else '0 MB'
-        
         release_connection(conn)
         return stats
     except Exception as e:
         logger.error(f"Error checking database stats: {e}")
-        if 'conn' in locals() and conn:
+        if conn:
             release_connection(conn)
         return stats
 
-# Add this function at the end of the file
-
-def set_db_config(db_path=None, in_memory=False, cache_size_mb=None):
-    """Configure global database settings
-    
-    Args:
-        db_path: Path to database file
-        in_memory: Whether to use in-memory database
-        cache_size_mb: Cache size for database
+def set_db_config(db_path=None, in_memory=False, cache_size_mb=75):
     """
-    global DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB
-    DB_PATH = db_path
-    DB_IN_MEMORY = in_memory
-    DB_CACHE_SIZE_MB = cache_size_mb
-    logger.info(f"Database configuration set: path={db_path}, in_memory={in_memory}, cache_size={cache_size_mb}MB")
+    Set global database configuration variables
+    This function now accepts parameters for backward compatibility,
+    but ignores them for PostgreSQL since these settings are specific to SQLite
+    """
+    global pg_pool
+    logger.info(f"PostgreSQL compatibility: set_db_config called (ignoring SQLite-specific parameters)")
+    if pg_pool is not None:
+        try:
+            for conn in pg_pool._used:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            pg_pool.closeall()
+            pg_pool = None
+            logger.info("Closed existing database connection pool")
+        except Exception as e:
+            logger.error(f"Error closing connection pool: {e}")
+    try:
+        pg_pool = initialize_connection_pool()
+        logger.info("Database configuration updated and connection pool reinitialized")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to reinitialize connection pool: {e}")
+        return False
+
+def get_optimized_connection(*args, **kwargs):
+    """
+    Compatibility function to maintain backward compatibility with SQLite code
+    that used get_optimized_connection.
+    
+    This simply returns a regular PostgreSQL connection.
+    """
+    logger.debug("get_optimized_connection called (returning standard PostgreSQL connection)")
+    return get_connection()
 
 # Initialize the database when the module is imported
 try:

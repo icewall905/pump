@@ -366,13 +366,25 @@ if [ ! -f "logging_config.py" ]; then
     # The code to create logging_config.py is already in your script
 fi
 
+# Check which docker compose command is available
+DOCKER_COMPOSE_CMD="docker compose"
+if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; then
+    if command -v docker-compose &> /dev/null; then
+        print_message "yellow" "Using docker-compose instead of docker compose"
+        DOCKER_COMPOSE_CMD="docker-compose"
+    else
+        print_message "red" "Neither docker compose nor docker-compose found. Please install Docker."
+        exit 1
+    fi
+fi
+
 # Start PostgreSQL with Docker Compose
-print_message "green" "Starting PostgreSQL database..."
-docker-compose up -d
+print_message "green" "Starting PostgreSQL database on port 85432..."
+$DOCKER_COMPOSE_CMD up -d
 
 # Wait a moment for PostgreSQL to fully initialize
-print_message "green" "Waiting for PostgreSQL to initialize..."
-sleep 5
+print_message "yellow" "Waiting for PostgreSQL to initialize..."
+sleep 3
 
 # Start the web player
 print_message "green" "Starting Pump Web Player..."

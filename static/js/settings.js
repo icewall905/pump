@@ -251,9 +251,21 @@ function startFullAnalysis() {
 
 // Replace startQuickScan function
 
+const DEBUG = true;
+
+function debugLog(message, data) {
+    if (DEBUG) {
+        console.log(`[DEBUG] ${message}`, data || '');
+    }
+}
+
 function startQuickScan() {
+    debugLog('Starting quick scan');
+    
     const quickScanBtn = document.getElementById('quick-scan-btn');
     const path = document.getElementById('music-directory').value;
+    
+    debugLog('Path:', path);
     const recursive = document.getElementById('recursive-scan').checked;
     
     if (!path) {
@@ -1165,4 +1177,109 @@ function initMetadataControls() {
         updateMetadataBtn.addEventListener('click', updateMetadata);
     }
 }
+
+function updateAnalysisDisplay() {
+    // Fetch both statuses
+    Promise.all([
+        fetch('/api/analysis/status').then(r => r.json()),
+        fetch('/api/analysis/database-status').then(r => r.json())
+    ])
+    .then(([status, dbStatus]) => {
+        console.log('Status API:', status);
+        console.log('Database status:', dbStatus);
+        
+        // Use database numbers if API returns lower counts
+        const totalFiles = Math.max(status.total_files || 0, dbStatus.total || 0);
+        const processedFiles = Math.max(status.files_processed || 0, dbStatus.analyzed || 0);
+        
+        // Update UI elements
+        document.getElementById('analysis-status-total').textContent = totalFiles;
+        document.getElementById('analysis-status-processed').textContent = processedFiles;
+        document.getElementById('analysis-status-pending').textContent = totalFiles - processedFiles;
+        
+        // Update progress bar if it exists
+        const progressBar = document.getElementById('analysis-progress-bar');
+        if (progressBar) {
+            const percent = totalFiles > 0 ? (processedFiles / totalFiles) * 100 : 0;
+            progressBar.style.width = `${percent}%`;
+            progressBar.setAttribute('aria-valuenow', percent);
+        }
+        
+        // Update running status
+        if (status.running) {
+            document.getElementById('analysis-status').textContent = 'Running';
+            // Schedule next update
+            setTimeout(updateAnalysisDisplay, 2000);
+        } else {
+            document.getElementById('analysis-status').textContent = 'Idle';
+        }
+    })
+    .catch(error => {
+        console.error('Error updating analysis display:', error);
+    });
+}
+
+// Clean up the duplicate event listeners
+document.addEventListener('DOMContentLoaded', function() {
+    // Initial display update
+    updateAnalysisDisplay();
+    
+    // Quick Scan button - use a single event listener
+    const quickScanBtn = document.getElementById('quick-scan-btn');
+    if (quickScanBtn) {
+        // Remove any existing listeners
+        quickScanBtn.replaceWith(quickScanBtn.cloneNode(true));
+        
+        // Get the fresh element
+        const freshBtn = document.getElementById('quick-scan-btn');
+        
+        // Add the event listener
+        freshBtn.addEventListener('click', function() {
+            const musicPath = document.getElementById('music-directory').value;
+            const recursive = document.getElementById('recursive-scan').checked;
+            
+            // Show status before making request
+            const statusText = document.getElementById('analysis-status-text');
+            if (statusText) {
+                statusText.textContent = "Starting quick scan...";
+            }
+            
+            // Disable the button to prevent multiple clicks
+            this.disabled = true;
+            this.textContent = 'Scanning...';
+            
+            // Make AJAX request to scan endpoint
+            fetch('/scan_library', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ 
+                    directory: musicPath,
+                    recursive: recursive
+                }),
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Quick scan response:', data);
+                if (statusText) {
+                    statusText.textContent = data.message || "Quick scan initiated successfully";
+                }
+                
+                // Start polling for status updates
+                startPollingQuickScanStatus();
+            })
+            .catch(error => {
+                console.error('Error starting quick scan:', error);
+                if (statusText) {
+                    statusText.textContent = "Error starting quick scan: " + error;
+                }
+                
+                // Re-enable the button
+                this.disabled = false;
+                this.textContent = 'Quick Scan';
+            });
+        });
+    }
+});
 
