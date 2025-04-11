@@ -55,6 +55,7 @@
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/player.js') }}"></script>
+<script src="{{ url_for('static', filename='js/save-button-fix.js') }}"></script>
 <script>
     // Check if we're on the liked page and update UI accordingly
     document.addEventListener('DOMContentLoaded', function() {
@@ -91,5 +92,5 @@
         });
     }
 </script>
-<script src="/static/js/save-playlist-fix.js"></script>
+{% if 'save-playlist-fix.js' in request.url %}<script src="/static/js/save-playlist-fix.js"></script>{% endif %}
 {% endblock %}

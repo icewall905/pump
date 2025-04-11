@@ -979,8 +979,36 @@ window.initPlayerPage = function() {
                 .then(data => {
                     console.log('Recent data:', data);
                     if (Array.isArray(data) && data.length > 0) {
-                        // Limit to 6 items only
-                        displaySearchResults(data.slice(0, 6));
+                        // Process the tracks - convert arrays to objects if needed
+                        let processedTracks;
+                        
+                        // Check if we have an array of arrays (numbered indices)
+                        if (Array.isArray(data[0])) {
+                            console.log('Converting array format to object format for recent tracks');
+                            processedTracks = data.map(trackArray => {
+                                return {
+                                    id: trackArray[0],
+                                    file_path: trackArray[1],
+                                    title: trackArray[2] || 'Unknown Title',
+                                    artist: trackArray[3] || 'Unknown Artist',
+                                    album: trackArray[4] || 'Unknown Album',
+                                    album_art_url: trackArray[5],
+                                    duration: trackArray[6]
+                                };
+                            });
+                        } else {
+                            // Already in object format
+                            processedTracks = data;
+                        }
+                        
+                        // Limit to 12 items for better performance
+                        const displayData = processedTracks.slice(0, 12);
+                        
+                        // Save in current playlist for potential saving
+                        window.currentPlaylist = displayData;
+                        
+                        // Display the tracks
+                        displaySearchResults(displayData);
                     } else if (Array.isArray(data) && data.length === 0) {
                         searchResults.innerHTML = '<p>No recent tracks found. Try adding some music!</p>';
                     } else if (data.error) {
@@ -1938,29 +1966,158 @@ window.loadExplore = function() {
 
 window.loadRecent = function() {
     console.log('Global loadRecent called');
-    // ...existing code...
-    // Fetch recent data
+    
+    // Update heading
+    const resultsHeading = document.getElementById('results-heading');
+    if (resultsHeading) {
+        resultsHeading.textContent = 'Recently Added';
+    }
+    
+    const searchResults = document.getElementById('search-results');
+    if (!searchResults) {
+        console.error('search-results element not found');
+        return;
+    }
+    
+    // Show loading indicator
+    searchResults.innerHTML = '<div class="loading">Loading recent tracks...</div>';
+    
+    // Hide the playlist container without recreating it
+    const playlistContainer = document.getElementById('playlist-container');
+    if (playlistContainer) {
+        playlistContainer.style.display = 'none';
+    }
+    
+    // Fetch recent tracks
     fetch('/recent')
         .then(response => response.json())
         .then(data => {
-            // ...existing code...
+            console.log('Recent data received:', data);
+            if (Array.isArray(data) && data.length > 0) {
+                // Process the tracks - convert arrays to objects if needed
+                let processedTracks;
+                
+                // Check if we have an array of arrays (numbered indices)
+                if (Array.isArray(data[0])) {
+                    console.log('Converting array format to object format for recent tracks');
+                    processedTracks = data.map(trackArray => {
+                        return {
+                            id: trackArray[0],
+                            file_path: trackArray[1],
+                            title: trackArray[2] || 'Unknown Title',
+                            artist: trackArray[3] || 'Unknown Artist',
+                            album: trackArray[4] || 'Unknown Album',
+                            album_art_url: trackArray[5],
+                            duration: trackArray[6]
+                        };
+                    });
+                } else {
+                    // Already in object format
+                    processedTracks = data;
+                }
+                
+                // Limit to 12 items for better performance
+                const displayData = processedTracks.slice(0, 12);
+                
+                // Save in current playlist for potential saving
+                window.currentPlaylist = displayData;
+                
+                // Display the tracks
+                displaySearchResults(displayData);
+            } else if (Array.isArray(data) && data.length === 0) {
+                searchResults.innerHTML = '<p>No recent tracks found. Try adding some music!</p>';
+            } else if (data.error) {
+                searchResults.innerHTML = `<p>Error: ${data.error}</p>`;
+            }
         })
         .catch(error => {
-            // ...existing code...
+            console.error('Error loading recent tracks:', error);
+            if (searchResults) {
+                searchResults.innerHTML = '<p>Failed to load recent tracks. See console for details.</p>';
+            }
         });
 };
 
 window.loadLiked = function() {
     console.log('Global loadLiked called');
-    // ...existing code...
+    
+    // Update heading
+    const resultsHeading = document.getElementById('results-heading');
+    if (resultsHeading) {
+        resultsHeading.textContent = 'Liked Tracks';
+    }
+    
+    const searchResults = document.getElementById('search-results');
+    if (!searchResults) {
+        console.error('search-results element not found');
+        return;
+    }
+    
+    // Show loading indicator
+    searchResults.innerHTML = '<div class="loading">Loading liked tracks...</div>';
+    
+    // Hide the playlist container without recreating it
+    const playlistContainer = document.getElementById('playlist-container');
+    if (playlistContainer) {
+        playlistContainer.style.display = 'none';
+    }
+    
     // Fetch liked tracks
     fetch('/api/liked-tracks')
         .then(response => response.json())
         .then(data => {
-            // ...existing code...
+            console.log('Liked tracks data received:', data);
+            
+            // Handle empty results
+            if (!Array.isArray(data) || data.length === 0) {
+                if (searchResults) {
+                    searchResults.innerHTML = `
+                        <div class="empty-state">
+                            <h3>No liked tracks found</h3>
+                            <p>Like some tracks to see them appear here.</p>
+                        </div>
+                    `;
+                }
+                return;
+            }
+            
+            // Process the tracks - convert arrays to objects if needed
+            let processedTracks;
+            
+            // Check if we have an array of arrays (numbered indices)
+            if (Array.isArray(data[0])) {
+                console.log('Converting array format to object format');
+                processedTracks = data.map(trackArray => {
+                    return {
+                        id: trackArray[0],
+                        file_path: trackArray[1],
+                        title: trackArray[2] || 'Unknown Title',
+                        artist: trackArray[3] || 'Unknown Artist',
+                        album: trackArray[4] || 'Unknown Album',
+                        album_art_url: trackArray[5],
+                        duration: trackArray[6],
+                        liked: true
+                    };
+                });
+            } else {
+                // Already in object format, just ensure liked property is true
+                processedTracks = data.map(track => ({
+                    ...track,
+                    liked: true
+                }));
+            }
+            
+            // Save current playlist for save function
+            window.currentPlaylist = processedTracks;
+            
+            // Display the tracks
+            displaySearchResults(processedTracks);
         })
         .catch(error => {
-            // ...existing code...
+            console.error('Error loading liked tracks:', error);
+            if (searchResults) {
+                searchResults.innerHTML = `<div class="error">Error loading liked tracks: ${error}</div>`;
+            }
         });
 };
 
@@ -2166,7 +2323,35 @@ window.loadRecent = function() {
         .then(data => {
             console.log('Recent data received:', data);
             if (Array.isArray(data) && data.length > 0) {
-                const displayData = data.slice(0, 12);
+                // Process the tracks - convert arrays to objects if needed
+                let processedTracks;
+                
+                // Check if we have an array of arrays (numbered indices)
+                if (Array.isArray(data[0])) {
+                    console.log('Converting array format to object format for recent tracks');
+                    processedTracks = data.map(trackArray => {
+                        return {
+                            id: trackArray[0],
+                            file_path: trackArray[1],
+                            title: trackArray[2] || 'Unknown Title',
+                            artist: trackArray[3] || 'Unknown Artist',
+                            album: trackArray[4] || 'Unknown Album',
+                            album_art_url: trackArray[5],
+                            duration: trackArray[6]
+                        };
+                    });
+                } else {
+                    // Already in object format
+                    processedTracks = data;
+                }
+                
+                // Limit to 12 items for better performance
+                const displayData = processedTracks.slice(0, 12);
+                
+                // Save in current playlist for potential saving
+                window.currentPlaylist = displayData;
+                
+                // Display the tracks
                 displaySearchResults(displayData);
             } else if (Array.isArray(data) && data.length === 0) {
                 searchResults.innerHTML = '<p>No recent tracks found. Try adding some music!</p>';
@@ -2225,14 +2410,37 @@ window.loadLiked = function() {
                 return;
             }
             
-            // Ensure all tracks have the liked property set to true
-            const likedTracks = data.map(track => ({
-                ...track,
-                liked: true
-            }));
+            // Process the tracks - convert arrays to objects if needed
+            let processedTracks;
+            
+            // Check if we have an array of arrays (numbered indices)
+            if (Array.isArray(data[0])) {
+                console.log('Converting array format to object format');
+                processedTracks = data.map(trackArray => {
+                    return {
+                        id: trackArray[0],
+                        file_path: trackArray[1],
+                        title: trackArray[2] || 'Unknown Title',
+                        artist: trackArray[3] || 'Unknown Artist',
+                        album: trackArray[4] || 'Unknown Album',
+                        album_art_url: trackArray[5],
+                        duration: trackArray[6],
+                        liked: true
+                    };
+                });
+            } else {
+                // Already in object format, just ensure liked property is true
+                processedTracks = data.map(track => ({
+                    ...track,
+                    liked: true
+                }));
+            }
+            
+            // Save current playlist for save function
+            window.currentPlaylist = processedTracks;
             
             // Display the tracks
-            displaySearchResults(likedTracks);
+            displaySearchResults(processedTracks);
         })
         .catch(error => {
             console.error('Error loading liked tracks:', error);

@@ -12,6 +12,7 @@ import atexit
 import sys
 import re
 import time
+import psycopg2  # Add this import for PostgreSQL
 from psycopg2.extras import DictCursor
 from flask import Flask, render_template, request, jsonify, Response, send_file, g, session, redirect, url_for
 from music_analyzer import MusicAnalyzer
@@ -1653,9 +1654,11 @@ def save_playlist():
             # Add tracks to the playlist
             for i, track_id in enumerate(tracks):
                 cursor.execute(
-                    "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (%s, %s, %s)",
+                    "INSERT INTO playlist_items (playlist_id, track_id, position) VALUES (%s, %s, %s)",
                     (playlist_id, track_id, i)
                 )
+            
+            conn.commit()
                 
             return jsonify({
                 "status": "success",
