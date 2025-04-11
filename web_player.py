@@ -1839,9 +1839,11 @@ def get_track_info(track_id):
 @app.route('/stream/<int:track_id>')
 def stream(track_id):
     try:
-        # Get the track information
+        # Get the track information with all metadata
         result = execute_query_row(
-            "SELECT file_path FROM tracks WHERE id = %s",
+            """SELECT t.file_path, t.title, t.artist, t.album, t.album_art_url, t.duration 
+               FROM tracks t 
+               WHERE t.id = %s""",
             (track_id,)
         )
         
@@ -1858,6 +1860,20 @@ def stream(track_id):
         response = send_file(file_path, conditional=True)
         response.headers['Accept-Ranges'] = 'bytes'
         response.headers['Cache-Control'] = 'public, max-age=3600'  # Cache for 1 hour
+        
+        # Add metadata headers for the frontend
+        response.headers['X-Track-Id'] = str(track_id)
+        response.headers['X-Track-Title'] = result.get('title', os.path.basename(file_path))
+        response.headers['X-Track-Artist'] = result.get('artist', 'Unknown Artist')
+        response.headers['X-Track-Album'] = result.get('album', 'Unknown Album')
+        
+        # Include album art URL if available
+        if result.get('album_art_url'):
+            response.headers['X-Track-Art'] = result.get('album_art_url')
+            
+        # Include duration if available
+        if result.get('duration'):
+            response.headers['X-Track-Duration'] = str(result.get('duration'))
         
         return response
         
