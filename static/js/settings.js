@@ -931,13 +931,19 @@ function updateAnalysisDisplay() {
         console.log('Database status:', dbStatus);
         
         // Use database numbers if API returns lower counts
-        const totalFiles = Math.max(status.total_files, dbStatus.total);
-        const processedFiles = Math.max(status.files_processed, dbStatus.analyzed);
+        const totalFiles = Math.max(status.total_files || 0, dbStatus.total || 0);
+        const processedFiles = Math.max(status.files_processed || 0, dbStatus.analyzed || 0);
         
-        // Update UI elements
-        document.getElementById('analysis-status-total').textContent = totalFiles;
-        document.getElementById('analysis-status-processed').textContent = processedFiles;
-        document.getElementById('analysis-status-pending').textContent = totalFiles - processedFiles;
+        // Safely update UI elements - check if they exist first
+        const totalElem = document.getElementById('analysis-status-total');
+        const processedElem = document.getElementById('analysis-status-processed');
+        const pendingElem = document.getElementById('analysis-status-pending');
+        const analysisStatusElem = document.getElementById('analysis-status');
+        
+        // Only update elements if they exist
+        if (totalElem) totalElem.textContent = totalFiles;
+        if (processedElem) processedElem.textContent = processedFiles;
+        if (pendingElem) pendingElem.textContent = totalFiles - processedFiles;
         
         // Update progress bar if it exists
         const progressBar = document.getElementById('analysis-progress-bar');
@@ -948,12 +954,12 @@ function updateAnalysisDisplay() {
         }
         
         // Update running status
-        if (status.running) {
-            document.getElementById('analysis-status').textContent = 'Running';
+        if (status.running && analysisStatusElem) {
+            analysisStatusElem.textContent = 'Running';
             // Schedule next update
             setTimeout(updateAnalysisDisplay, 2000);
-        } else {
-            document.getElementById('analysis-status').textContent = 'Idle';
+        } else if (analysisStatusElem) {
+            analysisStatusElem.textContent = 'Idle';
         }
     })
     .catch(error => {
@@ -1159,10 +1165,16 @@ function updateAnalysisDisplay() {
         const totalFiles = Math.max(status.total_files || 0, dbStatus.total || 0);
         const processedFiles = Math.max(status.files_processed || 0, dbStatus.analyzed || 0);
         
-        // Update UI elements
-        document.getElementById('analysis-status-total').textContent = totalFiles;
-        document.getElementById('analysis-status-processed').textContent = processedFiles;
-        document.getElementById('analysis-status-pending').textContent = totalFiles - processedFiles;
+        // Safely update UI elements - check if they exist first
+        const totalElem = document.getElementById('analysis-status-total');
+        const processedElem = document.getElementById('analysis-status-processed');
+        const pendingElem = document.getElementById('analysis-status-pending');
+        const analysisStatusElem = document.getElementById('analysis-status');
+        
+        // Only update elements if they exist
+        if (totalElem) totalElem.textContent = totalFiles;
+        if (processedElem) processedElem.textContent = processedFiles;
+        if (pendingElem) pendingElem.textContent = totalFiles - processedFiles;
         
         // Update progress bar if it exists
         const progressBar = document.getElementById('analysis-progress-bar');
@@ -1173,12 +1185,12 @@ function updateAnalysisDisplay() {
         }
         
         // Update running status
-        if (status.running) {
-            document.getElementById('analysis-status').textContent = 'Running';
+        if (status.running && analysisStatusElem) {
+            analysisStatusElem.textContent = 'Running';
             // Schedule next update
             setTimeout(updateAnalysisDisplay, 2000);
-        } else {
-            document.getElementById('analysis-status').textContent = 'Idle';
+        } else if (analysisStatusElem) {
+            analysisStatusElem.textContent = 'Idle';
         }
     })
     .catch(error => {

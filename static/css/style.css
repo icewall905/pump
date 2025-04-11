@@ -2596,3 +2596,33 @@ p, span, div, label {
     font-weight: bold;
     color: #1DB954; /* Spotify-like green */
 }
+
+/* Add these styles to ensure progress indicators are visible when active */
+
+/* Make sure the progress indicators show up when they have active class or display block */
+#analysis-sidebar-progress.active,
+#metadata-sidebar-progress.active {
+    display: block !important; /* Force display to override any other CSS rules */
+    visibility: visible !important;
+    opacity: 1 !important;
+    margin: 15px 0;
+    padding: 12px;
+    background-color: rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+}
+
+/* Update progress fills to be more visible */
+#analysis-sidebar-progress .progress-fill,
+#metadata-sidebar-progress .progress-fill {
+    background-color: #4caf50 !important;
+    transition: width 0.3s ease;
+}
+
+/* Update text to be more visible */
+#analysis-sidebar-progress .progress-status-text,
+#metadata-sidebar-progress .progress-status-text {
+    font-size: 12px !important;
+    color: #fff !important;
+    margin-top: 5px;
+    text-align: center;
+}
