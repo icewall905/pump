@@ -905,29 +905,18 @@ def get_playlists_api():
         # Query playlists from the database using PostgreSQL syntax
         playlists = execute_query_dict(
             """
-            SELECT id, name, description, created_at 
-            FROM playlists 
-            ORDER BY created_at DESC
+            SELECT p.id, p.name, p.description, p.created_at,
+                   COUNT(pi.track_id) as track_count
+            FROM playlists p
+            LEFT JOIN playlist_items pi ON p.id = pi.playlist_id
+            GROUP BY p.id, p.name, p.description, p.created_at
+            ORDER BY p.created_at DESC
             """
         )
         
-        # Include track counts for each playlist
-        for playlist in playlists:
-            # Get track count for this playlist using PostgreSQL syntax
-            count_result = execute_query(
-                """
-                SELECT COUNT(*) as count
-                FROM playlist_items
-                WHERE playlist_id = %s
-                """,
-                (playlist['id'],)
-            )
-            # In PostgreSQL, the count result is returned as the first element of the first row
-            playlist['track_count'] = count_result[0][0] if count_result else 0
-        
         return jsonify(playlists)
     except Exception as e:
-        logger.error(f"Error getting playlists: {e}")
+        logger.error(f"Error getting playlists: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/playlists', methods=['GET', 'POST'])
@@ -1852,11 +1841,8 @@ def stream(track_id):
     try:
         # Get the track information
         result = execute_query_row(
-            DB_PATH,
-            "SELECT file_path FROM audio_files WHERE id = ?",
-            (track_id,),
-            in_memory=DB_IN_MEMORY,
-            cache_size_mb=DB_CACHE_SIZE_MB
+            "SELECT file_path FROM tracks WHERE id = %s",
+            (track_id,)
         )
         
         if not result:
@@ -3620,7 +3606,7 @@ def is_track_liked(track_id):
         )
         
         if not track:
-            return jsonify({"error": "Track not found"}), 404
+            return jsonify({"error": "Track not found"})
             
         return jsonify({"liked": track.get('liked', False)})
     except Exception as e:

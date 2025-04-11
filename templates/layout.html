@@ -56,10 +56,14 @@
     <!-- Audio element for playback -->
     <audio id="audio-player" preload="auto"></audio>
     
-    <!-- Common scripts used across all pages -->
+    <!-- Common scripts used across all pages - ORDER IS IMPORTANT -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="{{ url_for('static', filename='js/sidebar.js') }}"></script>
+    <!-- IMPORTANT: Load player-manager.js first to ensure PlayerManager is initialized before other scripts -->
+    <script src="{{ url_for('static', filename='js/player-manager.js') }}"></script>
+    <!-- Then load player controls -->
     <script src="{{ url_for('static', filename='js/player-controls.js') }}"></script>
+    <!-- Finally load remaining scripts -->
+    <script src="{{ url_for('static', filename='js/sidebar.js') }}"></script>
     <script src="{{ url_for('static', filename='js/navigation.js') }}"></script>
     <script src="{{ url_for('static', filename='js/save-playlist-fix.js') }}"></script>
     

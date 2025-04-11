@@ -217,13 +217,32 @@ window.loadSidebarPlaylists = function() {
             
             // Add each playlist to the sidebar
             data.forEach(playlist => {
+                console.log('Processing playlist:', playlist); // Debug individual playlist object
+                
                 const playlistItem = document.createElement('li');
                 playlistItem.className = 'playlist-item';
                 
                 const playlistLink = document.createElement('a');
                 playlistLink.href = `/?playlist=${playlist.id}`;
                 playlistLink.className = 'playlist-link';
-                playlistLink.textContent = playlist.name || 'Untitled Playlist';
+                
+                // Handle different playlist data structures
+                // Check for name property in different possible locations
+                let playlistName = 'Untitled Playlist';
+                if (playlist.name) {
+                    playlistName = playlist.name;
+                } else if (playlist.playlist_name) {
+                    playlistName = playlist.playlist_name;
+                } else if (typeof playlist === 'object' && playlist !== null) {
+                    // If playlist is an array with name at index 1 (common format in some APIs)
+                    if (Array.isArray(playlist) && playlist.length > 1 && typeof playlist[1] === 'string') {
+                        playlistName = playlist[1];
+                    }
+                    // Log keys to help debug the structure
+                    console.log('Playlist keys:', Object.keys(playlist));
+                }
+                
+                playlistLink.textContent = playlistName;
                 playlistLink.title = playlist.description || '';
                 
                 // Add click handler

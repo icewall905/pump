@@ -145,6 +145,27 @@ class PlayerManager {
     }
     
     /**
+     * Play a specific track by ID
+     * @param {number} trackId - ID of the track to play
+     */
+    playTrackById(trackId) {
+        console.log(`Global playTrack called with ID: ${trackId}`);
+
+        // Update the stream URL to use the correct endpoint
+        const streamUrl = `/stream/${trackId}`;
+        console.log(`Using stream URL: ${streamUrl}`);
+
+        // Set the audio source and play
+        this.audioPlayer.src = streamUrl;
+        this.audioPlayer.play().catch(error => {
+            console.error('Error playing track:', error);
+        });
+
+        // Check like status using the correct endpoint
+        this.checkTrackLikeStatus(trackId);
+    }
+    
+    /**
      * Toggle between play and pause
      */
     togglePlayPause() {

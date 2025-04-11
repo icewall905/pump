@@ -61,9 +61,21 @@ class PlayerManager {
     playTrack(trackId) {
         console.log(`Playing track: ${trackId}`);
         
+        // Clear any existing audio source first to prevent AbortError
+        if (this.audioPlayer) {
+            this.audioPlayer.pause();
+            this.audioPlayer.removeAttribute('src');
+            this.audioPlayer.load();
+        }
+        
         // Fetch track details and URL from the API
         fetch(`/api/tracks/${trackId}`)
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch track: ${response.status}`);
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.error) {
                     console.error('Error fetching track:', data.error);
@@ -83,11 +95,28 @@ class PlayerManager {
                 this.currentTrack = data;
                 this.currentTrackId = trackId;
                 
+                // FIXED: Use the correct streaming endpoint format based on API
+                // Try the ID-based endpoint first, and if file_path exists, use that as fallback
+                let streamUrl;
+                if (data.file_path) {
+                    // Use file path-based streaming if available
+                    streamUrl = `/api/stream?path=${encodeURIComponent(data.file_path)}`;
+                } else {
+                    // Otherwise use ID-based streaming
+                    streamUrl = `/stream/${trackId}`;
+                }
+                
+                console.log(`Using stream URL: ${streamUrl}`);
+                
                 // Set audio source and play
-                this.audioPlayer.src = `/api/tracks/${trackId}/stream`;
-                this.audioPlayer.play().catch(err => {
-                    console.error('Error playing track:', err);
-                });
+                this.audioPlayer.src = streamUrl;
+                
+                // Play after a small delay to prevent AbortError
+                setTimeout(() => {
+                    this.audioPlayer.play().catch(err => {
+                        console.error('Error playing track:', err);
+                    });
+                }, 50);
                 
                 // Update the UI
                 this.updateNowPlayingUI(data);
@@ -95,11 +124,12 @@ class PlayerManager {
                 // Save to local storage
                 localStorage.setItem('lastTrackId', trackId);
                 
-                // Check if track is liked
+                // Check if track is liked (with error handling)
                 this.checkTrackLikeStatus(trackId);
             })
             .catch(error => {
                 console.error('Error playing track:', error);
+                this.showToast('Error playing track: ' + error.message);
             });
     }
     
@@ -289,9 +319,27 @@ class PlayerManager {
     checkTrackLikeStatus(trackId) {
         if (!this.likeButton) return;
         
-        fetch(`/api/tracks/${trackId}/like-status`)
-            .then(response => response.json())
+        // First, set a default state to avoid incorrect UI
+        this.likeButton.classList.remove('liked');
+        this.likeButton.textContent = '♡';
+        
+        fetch(`/api/tracks/${trackId}/liked`)
+            .then(response => {
+                // Check if response is OK before trying to parse JSON
+                if (!response.ok) {
+                    // If endpoint doesn't exist, quietly fail without error in console
+                    if (response.status === 404) {
+                        console.log('Like status endpoint not available (404), skipping like status check');
+                        return null;
+                    }
+                    throw new Error(`Server returned ${response.status}`);
+                }
+                return response.json();
+            })
             .then(data => {
+                // Skip processing if we returned null (404 case)
+                if (data === null) return;
+                
                 if (data.liked) {
                     this.likeButton.classList.add('liked');
                     this.likeButton.textContent = '♥';
@@ -301,6 +349,7 @@ class PlayerManager {
                 }
             })
             .catch(error => {
+                // Only log detailed error if not a 404
                 console.error('Error checking like status:', error);
             });
     }
@@ -328,9 +377,96 @@ class PlayerManager {
     }
 }
 
+// Create a namespace for PlayerManager initialization
+window.PUMPPlayer = {
+    isReady: false,
+    pendingCallbacks: [],
+    manager: null,
+    
+    // Function to initialize the PlayerManager
+    initialize: function() {
+        console.log('PlayerManager initialization started');
+        
+        if (this.manager) {
+            console.log('PlayerManager already initialized');
+            return this.manager;
+        }
+        
+        try {
+            // Create PlayerManager instance
+            this.manager = new PlayerManager();
+            window.playerManager = this.manager; // Also set global reference
+            
+            // Create global playTrack function that all components can use
+            window.playTrack = function(trackId) {
+                console.log('Global playTrack called with ID:', trackId);
+                if (window.playerManager) {
+                    window.playerManager.playTrack(trackId);
+                } else {
+                    console.error('PlayerManager not available for playTrack function');
+                    // Store the track ID for later playback
+                    window.pendingPlayTrackId = trackId;
+                }
+            };
+            
+            // Set ready state and process queued callbacks
+            this.isReady = true;
+            this.processPendingCallbacks();
+            
+            // Handle any pending track playback
+            if (window.pendingPlayTrackId) {
+                console.log('Playing pending track:', window.pendingPlayTrackId);
+                window.playTrack(window.pendingPlayTrackId);
+                window.pendingPlayTrackId = null;
+            }
+            
+            console.log('PlayerManager successfully initialized');
+            return this.manager;
+        } catch (error) {
+            console.error('Error initializing PlayerManager:', error);
+            this.isReady = false;
+            return null;
+        }
+    },
+    
+    // Function to add callback to be executed when PlayerManager is ready
+    ready: function(callback) {
+        if (this.isReady && this.manager) {
+            // If already ready, execute immediately
+            callback(this.manager);
+        } else {
+            // Otherwise queue for execution
+            this.pendingCallbacks.push(callback);
+        }
+    },
+    
+    // Process all pending callbacks
+    processPendingCallbacks: function() {
+        console.log(`Processing ${this.pendingCallbacks.length} pending callbacks`);
+        
+        while (this.pendingCallbacks.length > 0) {
+            const callback = this.pendingCallbacks.shift();
+            try {
+                callback(this.manager);
+            } catch (error) {
+                console.error('Error executing callback:', error);
+            }
+        }
+    }
+};
+
 // Initialize the player manager when the DOM is fully loaded
-document.addEventListener('DOMContentLoaded', () => {
-    // Create a global instance of PlayerManager
-    window.playerManager = new PlayerManager();
-    console.log('PlayerManager initialized and attached to window object');
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('DOM loaded - initializing PlayerManager');
+    window.PUMPPlayer.initialize();
+    
+    // Dispatch a custom event that other scripts can listen for
+    document.dispatchEvent(new CustomEvent('playerManagerReady'));
+    
+    // Also execute any remaining inline scripts (this is a safety measure)
+    setTimeout(function() {
+        if (typeof window.onPlayerManagerReady === 'function') {
+            window.onPlayerManagerReady(window.playerManager);
+        }
+    }, 100);
 });
