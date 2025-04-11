@@ -32,6 +32,21 @@ window.initSettingsPage = function() {
 // When document is ready
 document.addEventListener('DOMContentLoaded', () => {
     window.initSettingsPage();
+    
+    // Add a single, reliable event handler for the analyze button here
+    const analyzeBtn = document.getElementById('analyze-button');
+    if (analyzeBtn) {
+        // Remove any existing event listeners by cloning and replacing
+        const newButton = analyzeBtn.cloneNode(true);
+        analyzeBtn.parentNode.replaceChild(newButton, analyzeBtn);
+        
+        // Add the event listener to the new button
+        newButton.addEventListener('click', function() {
+            console.log('Analyze button clicked');
+            startFullAnalysis();
+        });
+        console.log('Added reliable click handler to analyze button');
+    }
 });
 
 // Initialize library management functions
@@ -191,27 +206,34 @@ function startFullAnalysis() {
     analyzeBtn.disabled = true;
     analyzeBtn.textContent = 'Starting Analysis...';
     
-    // Make a direct request to /analyze endpoint
+    // Make a direct request to /analyze endpoint with the correct parameter name (directory, not path)
     fetch('/analyze', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-            path: path,
+            directory: path,
             recursive: recursive
         })
     })
-    .then(response => response.json())
+    .then(response => {
+        if (!response.ok) {
+            return response.json().then(errData => {
+                throw new Error(errData.message || `HTTP error ${response.status}`);
+            });
+        }
+        return response.json();
+    })
     .then(data => {
         console.log('Analysis response:', data);
         
-        if (data.status === 'success') {
+        if (data.status === 'success' || data.success) {
             showMessage('Analysis started!', 'success');
             // Start polling to update progress
             updateAnalysisStatus();
         } else {
-            showMessage('Error starting analysis: ' + (data.error || 'Unknown error'), 'error');
+            showMessage('Error starting analysis: ' + (data.error || data.message || 'Unknown error'), 'error');
             analyzeBtn.disabled = false;
             analyzeBtn.textContent = 'Full Analysis';
         }

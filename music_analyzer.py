@@ -187,6 +187,7 @@ class MusicAnalyzer:
                         track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
                         tempo FLOAT,
                         key INTEGER,
+                        brightness FLOAT,
                         energy FLOAT,
                         danceability FLOAT,
                         acousticness FLOAT,
@@ -516,12 +517,13 @@ class MusicAnalyzer:
                     "album_art_url": enhanced_metadata.get("album_art_url", ""),
                     "metadata_source": enhanced_metadata.get("metadata_source", "unknown"),
                     "duration": 0,
+                    "error": "Could not load audio data"
                 }
             
             # Basic audio properties
             duration = librosa.get_duration(y=y, sr=sr)
             
-            # Extract features
+            # Extract features - use the extract methods we just defined
             features = {
                 "file_path": file_path,
                 "duration": duration,
@@ -536,19 +538,22 @@ class MusicAnalyzer:
                 **self._extract_harmonic_features(y, sr)
             }
             
+            return features
+            
         except Exception as e:
-            logger.error(f"Error scanning library: {e}")
-            
-            # Update error status
-            QUICK_SCAN_STATUS.update({
-                'running': False,
-                'error': str(e)
-            })
-            
+            logger.error(f"Error analyzing file {file_path}: {e}")
+            # Return error object with meaningful fields
             return {
-                'processed': processed,
-                'added': added,
-                'error': str(e)
+                "file_path": file_path,
+                "error": str(e),
+                "tempo": 0,
+                "key": 0,
+                "mode": 0,
+                "time_signature": 4,
+                "energy": 0,
+                "danceability": 0.5,
+                "brightness": 0,
+                "noisiness": 0
             }
     
     def analyze_directory(self, directory: str, recursive: bool = True) -> None:
@@ -787,7 +792,7 @@ class MusicAnalyzer:
                         with thread_conn.cursor() as cursor:
                             cursor.execute('''
                             INSERT INTO audio_features
-                            (track_id, tempo, key, mode, time_signature,
+                            (track_id, tempo, key, mode, time_signature, brightness,
                             acousticness, danceability, energy, instrumentalness, loudness, valence)
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             ON CONFLICT (track_id) DO UPDATE SET
@@ -796,6 +801,7 @@ class MusicAnalyzer:
                                 mode = EXCLUDED.mode,
                                 time_signature = EXCLUDED.time_signature,
                                 acousticness = EXCLUDED.acousticness,
+                                brightness = EXCLUDED.brightness,
                                 danceability = EXCLUDED.danceability,
                                 energy = EXCLUDED.energy,
                                 instrumentalness = EXCLUDED.instrumentalness,
@@ -807,6 +813,7 @@ class MusicAnalyzer:
                                 features.get('key', 0), 
                                 features.get('mode', 0), 
                                 features.get('time_signature', 4),
+                                features.get('brightness', 0),
                                 features.get('acousticness', 0), 
                                 features.get('danceability', 0), 
                                 features.get('energy', 0),
@@ -1134,11 +1141,13 @@ class MusicAnalyzer:
                             (file_id,)
                         )
                         
-                        # Insert the features
+                        # Insert the features - Match columns with PostgreSQL schema
                         cursor.execute(
                             '''INSERT INTO audio_features 
-                               (track_id, tempo, key, mode, time_signature, energy, danceability, brightness, noisiness, loudness)
-                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                               (track_id, tempo, key, mode, time_signature, energy, 
+                                danceability, acousticness, brightness, instrumentalness, 
+                                valence, loudness)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                ON CONFLICT (track_id) DO UPDATE SET
                                tempo = EXCLUDED.tempo,
                                key = EXCLUDED.key,
@@ -1146,8 +1155,10 @@ class MusicAnalyzer:
                                time_signature = EXCLUDED.time_signature,
                                energy = EXCLUDED.energy,
                                danceability = EXCLUDED.danceability,
+                               acousticness = EXCLUDED.acousticness,
                                brightness = EXCLUDED.brightness,
-                               noisiness = EXCLUDED.noisiness,
+                               instrumentalness = EXCLUDED.instrumentalness,
+                               valence = EXCLUDED.valence,
                                loudness = EXCLUDED.loudness''',
                             (
                                 file_id,
@@ -1157,8 +1168,10 @@ class MusicAnalyzer:
                                 features.get("time_signature", 4),
                                 features.get("energy", 0),
                                 features.get("danceability", 0),
-                                features.get("brightness", 0),
-                                features.get("noisiness", 0),
+                                features.get("acousticness", 0.5),
+                                features.get("brightness", features.get("brightness", 0)),
+                                features.get("instrumentalness", 0),
+                                features.get("valence", 0.5),
                                 features.get("loudness", 0)
                             )
                         )
@@ -1359,6 +1372,7 @@ class MusicAnalyzer:
             contrast = librosa.feature.spectral_contrast(y=y, sr=sr)
             features["instrumentalness"] = min(1.0, float(np.mean(contrast)) / 5)
             
+            features["brightness"] = float(np.mean(cent))
             # Loudness
             features["loudness"] = float(librosa.amplitude_to_db(np.mean(rms)))
             
@@ -1375,6 +1389,7 @@ class MusicAnalyzer:
                 "key": 0,
                 "mode": 0,
                 "acousticness": 0.5,
+                "brightness": 0.5,
                 "danceability": 0.5,
                 "energy": 0.5,
                 "instrumentalness": 0.5,
@@ -1419,7 +1434,7 @@ class MusicAnalyzer:
                 cursor.execute('''
                 UPDATE audio_features SET
                 tempo = ?, key = ?, mode = ?, time_signature = ?,
-                acousticness = ?, danceability = ?, energy = ?,
+                acousticness = ?, danceability = ?, energy = ?, brightness = ?,
                 instrumentalness = ?, loudness = ?, speechiness = ?, valence = ?
                 WHERE file_id = ?
                 ''', (
@@ -1432,7 +1447,7 @@ class MusicAnalyzer:
                 # Insert new features
                 cursor.execute('''
                 INSERT INTO audio_features
-                (file_id, file_path, tempo, key, mode, time_signature,
+                (file_id, file_path, tempo, key, mode, time_signature, brightness,
                 acousticness, danceability, energy, instrumentalness, loudness, speechiness, valence)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
@@ -1456,8 +1471,8 @@ class MusicAnalyzer:
             
             # First, make sure seed track has been analyzed
             cursor.execute('''
-            SELECT af.analysis_status FROM audio_files af
-            WHERE af.file_path = ?
+            SELECT analysis_status FROM tracks
+            WHERE file_path = %s
             ''', (seed_file_path,))
             
             status = cursor.fetchone()
@@ -1467,74 +1482,49 @@ class MusicAnalyzer:
             
             # Get seed track's features
             cursor.execute('''
-            SELECT f.* FROM audio_features f
-            JOIN audio_files af ON f.file_path = af.file_path
-            WHERE af.file_path = ?
+            SELECT af.* FROM audio_features af
+            JOIN tracks t ON af.track_id = t.id
+            WHERE t.file_path = %s
             ''', (seed_file_path,))
             
             seed_features = cursor.fetchone()
             if not seed_features:
-                logger.warning(f"No features found for seed track {seed_file_path}")
+                logger.warning(f"No audio features found for seed track {seed_file_path}")
                 return []
             
-            # Get all analyzed tracks
+            # Find similar tracks
             cursor.execute('''
-            SELECT af.file_path, f.tempo, f.key, f.mode, f.acousticness, f.danceability,
-                   f.energy, f.instrumentalness, f.loudness, f.speechiness, f.valence
-            FROM audio_files af
-            JOIN audio_features f ON af.file_path = f.file_path
-            WHERE af.analysis_status = 'analyzed'
-            ''')
+            WITH seed_features AS (
+                SELECT af.* 
+                FROM audio_features af
+                JOIN tracks t ON af.track_id = t.id
+                WHERE t.file_path = %s
+            ),
+            track_distances AS (
+                SELECT t.file_path, t.title, t.artist, t.album,
+                   SQRT(POWER(af.energy - sf.energy, 2) +
+                        POWER(af.danceability - sf.danceability, 2) +
+                        POWER(af.valence - sf.valence, 2) +
+                        POWER(af.acousticness - sf.acousticness, 2)) as distance
+                FROM audio_features af
+                JOIN tracks t ON af.track_id = t.id
+                CROSS JOIN seed_features sf
+                WHERE t.file_path != %s
+            )
+            SELECT file_path
+            FROM track_distances
+            ORDER BY distance ASC
+            LIMIT %s
+            ''', (seed_file_path, seed_file_path, playlist_size - 1))
             
-            tracks = cursor.fetchall()
+            similar_tracks = [row[0] for row in cursor.fetchall()]
             
-            # Calculate similarity scores
-            similarities = []
-            for track in tracks:
-                if track[0] == seed_file_path:
-                    continue  # Skip seed track
-                
-                # Calculate feature-based similarity
-                tempo_diff = abs(track[1] - seed_features[3]) / 200  # Tempo difference
-                key_diff = abs(track[2] - seed_features[4]) / 12  # Key difference
-                mode_match = 1 if track[3] == seed_features[5] else 0  # Mode match
-                
-                # Acoustic characteristics
-                acousticness_diff = abs(track[4] - seed_features[7])
-                danceability_diff = abs(track[5] - seed_features[8])
-                energy_diff = abs(track[6] - seed_features[9])
-                instrumentalness_diff = abs(track[7] - seed_features[10])
-                loudness_diff = abs(track[8] - seed_features[11]) / 60  # Normalize loudness
-                speechiness_diff = abs(track[9] - seed_features[12])
-                valence_diff = abs(track[10] - seed_features[13])
-                
-                # Overall similarity score (lower is more similar)
-                similarity = (
-                    (tempo_diff * 0.1) +
-                    (key_diff * 0.1) +
-                    ((1 - mode_match) * 0.1) +
-                    (acousticness_diff * 0.1) +
-                    (danceability_diff * 0.15) +
-                    (energy_diff * 0.15) +
-                    (instrumentalness_diff * 0.1) +
-                    (loudness_diff * 0.05) +
-                    (speechiness_diff * 0.05) +
-                    (valence_diff * 0.1)
-                )
-                
-                similarities.append((track[0], similarity))
-            
-            # Sort by similarity (ascending)
-            similarities.sort(key=lambda x: x[1])
-            
-            # Include seed track as first item
-            similar_tracks = [seed_file_path] + [track[0] for track in similarities[:playlist_size - 1]]
-            
-            return similar_tracks
+            # Add seed track at the beginning
+            return [seed_file_path] + similar_tracks
             
         except Exception as e:
             logger.error(f"Error creating station: {e}")
-            return []
+            return [seed_file_path]  # Return just the seed track on error
 
     def analyze_audio_file(self, file_path):
         """Main analysis method with improved error handling"""
@@ -1574,59 +1564,58 @@ class MusicAnalyzer:
         logger.info(f"Running quick scan (alias for scan_library) on {directory}")
         return self.scan_library(directory, recursive)
 
-def estimate_danceability(self, y=None, sr=None):
-    """
-    Estimate danceability based on rhythm regularity and energy.
-    
-    This is a simplified implementation - commercial services use more complex algorithms.
-    """
-    # Check if y is defined, if not return a default value
-    if y is None:
-        logger.warning("No audio data provided for danceability estimation, returning default value")
-        return 0.5
-    
-    try:
-        # Get onset strength
-        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+    def estimate_danceability(self, y=None, sr=None):
+        """
+        Estimate danceability based on rhythm regularity and energy.
         
-        # Calculate pulse clarity (rhythm regularity)
-        ac = librosa.autocorrelate(onset_env, max_size=sr // 2)
-        # Find second peak (first peak is at lag 0)
-        peaks = librosa.util.peak_pick(ac, pre_max=20, post_max=20, pre_avg=20, 
-                                      post_avg=20, delta=0.1, wait=1)
-        if len(peaks) > 0:
-            # Use the highest peak as rhythm regularity measure
-            rhythm_regularity = ac[peaks[0]] / ac[0]
-        else:
-            rhythm_regularity = 0.1  # Low danceability if no clear rhythm
+        This is a simplified implementation - commercial services use more complex algorithms.
+        """
+        # Check if y is defined, if not return a default value
+        if y is None:
+            logger.warning("No audio data provided for danceability estimation, returning default value")
+            return 0.5
         
-        # Calculate tempo - the missing piece causing the error!
-        tempo_data = librosa.beat.tempo(onset_envelope=onset_env, sr=sr)
-        tempo = tempo_data[0] if hasattr(tempo_data, '__len__') else tempo_data
-        
-        # Combine with tempo and energy information
-        tempo_factor = np.clip((tempo - 60) / (180 - 60), 0, 1)  # Normalize tempo between 60-180 BPM
-        energy = np.mean(librosa.feature.rms(y=y))
-        energy_factor = np.clip(energy / 0.1, 0, 1)  # Normalize energy
-        
-        danceability = (0.5 * rhythm_regularity + 0.3 * tempo_factor + 0.2 * energy_factor)
-        
-        # Fix: ensure danceability is a scalar value
-        return float(danceability)
-    except Exception as e:
-        logger.error(f"Error estimating danceability: {e}")
-        return 0.5  # Return default value on error
+        try:
+            # Get onset strength
+            onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+            
+            # Calculate pulse clarity (rhythm regularity)
+            ac = librosa.autocorrelate(onset_env, max_size=sr // 2)
+            # Find second peak (first peak is at lag 0)
+            peaks = librosa.util.peak_pick(ac, pre_max=20, post_max=20, pre_avg=20, 
+                                          post_avg=20, delta=0.1, wait=1)
+            if len(peaks) > 0:
+                # Use the highest peak as rhythm regularity measure
+                rhythm_regularity = ac[peaks[0]] / ac[0]
+            else:
+                rhythm_regularity = 0.1  # Low danceability if no clear rhythm
+            
+            # Calculate tempo - the missing piece causing the error!
+            tempo_data = librosa.beat.tempo(onset_envelope=onset_env, sr=sr)
+            tempo = tempo_data[0] if hasattr(tempo_data, '__len__') else tempo_data
+            
+            # Combine with tempo and energy information
+            tempo_factor = np.clip((tempo - 60) / (180 - 60), 0, 1)  # Normalize tempo between 60-180 BPM
+            energy = np.mean(librosa.feature.rms(y=y))
+            energy_factor = np.clip(energy / 0.1, 0, 1)  # Normalize energy
+            
+            danceability = (0.5 * rhythm_regularity + 0.3 * tempo_factor + 0.2 * energy_factor)
+            
+            # Fix: ensure danceability is a scalar value
+            return float(danceability)
+        except Exception as e:
+            logger.error(f"Error estimating danceability: {e}")
+            return 0.5  # Return default value on error
 
-def _extract_time_domain_features(self, y, sr):
+    def _extract_time_domain_features(self, y, sr):
         """Extract features from the time domain"""
         features = {}
-        
         try:
             # RMS energy
             rms = librosa.feature.rms(y=y)
             features["energy"] = float(np.mean(rms))
             
-            # Zero-crossing rate for noisiness
+            # Zero crossing rate for noisiness
             zcr = librosa.feature.zero_crossing_rate(y=y)
             features["noisiness"] = float(np.mean(zcr))
             
@@ -1637,108 +1626,108 @@ def _extract_time_domain_features(self, y, sr):
                 "energy": 0.5,
                 "noisiness": 0.5
             }
-    
-def _extract_frequency_domain_features(self, y, sr):
-    """Extract features from the frequency domain"""
-    features = {}
-    
-    try:
-        # Spectral centroid (brightness)
-        cent = librosa.feature.spectral_centroid(y=y, sr=sr)
-        features["brightness"] = float(np.mean(cent)) / 10000.0  # Normalize to 0-1 range
-        
-        # Spectral contrast
-        contrast = librosa.feature.spectral_contrast(y=y, sr=sr)
-        features["spectral_contrast"] = float(np.mean(contrast))
-        
-        # Spectral bandwidth
-        bandwidth = librosa.feature.spectral_bandwidth(y=y, sr=sr)
-        features["spectral_bandwidth"] = float(np.mean(bandwidth))
-        
-        # Loudness
-        S = librosa.stft(y)
-        db = librosa.amplitude_to_db(abs(S))
-        features["loudness"] = float(np.mean(db))
-        
-        # MFCCs
-        mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
-        features["mfcc"] = np.mean(mfcc, axis=1).tolist()
-        
-        return features
-    except Exception as e:
-        logger.error(f"Error extracting frequency domain features: {e}")
-        return {
-            "brightness": 0.5,
-            "spectral_contrast": 0.5,
-            "spectral_bandwidth": 0.5,
-            "loudness": -20.0,
-            "mfcc": [0.0] * 13
-        }
 
-def _extract_rhythm_features(self, y, sr):
-    """Extract rhythm-related features"""
-    features = {}
-    
-    try:
-        # Tempo
-        onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-        tempo = librosa.beat.tempo(onset_envelope=onset_env, sr=sr)
-        if hasattr(tempo, "__len__"):
-            features["tempo"] = float(tempo[0])
-        else:
-            features["tempo"] = float(tempo)
+    def _extract_frequency_domain_features(self, y, sr):
+        """Extract features from the frequency domain"""
+        features = {}
         
-        # Time signature estimation
-        features["time_signature"] = 4  # Default to 4/4
-        
-        # Danceability estimate
-        features["danceability"] = self.estimate_danceability(y=y, sr=sr)
-        
-        return features
-    except Exception as e:
-        logger.error(f"Error extracting rhythm features: {e}")
-        return {
-            "tempo": 120.0,
-            "time_signature": 4,
-            "danceability": 0.5
-        }
+        try:
+            # Spectral centroid (brightness)
+            cent = librosa.feature.spectral_centroid(y=y, sr=sr)
+            features["brightness"] = float(np.mean(cent)) / 10000.0  # Normalize to 0-1 range
+            
+            # Spectral contrast
+            contrast = librosa.feature.spectral_contrast(y=y, sr=sr)
+            features["spectral_contrast"] = float(np.mean(contrast))
+            
+            # Spectral bandwidth
+            bandwidth = librosa.feature.spectral_bandwidth(y=y, sr=sr)
+            features["spectral_bandwidth"] = float(np.mean(bandwidth))
+            
+            # Loudness
+            S = librosa.stft(y)
+            db = librosa.amplitude_to_db(abs(S))
+            features["loudness"] = float(np.mean(db))
+            
+            # MFCCs
+            mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+            features["mfcc"] = np.mean(mfcc, axis=1).tolist()
+            
+            return features
+        except Exception as e:
+            logger.error(f"Error extracting frequency domain features: {e}")
+            return {
+                "brightness": 0.5,
+                "spectral_contrast": 0.5,
+                "spectral_bandwidth": 0.5,
+                "loudness": -20.0,
+                "mfcc": [0.0] * 13
+            }
 
-def _extract_harmonic_features(self, y, sr):
-    """Extract harmony-related features"""
-    features = {}
-    
-    try:
-        # Chromagram
-        chroma = librosa.feature.chroma_stft(y=y, sr=sr)
+    def _extract_rhythm_features(self, y, sr):
+        """Extract rhythm-related features"""
+        features = {}
         
-        # Key estimation
-        chroma_avg = np.mean(chroma, axis=1)
-        key = np.argmax(chroma_avg)
-        features["key"] = int(key)
+        try:
+            # Tempo
+            onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+            tempo = librosa.beat.tempo(onset_envelope=onset_env, sr=sr)
+            if hasattr(tempo, "__len__"):
+                features["tempo"] = float(tempo[0])
+            else:
+                features["tempo"] = float(tempo)
+            
+            # Time signature estimation
+            features["time_signature"] = 4  # Default to 4/4
+            
+            # Danceability estimate
+            features["danceability"] = self.estimate_danceability(y=y, sr=sr)
+            
+            return features
+        except Exception as e:
+            logger.error(f"Error extracting rhythm features: {e}")
+            return {
+                "tempo": 120.0,
+                "time_signature": 4,
+                "danceability": 0.5
+            }
+
+    def _extract_harmonic_features(self, y, sr):
+        """Extract harmony-related features"""
+        features = {}
         
-        # Minor or Major mode estimation
-        minor_template = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
-        major_template = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1])
-        
-        # Rotate templates to match the key
-        minor_template = np.roll(minor_template, key)
-        major_template = np.roll(major_template, key)
-        
-        # Correlate with chroma
-        minor_corr = np.corrcoef(minor_template, chroma_avg)[0, 1]
-        major_corr = np.corrcoef(major_template, chroma_avg)[0, 1]
-        
-        # Determine mode (0 for minor, 1 for major)
-        mode = 1 if major_corr > minor_corr else 0
-        features["mode"] = mode
-        
-        return features
-    except Exception as e:
-        logger.error(f"Error extracting harmonic features: {e}")
-        return {
-            "key": 0,
-            "mode": 1  # Default to major
-        }
+        try:
+            # Chromagram
+            chroma = librosa.feature.chroma_stft(y=y, sr=sr)
+            
+            # Key estimation
+            chroma_avg = np.mean(chroma, axis=1)
+            key = np.argmax(chroma_avg)
+            features["key"] = int(key)
+            
+            # Minor or Major mode estimation
+            minor_template = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
+            major_template = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1])
+            
+            # Rotate templates to match the key
+            minor_template = np.roll(minor_template, key)
+            major_template = np.roll(major_template, key)
+            
+            # Correlate with chroma
+            minor_corr = np.corrcoef(minor_template, chroma_avg)[0, 1]
+            major_corr = np.corrcoef(major_template, chroma_avg)[0, 1]
+            
+            # Determine mode (0 for minor, 1 for major)
+            mode = 1 if major_corr > minor_corr else 0
+            features["mode"] = mode
+            
+            return features
+        except Exception as e:
+            logger.error(f"Error extracting harmonic features: {e}")
+            return {
+                "key": 0,
+                "mode": 1  # Default to major
+            }
 
 def main():
     """Command line interface for music analysis"""

@@ -212,6 +212,7 @@ def initialize_database():
                     track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
                     tempo FLOAT,
                     key INTEGER,
+                    brightness FLOAT,
                     energy FLOAT,
                     danceability FLOAT,
                     acousticness FLOAT,
@@ -325,17 +326,18 @@ def update_track_audio_features(track_id, features):
     features['track_id'] = track_id
     query = """
         INSERT INTO audio_features (
-            track_id, tempo, key, energy, danceability, acousticness,
+            track_id, tempo, key, energy, danceability, acousticness, brightness,
             instrumentalness, valence, loudness, mode, time_signature, analysis_version
         ) VALUES (
             %(track_id)s, %(tempo)s, %(key)s, %(energy)s, %(danceability)s, %(acousticness)s,
-            %(instrumentalness)s, %(valence)s, %(loudness)s, %(mode)s, %(time_signature)s, %(analysis_version)s
+            %(brightness)s, %(instrumentalness)s, %(valence)s, %(loudness)s, %(mode)s, %(time_signature)s, %(analysis_version)s
         ) ON CONFLICT (track_id) DO UPDATE SET
             tempo = EXCLUDED.tempo,
             key = EXCLUDED.key,
             energy = EXCLUDED.energy,
             danceability = EXCLUDED.danceability,
             acousticness = EXCLUDED.acousticness,
+            brightness = EXCLUDED.brightness,
             instrumentalness = EXCLUDED.instrumentalness,
             valence = EXCLUDED.valence,
             loudness = EXCLUDED.loudness,
@@ -465,12 +467,13 @@ def toggle_track_like(track_id):
         return False
 
 @contextmanager
-def optimized_connection():
+def optimized_connection(db_path=None, commit_at_end=True, *args, **kwargs):
     """Context manager for PostgreSQL connections"""
     conn = get_connection()
     try:
         yield conn
-        conn.commit()
+        if commit_at_end:
+            conn.commit()
     except Exception as e:
         conn.rollback()
         raise
@@ -852,6 +855,7 @@ def get_similar_tracks(track_id, limit=20):
                     SQRT(
                         POWER(af.energy - %s, 2) * 1.0 +
                         POWER(af.danceability - %s, 2) * 1.0 +
+                        POWER(af.brightness - %s, 2) * 0.8 +
                         POWER(af.acousticness - %s, 2) * 0.8 +
                         POWER(af.instrumentalness - %s, 2) * 0.8 +
                         POWER(af.valence - %s, 2) * 1.2
@@ -875,6 +879,7 @@ def get_similar_tracks(track_id, limit=20):
         params = (
             ref_features['energy'], 
             ref_features['danceability'],
+            ref_features['brightness'],
             ref_features['acousticness'],
             ref_features['instrumentalness'],
             ref_features['valence'],

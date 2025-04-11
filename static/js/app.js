@@ -69,17 +69,24 @@ document.addEventListener('DOMContentLoaded', function() {
                 lastMetadataStatus = metadataData;
                 lastQuickScanStatus = quickScanData;
                 
-                // Only update the UI if something is running
-                if ((analysisData.running || metadataData.running || quickScanData.running) && !isNavigating) {
+                // Only update the UI if something is running or being processed
+                if ((analysisData.running || metadataData.running || quickScanData.running || 
+                    (analysisData.files_processed > 0 && analysisData.files_processed < analysisData.total_files)) && !isNavigating) {
                     statusIndicator.classList.add('active');
                     
                     // Simplified DOM update - determine the most important status to show
                     let statusHTML = '';
-                    if (analysisData.running) {
+                    if (analysisData.running || (analysisData.files_processed > 0 && analysisData.files_processed < analysisData.total_files)) {
+                        // Calculate percent complete if needed
+                        let percentComplete = analysisData.percent_complete;
+                        if (!percentComplete && analysisData.total_files > 0) {
+                            percentComplete = Math.round((analysisData.files_processed / analysisData.total_files) * 100);
+                        }
+                        
                         statusHTML = 
                             '<div class="status-icon pulse"></div>' +
                             '<div class="status-text">Analysis running (' + 
-                            analysisData.percent_complete + '%)</div>';
+                            percentComplete + '%) - ' + analysisData.files_processed + '/' + analysisData.total_files + ' files</div>';
                     } else if (quickScanData.running) {
                         statusHTML = 
                             '<div class="status-icon pulse"></div>' +

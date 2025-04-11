@@ -23,7 +23,7 @@ document.addEventListener('DOMContentLoaded', function() {
     updateLibraryStats();
     
     // Load playlists in sidebar
-    loadSidebarPlaylists();
+    window.loadSidebarPlaylists();
     
     // Check for status indicators and initialize status checking
     if (analysisStatusIndicator && metadataStatusIndicator) {
@@ -40,74 +40,6 @@ document.addEventListener('DOMContentLoaded', function() {
         window.playerManager = new PlayerManager();
     }
     
-    // Function to load playlists in the sidebar
-    function loadSidebarPlaylists() {
-        const playlistList = document.getElementById('playlist-list');
-        if (!playlistList) {
-            console.error('Playlist list container not found');
-            return;
-        }
-        
-        console.log('Loading playlists for sidebar');
-        
-        // Set a timeout to handle failed/slow loading
-        const loadingTimeout = setTimeout(() => {
-            // If we haven't replaced the content after 8 seconds, show error
-            if (playlistList.innerHTML.includes('Loading playlists...')) {
-                playlistList.innerHTML = '<div class="empty">No playlists available</div>';
-            }
-        }, 8000);
-        
-        // Fetch playlists from API
-        fetch('/api/playlists')
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(data => {
-                clearTimeout(loadingTimeout);
-                
-                console.log('Playlists loaded:', data);
-                
-                if (!Array.isArray(data) || data.length === 0) {
-                    playlistList.innerHTML = '<div class="empty">No playlists yet</div>';
-                    return;
-                }
-                
-                let html = '';
-                data.forEach(playlist => {
-                    html += `
-                        <div class="playlist-item" data-id="${playlist.id}">
-                            <div class="playlist-name">${playlist.name}</div>
-                            <div class="playlist-count">${playlist.track_count}</div>
-                        </div>
-                    `;
-                });
-                
-                playlistList.innerHTML = html;
-                
-                // Add click handlers for playlist items
-                document.querySelectorAll('.playlist-item').forEach(item => {
-                    item.addEventListener('click', function() {
-                        const playlistId = this.getAttribute('data-id');
-                        if (typeof window.loadPlaylist === 'function') {
-                            window.loadPlaylist(playlistId);
-                        } else {
-                            // Fallback to regular navigation
-                            window.location.href = `/playlist/${playlistId}`;
-                        }
-                    });
-                });
-            })
-            .catch(error => {
-                clearTimeout(loadingTimeout);
-                console.error('Error loading playlists:', error);
-                playlistList.innerHTML = '<div class="error">Failed to load playlists</div>';
-            });
-    }
-    
     function initializeStatusChecking() {
         // Check analysis status periodically
         function checkAnalysisStatus() {
@@ -115,20 +47,26 @@ document.addEventListener('DOMContentLoaded', function() {
                 .then(response => response.json())
                 .then(data => {
                     console.log('Analysis status update:', data);
-                    // Update UI with status
-                    if (data.running) {
+                    // Update UI with status - show progress if either running is true OR files are being processed
+                    if (data.running || (data.files_processed > 0 && data.files_processed < data.total_files)) {
+                        // Calculate percent complete - either use the API value or calculate it
+                        let percentComplete = data.percent_complete;
+                        if (!percentComplete && data.total_files > 0) {
+                            percentComplete = Math.round((data.files_processed / data.total_files) * 100);
+                        }
+                        
                         // Make the indicator visible - force display with !important
                         analysisStatusIndicator.style.cssText = 'display: block !important; visibility: visible !important; opacity: 1 !important; background-color: rgba(0,0,0,0.3); padding: 10px; margin: 10px 0; border-radius: 4px;';
                         analysisStatusIndicator.classList.add('active');
                         analysisStatusIndicator.innerHTML = `
                             <div class="progress-bar">
-                                <div class="progress-fill" style="width: ${data.percent_complete}%; background-color: #4caf50;"></div>
+                                <div class="progress-fill" style="width: ${percentComplete}%; background-color: #4caf50;"></div>
                             </div>
                             <div class="progress-status-text" style="color: white; font-size: 12px; text-align: center; margin-top: 5px;">
-                                Analyzing: ${data.percent_complete}% complete
+                                Analyzing: ${data.files_processed}/${data.total_files} files (${percentComplete}%)
                             </div>
                         `;
-                        console.log('Analysis progress shown:', data.percent_complete + '%');
+                        console.log('Analysis progress shown:', percentComplete + '%');
                     } else {
                         analysisStatusIndicator.classList.remove('active');
                         analysisStatusIndicator.style.cssText = 'display: none;';
@@ -226,4 +164,100 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     }
+    
+    // Retry loading playlists after a delay in case the server is still initializing
+    function retryLoadPlaylists() {
+        setTimeout(() => {
+            window.loadSidebarPlaylists();
+        }, 10000); // Try again after 10 seconds
+    }
+    
+    // Set up a retry mechanism
+    retryLoadPlaylists();
+    
+    // Make loadSidebarPlaylists globally accessible for other pages to call
+    window.loadSidebarPlaylists = loadSidebarPlaylists;
+});
+
+// Function to load playlists into the sidebar
+window.loadSidebarPlaylists = function() {
+    // Use the correct ID that matches the sidebar.html file
+    const playlistsContainer = document.getElementById('playlist-list');
+    
+    if (!playlistsContainer) {
+        console.error('Playlists container not found in sidebar');
+        return;
+    }
+    
+    console.log('Loading playlists for sidebar');
+    
+    // Show loading indicator
+    playlistsContainer.innerHTML = '<li class="loading">Loading playlists...</li>';
+    
+    // Use the correct API endpoint for playlists - UPDATED
+    fetch('/api/playlists')
+        .then(response => {
+            console.log('Playlists response:', response);
+            if (!response.ok) {
+                throw new Error(`Playlist endpoint not available: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('Playlists data:', data);
+            
+            // Clear loading indicator
+            playlistsContainer.innerHTML = '';
+            
+            // Check if we got valid data
+            if (!Array.isArray(data) || data.length === 0) {
+                playlistsContainer.innerHTML = '<li class="empty-playlists">No playlists found</li>';
+                return;
+            }
+            
+            // Add each playlist to the sidebar
+            data.forEach(playlist => {
+                const playlistItem = document.createElement('li');
+                playlistItem.className = 'playlist-item';
+                
+                const playlistLink = document.createElement('a');
+                playlistLink.href = `/?playlist=${playlist.id}`;
+                playlistLink.className = 'playlist-link';
+                playlistLink.textContent = playlist.name || 'Untitled Playlist';
+                playlistLink.title = playlist.description || '';
+                
+                // Add click handler
+                playlistLink.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    
+                    // Update URL without reloading
+                    const newUrl = `/?playlist=${playlist.id}`;
+                    window.history.pushState({ url: newUrl }, '', newUrl);
+                    
+                    // Load the playlist content
+                    if (typeof window.loadPlaylist === 'function') {
+                        window.loadPlaylist(playlist.id);
+                    } else {
+                        console.error('loadPlaylist function not available');
+                    }
+                    
+                    // Remove active class from all sidebar links
+                    document.querySelectorAll('.sidebar a').forEach(link => {
+                        link.classList.remove('active');
+                    });
+                });
+                
+                playlistItem.appendChild(playlistLink);
+                playlistsContainer.appendChild(playlistItem);
+            });
+        })
+        .catch(error => {
+            console.error('Error loading playlists:', error);
+            playlistsContainer.innerHTML = '<li class="error-playlists">Failed to load playlists</li>';
+        });
+};
+
+// Load playlists when the document is loaded
+document.addEventListener('DOMContentLoaded', function() {
+    window.loadSidebarPlaylists();
 });

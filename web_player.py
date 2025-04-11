@@ -849,6 +849,97 @@ def analyze_directory_worker(folder_path, recursive):
         # Release the lock
         ANALYSIS_LOCK.release()
 
+# Add after initialize_memory_db() function
+def setup_playlist_tables():
+    """Create playlist tables if they don't exist"""
+    logger.info("Setting up playlist tables")
+    try:
+        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
+            cursor = conn.cursor()
+            
+            # Create playlists table with PostgreSQL syntax
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS playlists (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Create playlist items table with PostgreSQL syntax
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS playlist_items (
+                    id SERIAL PRIMARY KEY,
+                    playlist_id INTEGER NOT NULL,
+                    track_id INTEGER NOT NULL,
+                    position INTEGER NOT NULL,
+                    FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
+                    FOREIGN KEY (track_id) REFERENCES audio_files(id) ON DELETE CASCADE
+                )
+            ''')
+            
+            conn.commit()
+            
+            # Check if tables were created successfully
+            cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND (table_name='playlists' OR table_name='playlist_items')")
+            tables = cursor.fetchall()
+            
+            if len(tables) == 2:
+                logger.info("Playlist tables created successfully")
+                return True
+            else:
+                logger.warning(f"Not all playlist tables were created. Found: {tables}")
+                return False
+                
+    except Exception as e:
+        logger.error(f"Error setting up playlist tables: {e}")
+        return False
+
+@app.route('/api/playlists')
+def get_playlists_api():
+    """Get all playlists - API endpoint"""
+    try:
+        # Query playlists from the database using PostgreSQL syntax
+        playlists = execute_query_dict(
+            """
+            SELECT id, name, description, created_at 
+            FROM playlists 
+            ORDER BY created_at DESC
+            """
+        )
+        
+        # Include track counts for each playlist
+        for playlist in playlists:
+            # Get track count for this playlist using PostgreSQL syntax
+            track_count = execute_query_dict(
+                """
+                SELECT COUNT(*) as count
+                FROM playlist_tracks
+                WHERE playlist_id = %s
+                """,
+                (playlist['id'],),
+                fetchone=True
+            )
+            playlist['track_count'] = track_count.get('count', 0) if track_count else 0
+        
+        return jsonify(playlists)
+    except Exception as e:
+        logger.error(f"Error getting playlists: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/playlists', methods=['GET', 'POST'])
+def api_playlists():
+    """API endpoint for playlists - redirects to the main playlist handlers"""
+    if request.method == 'GET':
+        return get_playlists()
+    elif request.method == 'POST':
+        return save_playlist()
+    else:
+        return jsonify({"error": "Method not allowed"}), 405
+
+
 @app.route('/playlist')
 def create_playlist():
     """Create a playlist based on a seed track"""
@@ -1045,6 +1136,8 @@ def run_analysis(folder_path, recursive):
 
 @app.route('/settings', methods=['GET', 'POST'])
 def settings():
+    global config  # Access the global config variable
+    
     if request.method == 'POST':
         try:
             # Load current config
@@ -1052,14 +1145,12 @@ def settings():
             config.read('pump.conf')
             
             # Ensure necessary sections exist
-            for section in ['lastfm', 'api_keys', 'database_performance', 'scheduler']:
+            sections_to_check = ['lastfm', 'api_keys', 'database_performance', 'scheduler', 'app', 'music']
+            for section in sections_to_check:
                 if not config.has_section(section):
                     config.add_section(section)
             
-            # We're skipping spotify section since you don't want to use it anymore
-            
-            # Update settings from form data - lastfm and other settings
-            # LastFM settings
+            # Update LastFM API settings
             config['lastfm']['api_key'] = request.form.get('lastfm_api_key', '')
             config['lastfm']['api_secret'] = request.form.get('lastfm_api_secret', '')
             
@@ -1067,8 +1158,33 @@ def settings():
             config['api_keys']['lastfm_api_key'] = request.form.get('lastfm_api_key', '')
             config['api_keys']['lastfm_api_secret'] = request.form.get('lastfm_api_secret', '')
             
-            # Other settings - database performance, etc.
-            # (existing code for other settings)
+            # Update music folder settings
+            music_folder_path = request.form.get('music_folder_path', '')
+            if music_folder_path:
+                config['music']['folder_path'] = music_folder_path
+                config['music']['recursive'] = 'true' if request.form.get('recursive') else 'false'
+            
+            # Update app settings
+            default_playlist_size = request.form.get('default_playlist_size')
+            if default_playlist_size:
+                config['app']['default_playlist_size'] = default_playlist_size
+            
+            # Update scheduler settings
+            startup_action = request.form.get('startup_action')
+            schedule_frequency = request.form.get('schedule_frequency')
+            if startup_action:
+                config['scheduler']['startup_action'] = startup_action
+            if schedule_frequency:
+                config['scheduler']['schedule_frequency'] = schedule_frequency
+            
+            # Update database performance settings
+            in_memory = 'true' if request.form.get('in_memory') else 'false'
+            cache_size_mb = request.form.get('cache_size_mb', '75')
+            optimize_connections = 'true' if request.form.get('optimize_connections') else 'false'
+            
+            config['database_performance']['in_memory'] = in_memory
+            config['database_performance']['cache_size_mb'] = cache_size_mb
+            config['database_performance']['optimize_connections'] = optimize_connections
             
             # Write updated config
             with open('pump.conf', 'w') as f:
@@ -1080,7 +1196,29 @@ def settings():
             return redirect(url_for('settings', error=f"Failed to update settings: {e}"))
     else:
         # GET request handling
-        return render_template('settings.html')  # Add this line to complete the else block
+        # Get music folder path from config
+        music_folder_path = config.get('music', 'folder_path', fallback='')
+        recursive = config.getboolean('music', 'recursive', fallback=True)
+        default_playlist_size = config.get('app', 'default_playlist_size', fallback='40')
+        lastfm_api_key = config.get('lastfm', 'api_key', fallback='')
+        lastfm_api_secret = config.get('lastfm', 'api_secret', fallback='')
+        startup_action = config.get('scheduler', 'startup_action', fallback='nothing')
+        schedule_frequency = config.get('scheduler', 'schedule_frequency', fallback='never')
+        in_memory = config.getboolean('database_performance', 'in_memory', fallback=False)
+        cache_size_mb = config.get('database_performance', 'cache_size_mb', fallback='75')
+        optimize_connections = config.getboolean('database_performance', 'optimize_connections', fallback=True)
+        
+        return render_template('settings.html', 
+                              music_folder_path=music_folder_path,
+                              recursive=recursive,
+                              default_playlist_size=default_playlist_size,
+                              lastfm_api_key=lastfm_api_key,
+                              lastfm_api_secret=lastfm_api_secret,
+                              startup_action=startup_action,
+                              schedule_frequency=schedule_frequency,
+                              in_memory=in_memory,
+                              cache_size_mb=cache_size_mb,
+                              optimize_connections=optimize_connections)
 
 @app.route('/debug/metadata')
 def debug_metadata():
@@ -1466,23 +1604,21 @@ def clear_cache():
 def get_playlists():
     """Get all saved playlists"""
     try:
-        from db_operations import execute_query_dict
+        logger.info("Getting all playlists")
         
-        # Use execute_query_dict instead which doesn't need the connection object
+        # Use execute_query_dict for PostgreSQL compatibility 
         playlists = execute_query_dict(
-            DB_PATH,
             '''
             SELECT p.id, p.name, p.description, p.created_at, p.updated_at,
                    COUNT(pi.id) as track_count
             FROM playlists p
             LEFT JOIN playlist_items pi ON p.id = pi.playlist_id
-            GROUP BY p.id
+            GROUP BY p.id, p.name, p.description, p.created_at, p.updated_at
             ORDER BY p.updated_at DESC
-            ''',
-            in_memory=DB_IN_MEMORY,
-            cache_size_mb=DB_CACHE_SIZE_MB
+            '''
         )
         
+        logger.info(f"Found {len(playlists)} playlists")
         return jsonify(playlists)
         
     except Exception as e:
@@ -1493,55 +1629,43 @@ def get_playlists():
 def save_playlist():
     try:
         data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        playlist_name = data.get('name')
+        playlist_description = data.get('description', '')
+        tracks = data.get('tracks', [])
+
+        if not playlist_name:
+            return jsonify({"error": "Playlist name is required"}), 400
         
-        # Validate required fields
-        if not data or 'name' not in data or 'tracks' not in data:
-            return jsonify({'error': 'Missing required fields'}), 400
+        # Use the optimized_connection context manager without positional arguments
+        with optimized_connection() as conn:
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
             
-        name = data['name']
-        description = data.get('description', '')
-        tracks = data['tracks']
-        
-        # Validate tracks format
-        if not isinstance(tracks, list):
-            return jsonify({'error': 'Tracks must be a list'}), 400
-            
-        # Connect to database
-        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            # Insert playlist
+            # Create the new playlist
             cursor.execute(
-                'INSERT INTO playlists (name, description) VALUES (?, ?)',
-                (name, description)
+                "INSERT INTO playlists (name, description) VALUES (%s, %s) RETURNING id",
+                (playlist_name, playlist_description)
             )
+            playlist_id = cursor.fetchone()['id']
             
-            # Get the new playlist ID
-            playlist_id = cursor.lastrowid
-            
-            # Insert tracks
+            # Add tracks to the playlist
             for i, track_id in enumerate(tracks):
                 cursor.execute(
-                    'INSERT INTO playlist_items (playlist_id, track_id, position) VALUES (?, ?, ?)',
+                    "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (%s, %s, %s)",
                     (playlist_id, track_id, i)
                 )
                 
-            conn.commit()
-            
-        # Mark database as modified
-        g.db_modified = True
-            
-        return jsonify({
-            'id': playlist_id,
-            'name': name,
-            'description': description,
-            'track_count': len(tracks)
-        })
-        
+            return jsonify({
+                "status": "success",
+                "playlist_id": playlist_id,
+                "message": f"Playlist '{playlist_name}' created with {len(tracks)} tracks"
+            })
+    
     except Exception as e:
-        logger.error(f"Error saving playlist: {e}")
-        return jsonify({'error': str(e)}), 500
+        app.logger.error(f"Error saving playlist: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/playlists/<int:playlist_id>', methods=['GET'])
 def get_playlist(playlist_id):
@@ -1559,17 +1683,14 @@ def get_playlist(playlist_id):
         
         # Get playlist tracks in order
         tracks = execute_query_dict(
-            DB_PATH,
             """
             SELECT t.id, t.file_path, t.title, t.artist, t.album, t.album_art_url, t.duration
             FROM playlist_items pi
-            JOIN audio_files t ON pi.track_id = t.id
-            WHERE pi.playlist_id = ?
+            JOIN tracks t ON pi.track_id = t.id
+            WHERE pi.playlist_id = %s
             ORDER BY pi.position
             """,
             (playlist_id,),
-            in_memory=DB_IN_MEMORY,
-            cache_size_mb=DB_CACHE_SIZE_MB
         )
         
         playlist['tracks'] = tracks
@@ -2220,6 +2341,87 @@ def create_station(seed_track_id):
         logger.error(f"Error creating station: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/station/<int:seed_track_id>')
+def create_station_api(seed_track_id):
+    """Create a station from a seed track - API endpoint"""
+    try:
+        # Get number of tracks from query string or default
+        num_tracks = request.args.get('num_tracks', 
+                                     config.get('app', 'default_playlist_size', fallback=10), 
+                                     type=int)
+        
+        logger.info(f"Creating station API with {num_tracks} tracks from seed {seed_track_id}")
+        
+        # Get seed track
+        seed_track = execute_query_dict(
+            "SELECT * FROM tracks WHERE id = %s",
+            (seed_track_id,),
+            fetchone=True
+        )
+        
+        if not seed_track:
+            logger.error(f"Seed track not found for ID: {seed_track_id}")
+            return jsonify({"error": "Seed track not found"}), 404
+        
+        # Get audio features for the seed track
+        seed_features = execute_query_dict(
+            """SELECT * FROM audio_features WHERE track_id = %s""",
+            (seed_track_id,),
+            fetchone=True
+        )
+        
+        if not seed_features:
+            logger.error(f"No audio features found for seed track: {seed_track_id}")
+            
+            # Return a fallback station with random tracks if no audio features
+            random_tracks = execute_query_dict(
+                """
+                SELECT t.*
+                FROM tracks t
+                WHERE t.id != %s
+                ORDER BY RANDOM()
+                LIMIT %s
+                """,
+                (seed_track_id, num_tracks - 1)
+            )
+            
+            station = [seed_track] + random_tracks
+            logger.info(f"Created fallback random station with {len(station)} tracks")
+            return jsonify(station)
+        
+        # Find similar tracks based on audio features
+        similar_tracks = execute_query_dict(
+            """
+            SELECT t.*
+            FROM audio_features af
+            JOIN tracks t ON af.track_id = t.id
+            WHERE t.id != %s
+            ORDER BY 
+                POWER(af.energy - %s, 2) +
+                POWER(af.danceability - %s, 2) +
+                POWER(af.valence - %s, 2) +
+                POWER(af.acousticness - %s, 2)
+            LIMIT %s
+            """,
+            (
+                seed_track_id, 
+                seed_features.get('energy', 0),
+                seed_features.get('danceability', 0),
+                seed_features.get('valence', 0),
+                seed_features.get('acousticness', 0),
+                num_tracks - 1  # -1 because we add the seed track at first position
+            )
+        )
+        
+        # Add seed track to the beginning of the result set
+        station = [seed_track] + similar_tracks
+        logger.info(f"Successfully created station with {len(station)} tracks")
+        return jsonify(station)
+        
+    except Exception as e:
+        logger.error(f"Error creating station: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/settings/change_log_level', methods=['POST'])
 def change_log_level():
     try:
@@ -2737,29 +2939,30 @@ def get_analysis_status():
         # Create a copy of the status to avoid race conditions
         status = dict(ANALYSIS_STATUS)
         
+        # Ensure proper percent calculation - don't show 100% unless actually complete
+        if status.get('running') == False and status.get('error') is not None:
+            # If there was an error and not running, calculate actual percentage
+            if status.get('total_files', 0) > 0:
+                status['percent_complete'] = min(99, round((status.get('files_processed', 0) / status.get('total_files', 0)) * 100, 1))
+            else:
+                status['percent_complete'] = 0
+        
         # Convert datetime objects to ISO format strings or handle None values
         if status.get('start_time') is not None:
             if isinstance(status['start_time'], datetime):
                 status['start_time'] = status['start_time'].isoformat()
-            elif status['start_time'] is None:
-                status['start_time'] = None
         
         if status.get('last_updated') is not None:
             if isinstance(status['last_updated'], datetime):
                 status['last_updated'] = status['last_updated'].isoformat()
-            elif status['last_updated'] is None:
-                status['last_updated'] = None
         
         return jsonify(status)
     except Exception as e:
         logger.error(f"Error getting analysis status: {e}")
         return jsonify({
             'running': False,
-            'error': str(e),
-            'start_time': None,
-            'last_updated': None,
-            'percent_complete': 0
-        }), 500
+            'error': f"Failed to get status: {str(e)}"
+        })
 
 @app.route('/api/test-credentials', methods=['GET'])
 def test_credentials():

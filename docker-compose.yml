@@ -9,6 +9,6 @@ services:
       POSTGRES_USER: pump
       POSTGRES_DB: pump
     volumes:
-      - ./db:/var/lib/postgresql/data
+      - ./database:/var/lib/postgresql/data
     ports:
       - "45432:5432"

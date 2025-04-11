@@ -75,5 +75,21 @@
             }
         }
     });
+
+    // Connect Save Playlist button from the main UI
+    const savePlaylistBtn = document.getElementById('save-playlist-btn');
+    if (savePlaylistBtn) {
+        console.log('Found Save Playlist button, connecting event handler');
+        savePlaylistBtn.addEventListener('click', function() {
+            console.log('Save Playlist button clicked');
+            if (typeof window.saveCurrentPlaylist === 'function') {
+                window.saveCurrentPlaylist();
+            } else {
+                console.error('saveCurrentPlaylist function not available');
+                alert('Save playlist function not available');
+            }
+        });
+    }
 </script>
+<script src="/static/js/save-playlist-fix.js"></script>
 {% endblock %}
