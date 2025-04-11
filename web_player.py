@@ -914,16 +914,16 @@ def get_playlists_api():
         # Include track counts for each playlist
         for playlist in playlists:
             # Get track count for this playlist using PostgreSQL syntax
-            track_count = execute_query_dict(
+            count_result = execute_query(
                 """
                 SELECT COUNT(*) as count
-                FROM playlist_tracks
+                FROM playlist_items
                 WHERE playlist_id = %s
                 """,
-                (playlist['id'],),
-                fetchone=True
+                (playlist['id'],)
             )
-            playlist['track_count'] = track_count.get('count', 0) if track_count else 0
+            # In PostgreSQL, the count result is returned as the first element of the first row
+            playlist['track_count'] = count_result[0][0] if count_result else 0
         
         return jsonify(playlists)
     except Exception as e:
@@ -934,7 +934,7 @@ def get_playlists_api():
 def api_playlists():
     """API endpoint for playlists - redirects to the main playlist handlers"""
     if request.method == 'GET':
-        return get_playlists()
+        return get_playlists_api()
     elif request.method == 'POST':
         return save_playlist()
     else:
@@ -1610,14 +1610,25 @@ def get_playlists():
         # Use execute_query_dict for PostgreSQL compatibility 
         playlists = execute_query_dict(
             '''
-            SELECT p.id, p.name, p.description, p.created_at, p.updated_at,
-                   COUNT(pi.id) as track_count
+            SELECT p.id, p.name, p.description, p.created_at, p.updated_at
             FROM playlists p
-            LEFT JOIN playlist_items pi ON p.id = pi.playlist_id
-            GROUP BY p.id, p.name, p.description, p.created_at, p.updated_at
             ORDER BY p.updated_at DESC
             '''
         )
+        
+        # Include track counts for each playlist
+        for playlist in playlists:
+            # Get track count for this playlist using PostgreSQL syntax
+            count_result = execute_query(
+                """
+                SELECT COUNT(*) as count
+                FROM playlist_items
+                WHERE playlist_id = %s
+                """,
+                (playlist['id'],)
+            )
+            # In PostgreSQL, the count result is returned as the first element of the first row
+            playlist['track_count'] = count_result[0][0] if count_result else 0
         
         logger.info(f"Found {len(playlists)} playlists")
         return jsonify(playlists)
@@ -3831,6 +3842,25 @@ def run_server():
     except Exception as e:
         logger.error(f"Error running server: {e}")
 
+@app.route('/api/tracks/<int:track_id>/playlist')
+def get_track_playlists(track_id):
+    """Get all playlists containing a specific track"""
+    try:
+        playlists = execute_query_dict(
+            """
+            SELECT p.id, p.name, p.description, p.created_at
+            FROM playlists p
+            JOIN playlist_items pi ON p.id = pi.playlist_id
+            WHERE pi.track_id = %s
+            ORDER BY p.name
+            """,
+            (track_id,)
+        )
+        
+        return jsonify(playlists)
+    except Exception as e:
+        logger.error(f"Error getting playlists for track {track_id}: {e}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     run_server()
