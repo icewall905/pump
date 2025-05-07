@@ -898,811 +898,209 @@ def setup_playlist_tables():
         logger.error(f"Error setting up playlist tables: {e}")
         return False
 
-@app.route('/api/playlists')
-def get_playlists_api():
-    """Get all playlists - API endpoint"""
-    try:
-        # Query playlists from the database using PostgreSQL syntax
-        playlists = execute_query_dict(
-            """
-            SELECT p.id, p.name, p.description, p.created_at,
-                   COUNT(pi.track_id) as track_count
-            FROM playlists p
-            LEFT JOIN playlist_items pi ON p.id = pi.playlist_id
-            GROUP BY p.id, p.name, p.description, p.created_at
-            ORDER BY p.created_at DESC
-            """
-        )
-        
-        return jsonify(playlists)
-    except Exception as e:
-        logger.error(f"Error getting playlists: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
-
 @app.route('/api/playlists', methods=['GET', 'POST'])
 def api_playlists():
-    """API endpoint for playlists - redirects to the main playlist handlers"""
     if request.method == 'GET':
-        return get_playlists_api()
-    elif request.method == 'POST':
-        return save_playlist()
-    else:
-        return jsonify({"error": "Method not allowed"}), 405
-
-
-@app.route('/playlist')
-def create_playlist():
-    """Create a playlist based on a seed track"""
-    seed_track_id = request.args.get('seed_track_id')
-    playlist_size = request.args.get('size', DEFAULT_PLAYLIST_SIZE, type=int)
-    
-    if not seed_track_id:
-        return jsonify({'error': 'Seed track ID required'}), 400
-    
-    try:
-        # Create a playlist using the analyzer
-        logger.info(f"Generating playlist with seed track ID {seed_track_id} and {playlist_size} tracks")
-        
-        # Get the seed track's file path
-        seed_track = execute_query_row(
-            DB_PATH,
-            'SELECT file_path FROM audio_files WHERE id = ?', 
-            (seed_track_id,),
-            in_memory=DB_IN_MEMORY,
-            cache_size_mb=DB_CACHE_SIZE_MB
-        )
-        
-        if not seed_track:
-            return jsonify({'error': 'Seed track not found'}), 404
-        
-        # Generate the playlist
-        if analyzer:
-            similar_tracks = analyzer.create_station(seed_track['file_path'], playlist_size)
-            
-            # Get the full details of the tracks
-            playlist = []
-            for track_path in similar_tracks:
-                track = execute_query_row(
-                    DB_PATH,
-                    '''SELECT id, file_path, title, artist, album, album_art_url, duration 
-                       FROM audio_files 
-                       WHERE file_path = ?''',
-                    (track_path,),
-                    in_memory=DB_IN_MEMORY,
-                    cache_size_mb=DB_CACHE_SIZE_MB
-                )
-                if track:
-                    playlist.append(track)
-            
-            logger.info(f"Generated playlist with {len(playlist)} tracks")
-            return jsonify(playlist)
-        else:
-            return jsonify({'error': 'Analyzer not available'}), 500
-            
-    except Exception as e:
-        logger.error(f"Error creating playlist: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/api/db-schema')
-def get_db_schema():
-    """Get the actual schema of database tables"""
-    try:
-        schema = {}
-        conn = get_connection()
         try:
-            cursor = conn.cursor()
+            logger.info("API: Getting all playlists via /api/playlists (GET)")
             
-            # Get list of tables
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            tables = [row[0] for row in cursor.fetchall()]
-            
-            # Get schema for each table
-            for table in tables:
-                cursor.execute(f"PRAGMA table_info({table})")
-                columns = [{"name": row[1], "type": row[2]} for row in cursor.fetchall()]
-                schema[table] = columns
-        finally:
-            release_connection(conn)
-                
-        return jsonify(schema)
-    except Exception as e:
-        logger.error(f"Error getting database schema: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/explore')
-def explore():
-    """Get random tracks for exploration"""
-    try:
-        conn = get_connection()
-        try:
-            cursor = conn.cursor(cursor_factory=DictCursor)
-            
-            # Count tracks
-            cursor.execute("SELECT COUNT(*) FROM tracks")
-            count = cursor.fetchone()[0]
-            
-            # Get random tracks
-            random_tracks = []
-            if count > 0:
-                sample_size = min(6, count)
-                cursor.execute(
-                    """SELECT id, file_path, title, artist, album, album_art_url, duration
-                       FROM tracks
-                       ORDER BY RANDOM()
-                       LIMIT %s""",
-                    (sample_size,)
-                )
-                random_tracks = [dict(track) for track in cursor.fetchall()]
-                
-                # Set default titles for tracks without titles
-                for track in random_tracks:
-                    if not track['title']:
-                        track['title'] = os.path.basename(track['file_path'])
-            
-            logger.info(f"Returning {len(random_tracks)} random tracks for exploration")
-            return jsonify(random_tracks)
-        finally:
-            release_connection(conn)
-    except Exception as e:
-        logger.error(f"Error exploring tracks: {e}")
-        return jsonify({"error": str(e)}), 500
-
-def run_analysis(folder_path, recursive):
-    """Run the analysis with proper locking to prevent duplicates"""
-    global ANALYSIS_STATUS
-    
-    # Check if analysis is already running
-    if ANALYSIS_STATUS['running']:
-        logger.warning("Analysis already running, skipping request")
-        return {"status": "error", "message": "Analysis already running"}
-    
-    try:
-        ANALYSIS_STATUS.update({
-            'running': True,
-            'start_time': datetime.now(),
-            'files_processed': 0,
-            'total_files': 0,
-            'current_file': '',
-            'percent_complete': 0,
-            'last_updated': datetime.now(),
-            'error': None
-        })
-        
-        logger.info(f"Starting music analysis for {folder_path} (recursive={recursive})")
-        
-        # Create analyzer
-        analyzer = MusicAnalyzer()
-        
-        # First do a quick scan to get file count and add basic metadata
-        scan_result = analyzer.scan_library(folder_path, recursive)
-        
-        # Check if scan_result is None or doesn't have expected keys
-        if not scan_result:
-            logger.error("Scan library returned None")
-            ANALYSIS_STATUS.update({
-                'running': False,
-                'error': "Scan failed - no result returned",
-                'last_updated': datetime.now()
-            })
-            return {"status": "error", "message": "Scan failed - no result returned"}
-        
-        # Now analyze pending files
-        result = analyzer.analyze_pending_files(
-            limit=None,  # Analyze all
-            progress_callback=update_analysis_progress,
-            status_dict=ANALYSIS_STATUS
-        )
-        
-        # Check if result is None or doesn't have expected keys
-        if not result:
-            logger.error("Analyze pending files returned None")
-            ANALYSIS_STATUS.update({
-                'running': False,
-                'error': "Analysis failed - no result returned",
-                'last_updated': datetime.now()
-            })
-            return {"status": "error", "message": "Analysis failed - no result returned"}
-            
-        ANALYSIS_STATUS.update({
-            'running': False,
-            'percent_complete': 100,
-            'last_updated': datetime.now()
-        })
-        
-        logger.info(f"Analysis complete: {result.get('analyzed', 0)} tracks analyzed")
-        return {
-            "status": "success",
-            "analyzed": result.get('analyzed', 0),
-            "failed": result.get('failed', 0)
-        }
-    except Exception as e:
-        logger.error(f"Error running analysis: {e}")
-        ANALYSIS_STATUS.update({
-            'running': False,
-            'error': str(e),
-            'last_updated': datetime.now()
-        })
-        return {"status": "error", "message": str(e)}
-
-@app.route('/settings', methods=['GET', 'POST'])
-def settings():
-    global config  # Access the global config variable
-    
-    if request.method == 'POST':
-        try:
-            # Load current config
-            config = configparser.ConfigParser()
-            config.read('pump.conf')
-            
-            # Ensure necessary sections exist
-            sections_to_check = ['lastfm', 'api_keys', 'database_performance', 'scheduler', 'app', 'music']
-            for section in sections_to_check:
-                if not config.has_section(section):
-                    config.add_section(section)
-            
-            # Update LastFM API settings
-            config['lastfm']['api_key'] = request.form.get('lastfm_api_key', '')
-            config['lastfm']['api_secret'] = request.form.get('lastfm_api_secret', '')
-            
-            # Also update in api_keys section for compatibility
-            config['api_keys']['lastfm_api_key'] = request.form.get('lastfm_api_key', '')
-            config['api_keys']['lastfm_api_secret'] = request.form.get('lastfm_api_secret', '')
-            
-            # Update music folder settings
-            music_folder_path = request.form.get('music_folder_path', '')
-            if music_folder_path:
-                config['music']['folder_path'] = music_folder_path
-                config['music']['recursive'] = 'true' if request.form.get('recursive') else 'false'
-            
-            # Update app settings
-            default_playlist_size = request.form.get('default_playlist_size')
-            if default_playlist_size:
-                config['app']['default_playlist_size'] = default_playlist_size
-            
-            # Update scheduler settings
-            startup_action = request.form.get('startup_action')
-            schedule_frequency = request.form.get('schedule_frequency')
-            if startup_action:
-                config['scheduler']['startup_action'] = startup_action
-            if schedule_frequency:
-                config['scheduler']['schedule_frequency'] = schedule_frequency
-            
-            # Update database performance settings
-            in_memory = 'true' if request.form.get('in_memory') else 'false'
-            cache_size_mb = request.form.get('cache_size_mb', '75')
-            optimize_connections = 'true' if request.form.get('optimize_connections') else 'false'
-            
-            config['database_performance']['in_memory'] = in_memory
-            config['database_performance']['cache_size_mb'] = cache_size_mb
-            config['database_performance']['optimize_connections'] = optimize_connections
-            
-            # Write updated config
-            with open('pump.conf', 'w') as f:
-                config.write(f)
-                
-            return redirect(url_for('settings', message='Settings updated successfully'))
-        except Exception as e:
-            logger.error(f"Error updating settings: {e}")
-            return redirect(url_for('settings', error=f"Failed to update settings: {e}"))
-    else:
-        # GET request handling
-        # Get music folder path from config
-        music_folder_path = config.get('music', 'folder_path', fallback='')
-        recursive = config.getboolean('music', 'recursive', fallback=True)
-        default_playlist_size = config.get('app', 'default_playlist_size', fallback='40')
-        lastfm_api_key = config.get('lastfm', 'api_key', fallback='')
-        lastfm_api_secret = config.get('lastfm', 'api_secret', fallback='')
-        startup_action = config.get('scheduler', 'startup_action', fallback='nothing')
-        schedule_frequency = config.get('scheduler', 'schedule_frequency', fallback='never')
-        in_memory = config.getboolean('database_performance', 'in_memory', fallback=False)
-        cache_size_mb = config.get('database_performance', 'cache_size_mb', fallback='75')
-        optimize_connections = config.getboolean('database_performance', 'optimize_connections', fallback=True)
-        
-        return render_template('settings.html', 
-                              music_folder_path=music_folder_path,
-                              recursive=recursive,
-                              default_playlist_size=default_playlist_size,
-                              lastfm_api_key=lastfm_api_key,
-                              lastfm_api_secret=lastfm_api_secret,
-                              startup_action=startup_action,
-                              schedule_frequency=schedule_frequency,
-                              in_memory=in_memory,
-                              cache_size_mb=cache_size_mb,
-                              optimize_connections=optimize_connections)
-
-@app.route('/debug/metadata')
-def debug_metadata():
-    """Debug endpoint to check metadata in database"""
-    try:
-        tracks = execute_query_dict(
-            DB_PATH,
-            '''SELECT id, file_path, title, artist, album, album_art_url, metadata_source
-               FROM audio_files
-               LIMIT 20''',
-            in_memory=DB_IN_MEMORY,
-            cache_size_mb=DB_CACHE_SIZE_MB
-        )
-        
-        return jsonify({
-            'count': len(tracks),
-            'tracks_with_art': sum(1 for t in tracks if t.get('album_art_url')),
-            'tracks': tracks
-        })
-        
-    except Exception as e:
-        logger.error(f"Error fetching debug metadata: {e}")
-        return jsonify({'error': str(e)}), 500
-
-
-@app.route('/analyze', methods=['POST'])
-def analyze_endpoint():
-    """API endpoint to start full music analysis"""
-    try:
-        # Support both JSON and form data
-        if request.is_json:
-            data = request.get_json()
-        else:
-            data = request.form.to_dict()
-        
-        # Get folder path from POST data or config
-        folder_path = data.get('folder_path')
-        if not folder_path:
-            folder_path = config.get('music', 'folder_path', fallback=None)
-            if not folder_path:
-                return jsonify({
-                    'status': 'error',
-                    'message': 'No music folder path specified. Please configure a music folder first.'
-                }), 400
-        
-        # Check if folder exists
-        if not os.path.exists(folder_path):
-            return jsonify({
-                'status': 'error',
-                'message': f'Music folder not found: {folder_path}'
-            }), 404
-        
-        # Get recursive parameter
-        recursive_param = data.get('recursive', True)
-        recursive = recursive_param if isinstance(recursive_param, bool) else str(recursive_param).lower() in ('true', '1', 't', 'y', 'yes')
-        
-        # Start analysis in background thread to avoid blocking the response
-        threading.Thread(
-            target=run_analysis,
-            args=(folder_path, recursive),
-            daemon=True
-        ).start()
-        
-        # Return immediate success response
-        return jsonify({
-            'status': 'success',
-            'message': 'Analysis started successfully',
-            'folder_path': folder_path,
-            'recursive': recursive
-        })
-        
-    except Exception as e:
-        logger.error(f"Error starting analysis: {e}")
-        return jsonify({
-            'status': 'error',
-            'message': f"Error starting analysis: {str(e)}"
-        }), 500
-
-
-
-@app.route('/albumart/<path:url>')
-def album_art_proxy(url):
-    """Proxy for album art images - checks local cache first"""
-    url = unquote(url)
-    
-    # If URL starts with /cache/, redirect to the cache route
-    if url.startswith('/cache/'):
-        return redirect(url)
-    
-    # Create a hash of the URL for caching
-    url_hash = hashlib.md5(url.encode()).hexdigest()
-    
-    # Generate a cache filename based on URL hash
-    cache_filename = f"album_{url_hash}.jpg"
-    cache_path = os.path.join(CACHE_DIR, cache_filename)
-    
-    # Check if the image is already in cache
-    if (os.path.exists(cache_path)):
-        logger.debug(f"Serving cached album art for: {url}")
-        return redirect(f"/cache/{cache_filename}")
-    
-    # If not in cache, fetch from source
-    try:
-        # Only download if it's a URL
-        if url.startswith(('http://', 'https://')):
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                # Save to cache
-                with open(cache_path, 'wb') as f:
-                    f.write(response.content)
-                
-                logger.info(f"Downloaded and cached album art from {url}")
-                return redirect(f"/cache/{cache_filename}")
-            else:
-                return send_file('static/images/default-album-art.png', mimetype='image/jpeg')
-        else:
-            # If it's not a URL and not in cache, return default image
-            return send_file('static/images/default-album-art.png', mimetype='image/jpeg')
-    except Exception as e:
-        logger.error(f"Error proxying album art: {e}")
-        return send_file('static/images/default-album-art.png', mimetype='image/jpeg')
-
-@app.route('/artistimg/<path:url>')
-def artist_image_proxy(url):
-    """Proxy for artist images - checks local cache first"""
-    url = unquote(url)
-    
-    # If URL starts with /cache/, redirect to the cache route
-    if url.startswith('/cache/'):
-        return redirect(url)
-    
-    # Create a hash of the URL for caching
-    url_hash = hashlib.md5(url.encode()).hexdigest()
-    
-    # Generate a cache filename based on URL hash
-    cache_filename = f"artist_{url_hash}.jpg"
-    cache_path = os.path.join(CACHE_DIR, cache_filename)
-    
-    # Check if the image is already in cache
-    if os.path.exists(cache_path):
-        logger.debug(f"Serving cached artist image for: {url}")
-        return redirect(f"/cache/{cache_filename}")
-    
-    # If not in cache, fetch from source
-    try:
-        # Only download if it's a URL
-        if url.startswith(('http://', 'https://')):
-            response = requests.get(url, timeout=10)
-                # Save to cache
-            with open(cache_path, 'wb') as f:
-                    f.write(response.content)
-                
-            return redirect(f"/cache/{cache_filename}")
-        else:
-             return send_file('static/images/default-artist-image.png', mimetype='image/jpeg')
-
-    except Exception as e:
-        logger.error(f"Error proxying artist image: {e}")
-        return send_file('static/images/default-artist-image.png', mimetype='image/jpeg')
-
-
-@app.route('/api/reset-locks', methods=['POST'])
-def reset_all_locks():
-    """Emergency endpoint to reset all locks and stop background processes"""
-    global ANALYSIS_STATUS, METADATA_UPDATE_STATUS, QUICK_SCAN_STATUS
-    global analysis_thread, DB_WRITE_RUNNING, DB_SAVE_IN_PROGRESS
-    
-    try:
-        # Reset status dicts
-        ANALYSIS_STATUS = {'running': False, 'error': None}
-        METADATA_UPDATE_STATUS = {'running': False, 'error': None}
-        QUICK_SCAN_STATUS = {'running': False, 'error': None}
-        
-        # Stop background processes
-        DB_SAVE_IN_PROGRESS = False
-        
-        # Clear DB write queue and restart worker
-        DB_WRITE_RUNNING = False
-        while not DB_WRITE_QUEUE.empty():
-            try:
-                DB_WRITE_QUEUE.get_nowait()
-                DB_WRITE_QUEUE.task_done()
-            except:
-                pass
-                
-        if ANALYSIS_LOCK.locked():
-            ANALYSIS_LOCK.release()
-            
-        # Remove lock files from the LOCK_FILE_DIR
-        for lock_file in glob.glob(os.path.join(LOCK_FILE_DIR, '.*_lock')):
-            try:
-                os.remove(lock_file)
-                logger.info(f"Removed lock file: {lock_file}")
-            except Exception as e:
-                logger.error(f"Error removing lock file {lock_file}: {e}")
-            
-        # Restart DB writer
-        time.sleep(1)
-        start_db_write_worker()
-        
-        # Also call database-specific lock resets
-        if hasattr(db_operations, 'reset_database_locks'):
-            db_operations.reset_database_locks()
-        
-        return jsonify({"status": "success", "message": "All locks reset"})
-    except Exception as e:
-        logger.error(f"Error resetting locks: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-# Set db_operations module variables after DB_PATH is defined
-import db_operations
-db_operations.DB_IN_MEMORY = config.getboolean('database_performance', 'in_memory', fallback=False)
-db_operations.DB_CACHE_SIZE_MB = config.getint('database_performance', 'cache_size_mb', fallback=75)
-
-def initialize_memory_db():
-    """PostgreSQL doesn't have in-memory mode, this is a compatibility function"""
-    logger.info("PostgreSQL doesn't support in-memory mode, using regular connection")
-    try:
-        # Use the imported get_connection
-        return get_connection()
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
-        return None
-
-def shutdown():
-    """Graceful shutdown of the application"""
-    logger.info("Application shutting down gracefully...")
-    
-    try:
-        # For PostgreSQL connections, just close the pool
-        from db_operations import pg_pool
-        if pg_pool is not None:
-            logger.info("Closing PostgreSQL connection pool")
-            pg_pool.closeall()
-        
-        # For SQLite, save memory DB to disk if needed
-        if DB_IN_MEMORY and 'main_thread_conn' in globals() and main_thread_conn:
-            try:
-                logger.info("Saving in-memory database to disk")
-                save_memory_db_to_disk(main_thread_conn, DB_PATH)
-            except Exception as e:
-                logger.error(f"Error during database shutdown: {e}")
-    except Exception as e:
-        logger.error(f"Error during application shutdown: {e}")
-
-def cleanup_cache():
-    """Cleanup the image cache if it exceeds the maximum size"""
-    try:
-        # Calculate current cache size
-        total_size = 0
-        files = []
-        
-        for file in os.listdir(CACHE_DIR):
-            file_path = os.path.join(CACHE_DIR, file)
-            if os.path.isfile(file_path):
-                file_size = os.path.getsize(file_path)
-                total_size += file_size
-                files.append((file_path, os.path.getmtime(file_path), file_size))
-        
-        # Convert to MB
-        total_size_mb = total_size / (1024 * 1024)
-        
-        if total_size_mb > MAX_CACHE_SIZE_MB:
-            logger.info(f"Cache size ({total_size_mb:.2f}MB) exceeds limit ({MAX_CACHE_SIZE_MB}MB). Cleaning up...")
-            
-            # Sort by modification time (oldest first)
-            files.sort(key=lambda x: x[1])
-            
-            # Remove files until we're under the limit
-            space_to_free = total_size - (MAX_CACHE_SIZE_MB * 0.9 * 1024 * 1024)  # Free to 90% of limit
-            space_freed = 0
-            
-            for file_path, _, file_size in files:
-                if space_freed >= space_to_free:
-                    break
-                    
-                try:
-                    os.remove(file_path)
-                    space_freed += file_size
-                    logger.debug(f"Removed cached file: {file_path}")
-                except Exception as e:
-                    logger.error(f"Error removing cache file {file_path}: {e}")
-            
-            logger.info(f"Cache cleanup complete. Freed {space_freed / (1024 * 1024):.2f}MB")
-    
-    except Exception as e:
-        logger.error(f"Error cleaning up cache: {e}")
-
-@app.route('/cache/stats')
-def cache_stats():
-    """Get statistics about the album art cache"""
-    try:
-        # Calculate current cache size
-        total_size = 0
-        file_count = 0
-        
-        for file in os.listdir(CACHE_DIR):
-            file_path = os.path.join(CACHE_DIR, file)
-            if os.path.isfile(file_path):
-                total_size += os.path.getsize(file_path)
-                file_count += 1
-        
-        # Convert to MB
-        total_size_mb = total_size / (1024 * 1024)
-        
-        return jsonify({
-            'status': 'success',
-            'cache_directory': CACHE_DIR,
-            'file_count': file_count,
-            'total_size_mb': round(total_size_mb, 2),
-            'max_size_mb': MAX_CACHE_SIZE_MB,
-            'usage_percent': round((total_size_mb / MAX_CACHE_SIZE_MB) * 100, 2) if MAX_CACHE_SIZE_MB > 0 else 0
-        })
-    
-    except Exception as e:
-        logger.error(f"Error getting cache stats: {e}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/cache/clear', methods=['POST'])
-def clear_cache():
-    try:
-        # Ensure the cache directory exists
-        if not os.path.exists(CACHE_DIR):
-            return jsonify({"status": "success", "message": "Cache is already empty"})
-        
-        # Get all files in the cache directory
-        file_count = 0
-        total_size = 0
-        
-        for filename in os.listdir(CACHE_DIR):
-            file_path = os.path.join(CACHE_DIR, filename)
-            if os.path.isfile(file_path):
-                file_size = os.path.getsize(file_path)
-                total_size += file_size
-                os.remove(file_path)
-                file_count += 1
-        
-        # Also clear artist image cache if it exists
-        artist_cache_dir = 'artist_image_cache'
-        if os.path.exists(artist_cache_dir):
-            for filename in os.listdir(artist_cache_dir):
-                file_path = os.path.join(artist_cache_dir, filename)
-                if os.path.isfile(file_path):
-                    file_size = os.path.getsize(file_path)
-                    total_size += file_size
-                    os.remove(file_path)
-                    file_count += 1
-        
-        # Format sizes for display
-        if total_size < 1024:
-            size_str = f"{total_size} bytes"
-        elif total_size < 1024 * 1024:
-            size_str = f"{total_size / 1024:.1f} KB"
-        else:
-            size_str = f"{total_size / (1024 * 1024):.1f} MB"
-        
-        # Remove cache records from database if applicable
-        with optimized_connection(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB) as conn:
-            cursor = conn.cursor()
-            
-            # Update album_art_url to null for all tracks
-            cursor.execute("UPDATE audio_files SET album_art_url = NULL WHERE album_art_url LIKE '/cache/%'")
-            cursor.execute("UPDATE audio_files SET artist_image_url = NULL WHERE artist_image_url LIKE '/cache/%'")
-            
-            conn.commit()
-            
-            # Mark database as modified
-            g.db_modified = True
-        
-        return jsonify({
-            "status": "success",
-            "message": f"Cache cleared. Removed {file_count} files ({size_str})."
-        })
-    
-    except Exception as e:
-        logger.error(f"Error clearing cache: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-# Add these routes for playlist management
-
-@app.route('/playlists', methods=['GET'])
-def get_playlists():
-    """Get all saved playlists"""
-    try:
-        logger.info("Getting all playlists")
-        
-        # Use execute_query_dict for PostgreSQL compatibility 
-        playlists = execute_query_dict(
-            '''
-            SELECT p.id, p.name, p.description, p.created_at, p.updated_at
-            FROM playlists p
-            ORDER BY p.updated_at DESC
-            '''
-        )
-        
-        # Include track counts for each playlist
-        for playlist in playlists:
-            # Get track count for this playlist using PostgreSQL syntax
-            count_result = execute_query(
+            playlists_data = execute_query_dict(
                 """
-                SELECT COUNT(*) as count
-                FROM playlist_items
-                WHERE playlist_id = %s
-                """,
-                (playlist['id'],)
+                SELECT p.id, p.name, p.description, p.created_at, p.updated_at
+                FROM playlists p
+                ORDER BY p.updated_at DESC
+                """
             )
-            # In PostgreSQL, the count result is returned as the first element of the first row
-            playlist['track_count'] = count_result[0][0] if count_result else 0
-        
-        logger.info(f"Found {len(playlists)} playlists")
-        return jsonify(playlists)
-        
-    except Exception as e:
-        logger.error(f"Error getting playlists: {e}")
-        return jsonify({'error': str(e)}), 500
+            logger.debug(f"Raw playlists_data from execute_query_dict: {playlists_data}")
 
-@app.route('/playlists', methods=['POST'])
-def save_playlist():
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "No data provided"}), 400
+            if not playlists_data:
+                logger.info("API: No playlists found in database.")
+                return jsonify([])
 
-        playlist_name = data.get('name')
-        playlist_description = data.get('description', '')
-        tracks = data.get('tracks', [])
+            # Ensure playlists_data is a list of dicts
+            if isinstance(playlists_data, list) and len(playlists_data) > 0 and not isinstance(playlists_data[0], dict):
+                logger.warning(f"API: execute_query_dict did not return a list of dictionaries. Got: {type(playlists_data[0])}. Attempting conversion.")
+                try:
+                    # Assuming column order from the SELECT query
+                    column_names = ['id', 'name', 'description', 'created_at', 'updated_at']
+                    converted_data = []
+                    for row_index, row in enumerate(playlists_data):
+                        if len(row) == len(column_names):
+                            converted_data.append(dict(zip(column_names, row)))
+                        else:
+                            logger.error(f"API: Row {row_index} has mismatched column count for conversion: {row}")
+                            # Add a placeholder or skip
+                            converted_data.append({'id': None, 'name': 'Conversion Error', 'description': '', 'track_count': 0})
+                    playlists_data = converted_data
+                    logger.info("API: Successfully converted playlist data to list of dicts.")
+                except Exception as conversion_error:
+                    logger.error(f"API: Failed to convert playlist data to dicts: {conversion_error}")
+                    return jsonify({'error': 'Internal server error: playlist data format issue'}), 500
+            elif not isinstance(playlists_data, list):
+                 logger.error(f"API: execute_query_dict did not return a list. Got: {type(playlists_data)}")
+                 return jsonify({'error': 'Internal server error: playlist data type issue'}), 500
 
-        if not playlist_name:
-            return jsonify({"error": "Playlist name is required"}), 400
-        
-        # Use the optimized_connection context manager without positional arguments
-        with optimized_connection() as conn:
-            cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-            
-            # Create the new playlist
-            cursor.execute(
-                "INSERT INTO playlists (name, description) VALUES (%s, %s) RETURNING id",
-                (playlist_name, playlist_description)
-            )
-            playlist_id = cursor.fetchone()['id']
-            
-            # Add tracks to the playlist
-            for i, track_id in enumerate(tracks):
-                cursor.execute(
-                    "INSERT INTO playlist_items (playlist_id, track_id, position) VALUES (%s, %s, %s)",
-                    (playlist_id, track_id, i)
-                )
-            
-            conn.commit()
+            processed_playlists = []
+            for p_data in playlists_data:
+                if not isinstance(p_data, dict):
+                    logger.warning(f"API: Skipping track count for non-dict playlist item: {p_data}")
+                    # If p_data was from a failed conversion, it might have an ID already
+                    if 'id' not in p_data: p_data['id'] = None 
+                    if 'name' not in p_data: p_data['name'] = 'Invalid Data'
+                    p_data['track_count'] = 0 
+                    processed_playlists.append(p_data)
+                    continue
+
+                playlist_item_id = p_data.get('id')
+                if playlist_item_id is None: # Could happen if conversion failed or ID was genuinely null
+                    logger.warning(f"API: Playlist item missing 'id' or id is None: {p_data}")
+                    p_data['track_count'] = 0 # Ensure track_count exists
+                    # Don't skip, allow it to be returned so frontend can decide based on ID
+                    processed_playlists.append(p_data)
+                    continue
                 
-            return jsonify({
-                "status": "success",
-                "playlist_id": playlist_id,
-                "message": f"Playlist '{playlist_name}' created with {len(tracks)} tracks"
-            })
-    
-    except Exception as e:
-        app.logger.error(f"Error saving playlist: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+                try:
+                    count_query_result = execute_query(
+                        "SELECT COUNT(*) FROM playlist_items WHERE playlist_id = %s",
+                        (playlist_item_id,)
+                    )
+                    if count_query_result and len(count_query_result) > 0 and len(count_query_result[0]) > 0:
+                        p_data['track_count'] = count_query_result[0][0]
+                    else:
+                        p_data['track_count'] = 0
+                except Exception as count_exc:
+                    logger.error(f"API: Error getting track count for playlist_id {playlist_item_id}: {count_exc}")
+                    p_data['track_count'] = -1 # Indicate error in count
+                processed_playlists.append(p_data)
+            
+            logger.info(f"API: Found and processed {len(processed_playlists)} playlists")
+            return jsonify(processed_playlists)
+            
+        except Exception as e:
+            logger.error(f"API: Error getting playlists: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+            
+    elif request.method == 'POST':
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({"error": "No data provided"}), 400
+
+            playlist_name = data.get('name')
+            playlist_description = data.get('description', '')
+            tracks = data.get('tracks', [])
+
+            if not playlist_name:
+                return jsonify({"error": "Playlist name is required"}), 400
+            
+            # Use the optimized_connection context manager
+            # Assuming optimized_connection is available and configured for psycopg2
+            with optimized_connection() as conn: # Ensure this context manager is correctly set up for psycopg2
+                cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+                
+                # Create the new playlist
+                cursor.execute(
+                    "INSERT INTO playlists (name, description) VALUES (%s, %s) RETURNING id",
+                    (playlist_name, playlist_description)
+                )
+                playlist_id = cursor.fetchone()['id']
+                
+                # Add tracks to the playlist
+                for i, track_id in enumerate(tracks):
+                    cursor.execute(
+                        "INSERT INTO playlist_items (playlist_id, track_id, position) VALUES (%s, %s, %s)",
+                        (playlist_id, track_id, i)
+                    )
+                
+                conn.commit()
+                    
+                return jsonify({
+                    "status": "success",
+                    "playlist_id": playlist_id,
+                    "message": f"Playlist '{playlist_name}' created with {len(tracks)} tracks"
+                })
+        
+        except Exception as e:
+            logger.error(f"API: Error saving playlist: {str(e)}") # Changed app.logger to logger
+            return jsonify({"error": str(e)}), 500
 
 @app.route('/playlists/<int:playlist_id>', methods=['GET'])
 def get_playlist(playlist_id):
-    """Get a specific playlist with its tracks"""
+    logger.info(f"API: Getting details for playlist_id: {playlist_id}")
     try:
-        # Get playlist metadata
-        playlist = execute_query_dict(
-            "SELECT * FROM playlists WHERE id = %s", 
-            (playlist_id,),
-            fetchone=True
-        )
+        # Fetch playlist details (id, name, description)
+        playlist_query = "SELECT id, name, description, created_at, updated_at FROM playlists WHERE id = %s"
         
-        if not playlist:
-            return jsonify({"error": "Playlist not found"}), 404
-        
-        # Get playlist tracks in order
-        tracks = execute_query_dict(
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                cur.execute(playlist_query, (playlist_id,))
+                playlist_details_row = cur.fetchone()
+        finally:
+            release_connection(conn)
+
+        if not playlist_details_row:
+            logger.warning(f"API: Playlist with id {playlist_id} not found.")
+            return jsonify({'error': 'Playlist not found'}), 404
+
+        playlist_data = dict(playlist_details_row)
+        logger.debug(f"API: Playlist details fetched: {playlist_data}")
+
+        # Try to fetch and process tracks for the playlist
+        try:
+            # CORRECTED QUERY: Only included columns that definitely exist according to schema
+            tracks_query = """
+                SELECT 
+                    t.id, t.title, t.artist, t.album, t.duration, t.file_path, t.genre,
+                    t.album_art_url, t.year, t.liked,
+                    pi.position
+                FROM tracks t 
+                JOIN playlist_items pi ON t.id = pi.track_id
+                WHERE pi.playlist_id = %s
+                ORDER BY pi.position
             """
-            SELECT t.id, t.file_path, t.title, t.artist, t.album, t.album_art_url, t.duration
-            FROM playlist_items pi
-            JOIN tracks t ON pi.track_id = t.id
-            WHERE pi.playlist_id = %s
-            ORDER BY pi.position
-            """,
-            (playlist_id,),
-        )
-        
-        playlist['tracks'] = tracks
-        
-        return jsonify(playlist)
-        
+            # Removed last_played which doesn't exist in the schema
+
+            logger.debug(f"API: Executing tracks query for playlist_id {playlist_id} using 'tracks' table.")
+            tracks_list_raw = execute_query_dict(tracks_query, (playlist_id,))
+            logger.debug(f"API: Raw tracks_list from execute_query_dict for playlist_id {playlist_id}: {str(tracks_list_raw)[:500]} (Type: {type(tracks_list_raw)})")
+
+            if tracks_list_raw is None:
+                logger.warning(f"API: No tracks found for playlist_id {playlist_id} (execute_query_dict returned None). Initializing tracks as empty list.")
+                playlist_data['tracks'] = []
+            elif isinstance(tracks_list_raw, list):
+                processed_tracks = []
+                if not tracks_list_raw: # Empty list
+                    logger.info(f"API: execute_query_dict returned an empty list for tracks in playlist_id {playlist_id}.")
+                for track_row in tracks_list_raw:
+                    if isinstance(track_row, dict):
+                        processed_tracks.append(track_row)
+                    elif hasattr(track_row, 'keys'): # Handle DictRow or other dict-like objects
+                        processed_tracks.append(dict(track_row))
+                    else:
+                        logger.warning(f"API: Track item for playlist {playlist_id} is not a dict or DictRow: {type(track_row)}. Skipping.")
+                playlist_data['tracks'] = processed_tracks
+            elif hasattr(tracks_list_raw, 'keys'): # A single dict-like item (e.g. DictRow) was returned
+                logger.info(f"API: tracks_list_raw for playlist {playlist_id} was a single item ({type(tracks_list_raw)}). Processing as one track.")
+                playlist_data['tracks'] = [dict(tracks_list_raw)] # Convert to dict and wrap in a list
+            else: # tracks_list_raw is some other unexpected type
+                logger.error(f"API: tracks_list_raw for playlist {playlist_id} is unexpected type: {type(tracks_list_raw)}. Setting tracks to empty list.")
+                playlist_data['tracks'] = []
+
+        except Exception as e_track_processing: 
+            logger.error(f"API: Error occurred while fetching or processing tracks for playlist {playlist_id}: {e_track_processing}", exc_info=True)
+            playlist_data['tracks'] = [] 
+
+        logger.info(f"API: Responding for playlist {playlist_id} with {len(playlist_data.get('tracks', []))} tracks.")
+        return jsonify(playlist_data)
+
+    except KeyError as e: 
+        key_error_msg = e.args[0] if e.args else "Unknown Key"
+        logger.error(f"API: KeyError encountered in get_playlist for {playlist_id}: '{key_error_msg}'", exc_info=True)
+        return jsonify({'error': f"Internal server error (KeyError: '{key_error_msg}')"}), 500
     except Exception as e:
-        logger.error(f"Error getting playlist {playlist_id}: {e}")
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"API: Unexpected error in get_playlist for {playlist_id}: {str(e)}", exc_info=True)
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 @app.route('/playlists/<int:playlist_id>', methods=['PUT'])
 def update_playlist(playlist_id):
@@ -2278,7 +1676,7 @@ def run_scheduled_full_analysis():
                 """)
                 pending_count = cursor.fetchone()
                 
-                if pending_count and pending_count[0] > 0:
+                if (pending_count and pending_count[0] > 0):
                     logger.info(f"Found {pending_count[0]} tracks needing audio analysis")
                     # Start analysis in a background thread
                     analyzer = MusicAnalyzer()
@@ -3727,6 +3125,108 @@ def get_db_status():
         logger.error(f"Error getting DB status: {e}")
         return jsonify({'error': str(e)}), 500
 
+
+@app.route('/api/tracks/<int:track_id>/playlist')
+def get_track_playlists(track_id):
+    """Get all playlists containing a specific track"""
+    try:
+        playlists = execute_query_dict(
+            """
+            SELECT p.id, p.name, p.description, p.created_at
+            FROM playlists p
+            JOIN playlist_items pi ON p.id = pi.playlist_id
+            WHERE pi.track_id = %s
+            ORDER BY p.name
+            """,
+            (track_id,)
+        )
+        
+        return jsonify(playlists)
+    except Exception as e:
+        logger.error(f"Error getting playlists for track {track_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def print_database_schema():
+    """
+    Print the database schema to the logs at startup
+    This helps with troubleshooting column name and table structure issues
+    """
+    logger.info("Printing database schema for troubleshooting")
+    
+    try:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # Get list of tables
+                cursor.execute("""
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema='public' AND table_type='BASE TABLE'
+                    ORDER BY table_name
+                """)
+                
+                tables = [row[0] for row in cursor.fetchall()]
+                logger.info(f"Database tables: {tables}")
+                
+                # For each table, get column information
+                for table in tables:
+                    cursor.execute(f"""
+                        SELECT column_name, data_type, is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema='public' AND table_name='{table}'
+                        ORDER BY ordinal_position
+                    """)
+                    
+                    columns = cursor.fetchall()
+                    logger.info(f"Table '{table}' structure:")
+                    for col in columns:
+                        col_name, col_type, nullable = col
+                        logger.info(f"  - {col_name} ({col_type}, {'NULL' if nullable == 'YES' else 'NOT NULL'})")
+        finally:
+            release_connection(conn)
+            
+        return True
+    except Exception as e:
+        logger.error(f"Error printing database schema: {e}")
+        return False
+
+# Call the function early in the initialization to help with troubleshooting
+print_database_schema()
+
+@app.route('/albumart/<path:image_url>')
+def album_art_proxy(image_url):
+    """
+    Proxy for album art URLs. This handles album art URLs that are external links
+    by either redirecting to them or downloading and serving them.
+    """
+    try:
+        logger.debug(f"Album art request for: {image_url}")
+        
+        # Check if URL is properly formatted
+        if not image_url.startswith('http'):
+            # If it doesn't start with http, it might be URL encoded
+            try:
+                from urllib.parse import unquote
+                decoded_url = unquote(image_url)
+                if decoded_url.startswith('http'):
+                    image_url = decoded_url
+            except Exception as e:
+                logger.error(f"Error decoding URL: {e}")
+                
+        # For LastFM and other trusted sources, just redirect
+        if 'lastfm' in image_url or 'spotify' in image_url:
+            logger.debug(f"Redirecting to external album art: {image_url}")
+            return redirect(image_url)
+        
+        # For other sources, we might want to download and cache
+        # But for now, just redirect to everything
+        return redirect(image_url)
+        
+    except Exception as e:
+        logger.error(f"Error handling album art proxy request: {e}")
+        # Return default album art
+        return send_file('static/images/default-album-art.png', mimetype='image/jpeg')
+
 @app.route('/api/db-diagnostic')
 def db_diagnostic():
     """Return database diagnostics for PostgreSQL"""
@@ -3844,25 +3344,6 @@ def run_server():
     except Exception as e:
         logger.error(f"Error running server: {e}")
 
-@app.route('/api/tracks/<int:track_id>/playlist')
-def get_track_playlists(track_id):
-    """Get all playlists containing a specific track"""
-    try:
-        playlists = execute_query_dict(
-            """
-            SELECT p.id, p.name, p.description, p.created_at
-            FROM playlists p
-            JOIN playlist_items pi ON p.id = pi.playlist_id
-            WHERE pi.track_id = %s
-            ORDER BY p.name
-            """,
-            (track_id,)
-        )
-        
-        return jsonify(playlists)
-    except Exception as e:
-        logger.error(f"Error getting playlists for track {track_id}: {e}")
-        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     run_server()

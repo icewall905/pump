@@ -148,7 +148,7 @@
         console.log('Saving playlist with data:', playlistData);
         
         // Save playlist with proper error handling
-        fetch('/playlists', {
+        fetch('/api/playlists', { // Corrected endpoint
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'

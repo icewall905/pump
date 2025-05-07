@@ -168,6 +168,8 @@ document.addEventListener('DOMContentLoaded', function() {
     // Retry loading playlists after a delay in case the server is still initializing
     function retryLoadPlaylists() {
         setTimeout(() => {
+            // Only retry loading if playlists haven't been loaded successfully yet
+            console.log('Retrying playlist load...');
             window.loadSidebarPlaylists();
         }, 10000); // Try again after 10 seconds
     }
@@ -181,102 +183,145 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // Function to load playlists into the sidebar
 window.loadSidebarPlaylists = function() {
-    // Use the correct ID that matches the sidebar.html file
-    const playlistsContainer = document.getElementById('playlist-list');
+    console.log('Loading playlists from API');
     
+    const playlistsContainer = document.getElementById('playlist-list');
     if (!playlistsContainer) {
-        console.error('Playlists container not found in sidebar');
+        console.error('Playlists container not found in sidebar.');
         return;
     }
-    
-    console.log('Loading playlists for sidebar');
-    
-    // Show loading indicator
+
     playlistsContainer.innerHTML = '<li class="loading">Loading playlists...</li>';
     
-    // Use the correct API endpoint for playlists - UPDATED
     fetch('/api/playlists')
         .then(response => {
-            console.log('Playlists response:', response);
+            console.log('Playlists response status:', response.status, 'ok:', response.ok);
             if (!response.ok) {
-                throw new Error(`Playlist endpoint not available: ${response.status}`);
+                // Try to get error message from response body
+                return response.json().then(errData => {
+                    throw new Error(`Playlist endpoint not available: ${response.status} - ${errData.error || 'Unknown server error'}`);
+                }).catch(() => {
+                    // If parsing error body fails
+                    throw new Error(`Playlist endpoint not available: ${response.status}`);
+                });
             }
             return response.json();
         })
         .then(data => {
-            console.log('Playlists data:', data);
+            console.log('Playlists data received (raw from server):', JSON.stringify(data, null, 2));
+            console.log('Type of received data:', typeof data, 'Is Array:', Array.isArray(data));
             
-            // Clear loading indicator
-            playlistsContainer.innerHTML = '';
+            playlistsContainer.innerHTML = ''; 
             
-            // Check if we got valid data
-            if (!Array.isArray(data) || data.length === 0) {
+            if (!Array.isArray(data)) {
+                console.error('Playlists data is not an array:', data);
+                playlistsContainer.innerHTML = '<li class="error-playlists">Error: Invalid playlist data format from server</li>';
+                return;
+            }
+
+            if (data.length === 0) {
                 playlistsContainer.innerHTML = '<li class="empty-playlists">No playlists found</li>';
                 return;
             }
             
-            // Add each playlist to the sidebar
+            let playlistsAdded = 0;
             data.forEach(playlist => {
-                console.log('Processing playlist:', playlist); // Debug individual playlist object
-                
-                const playlistItem = document.createElement('li');
-                playlistItem.className = 'playlist-item';
-                
-                const playlistLink = document.createElement('a');
-                playlistLink.href = `/?playlist=${playlist.id}`;
-                playlistLink.className = 'playlist-link';
-                
-                // Handle different playlist data structures
-                // Check for name property in different possible locations
-                let playlistName = 'Untitled Playlist';
-                if (playlist.name) {
-                    playlistName = playlist.name;
-                } else if (playlist.playlist_name) {
-                    playlistName = playlist.playlist_name;
-                } else if (typeof playlist === 'object' && playlist !== null) {
-                    // If playlist is an array with name at index 1 (common format in some APIs)
-                    if (Array.isArray(playlist) && playlist.length > 1 && typeof playlist[1] === 'string') {
-                        playlistName = playlist[1];
-                    }
-                    // Log keys to help debug the structure
-                    console.log('Playlist keys:', Object.keys(playlist));
+                console.log('Processing playlist:', playlist, 'Type:', typeof playlist);
+
+                if (typeof playlist !== 'object' || playlist === null) {
+                    console.error('Playlist item is not an object:', playlist);
+                    return; // Skip this non-object item
                 }
-                
-                playlistLink.textContent = playlistName;
-                playlistLink.title = playlist.description || '';
-                
-                // Add click handler
-                playlistLink.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    
-                    // Update URL without reloading
-                    const newUrl = `/?playlist=${playlist.id}`;
-                    window.history.pushState({ url: newUrl }, '', newUrl);
-                    
-                    // Load the playlist content
-                    if (typeof window.loadPlaylist === 'function') {
-                        window.loadPlaylist(playlist.id);
-                    } else {
-                        console.error('loadPlaylist function not available');
+
+                const playlistId = playlist.id || playlist.playlist_id || playlist._id; 
+
+                if (playlistId === undefined || playlistId === null) { // Added null check
+                    console.error('Playlist ID is undefined or null for playlist:', playlist);
+                    // Do not return; allow other playlists to be processed.
+                    // This item will be skipped for rendering.
+                } else {
+                    const playlistItem = document.createElement('li');
+                    playlistItem.className = 'playlist-item';
+
+                    const playlistLink = document.createElement('a');
+                    playlistLink.href = `/?playlist=${playlistId}`; 
+                    playlistLink.className = 'playlist-link';
+
+                    let playlistName = 'Untitled Playlist';
+                    if (playlist.name) {
+                        playlistName = playlist.name;
+                    } else if (playlist.playlist_name) {
+                        playlistName = playlist.playlist_name;
+                    } else if (typeof playlist === 'object' && playlist !== null) {
+                        if (Array.isArray(playlist) && playlist.length > 1 && typeof playlist[1] === 'string') {
+                            playlistName = playlist[1];
+                        }
                     }
                     
-                    // Remove active class from all sidebar links
-                    document.querySelectorAll('.sidebar a').forEach(link => {
-                        link.classList.remove('active');
+                    playlistLink.textContent = playlistName;
+                    playlistLink.title = playlist.description || '';
+                    
+                    playlistLink.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        
+                        // Re-check ID just in case, though it should be valid here
+                        const currentId = playlist.id || playlist.playlist_id || playlist._id;
+                        if (currentId === undefined || currentId === null) {
+                            console.error("Cannot load playlist: ID is undefined or null at click time.");
+                            return;
+                        }
+                        const newUrl = `/?playlist=${currentId}`;
+                        window.history.pushState({ url: newUrl }, '', newUrl);
+                        
+                        if (typeof window.loadPlaylist === 'function') {
+                            window.loadPlaylist(currentId); 
+                        } else {
+                            console.error('loadPlaylist function not available');
+                        }
+                        
+                        document.querySelectorAll('.sidebar a').forEach(link => {
+                            link.classList.remove('active');
+                        });
+                        // this.classList.add('active'); // Active class should be set by navigation logic or after load
                     });
-                });
-                
-                playlistItem.appendChild(playlistLink);
-                playlistsContainer.appendChild(playlistItem);
+                    
+                    playlistItem.appendChild(playlistLink);
+                    playlistsContainer.appendChild(playlistItem);
+                    playlistsAdded++;
+                }
             });
+            
+            if (playlistsAdded === 0 && data.length > 0) {
+                playlistsContainer.innerHTML = '<li class="empty-playlists">No valid playlists to display (all items lacked a valid ID).</li>';
+            } else if (playlistsAdded === 0 && data.length === 0) {
+                // This case is already handled by "No playlists found"
+            } else if (playlistsAdded > 0) {
+                console.log(`Playlists loaded successfully, count: ${playlistsAdded}`);
+            }
         })
         .catch(error => {
-            console.error('Error loading playlists:', error);
-            playlistsContainer.innerHTML = '<li class="error-playlists">Failed to load playlists</li>';
+            console.error('Error loading playlists:', error.message);
+            if (playlistsContainer) {
+                playlistsContainer.innerHTML = `<li class="error-playlists">Failed to load playlists: ${error.message}</li>`;
+            }
         });
 };
 
-// Load playlists when the document is loaded
 document.addEventListener('DOMContentLoaded', function() {
-    window.loadSidebarPlaylists();
+    // Only call loadSidebarPlaylists if it hasn't been loaded already
+    if (typeof window.loadSidebarPlaylists === 'function') {
+        window.loadSidebarPlaylists();
+    } else if (!window.loadSidebarPlaylists) {
+        console.error("loadSidebarPlaylists is not defined globally when DOMContentLoaded fires.");
+    }
+
+    const navLinks = document.querySelectorAll('.sidebar .nav-buttons > a, .sidebar .sub-nav-buttons > a');
+    navLinks.forEach(link => {
+        link.addEventListener('click', function() {
+            document.querySelectorAll('.sidebar a').forEach(lnk => {
+                lnk.classList.remove('active');
+            });
+            this.classList.add('active');
+        });
+    });
 });

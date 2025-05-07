@@ -39,6 +39,16 @@ function displaySearchResults(tracks) {
 window.loadPlaylist = function(playlistId) {
     console.log(`Global loadPlaylist called for playlist ${playlistId}`);
     
+    // Add safeguard against undefined playlist IDs
+    if (playlistId === undefined || playlistId === 'undefined') {
+        console.error('Cannot load playlist: Invalid playlist ID');
+        const analyzeStatus = document.getElementById('analyze-status');
+        if (analyzeStatus) {
+            analyzeStatus.innerHTML = '<div class="status-error">Error: Invalid playlist ID</div>';
+        }
+        return;
+    }
+    
     // Show loading state
     const analyzeStatus = document.getElementById('analyze-status');
     if (analyzeStatus) {
