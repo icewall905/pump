@@ -28,6 +28,7 @@ pump_env/
 *.sqlite3
 db/
 db
+database/
 
 # Audio and media files
 *.mp3
