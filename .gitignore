@@ -29,6 +29,7 @@ pump_env/
 db/
 db
 database/
+locks/
 
 # Audio and media files
 *.mp3
@@ -50,6 +51,7 @@ cache/
 .cache/
 __cache__/
 thumbnails/
+__pycache__/
 
 # Generated analysis files
 analysis_results/
