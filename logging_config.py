@@ -71,3 +71,18 @@ def configure_logging(level='info', log_to_file=True, log_dir='logs', max_size_m
 def get_logger(name):
     """Get a logger with the given name"""
     return logging.getLogger(name)
+
+def set_log_level(level):
+    """Set the log level for all handlers"""
+    if level not in LOG_LEVELS:
+        raise ValueError(f"Invalid log level: {level}. Valid levels are: {list(LOG_LEVELS.keys())}")
+    
+    root_logger = logging.getLogger()
+    root_logger.setLevel(LOG_LEVELS[level])
+    
+    for handler in root_logger.handlers:
+        handler.setLevel(LOG_LEVELS[level])
+    
+    logger = logging.getLogger('logging_config')
+    logger.info(f"Log level changed to: {level}")
+    return True

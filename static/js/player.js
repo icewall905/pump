@@ -16,7 +16,7 @@ function displaySearchResults(tracks) {
     
     searchResults.innerHTML = '';
     
-    if (tracks.length === 0) {
+    if (!tracks || tracks.length === 0) {
         searchResults.innerHTML = '<p>No tracks found.</p>';
         return;
     }
@@ -25,8 +25,21 @@ function displaySearchResults(tracks) {
     resultsContainer.className = 'track-grid';
     
     tracks.forEach(track => {
-        console.log('Creating card for track:', track.title);
-        const trackCard = createTrackCard(track);
+        // Make sure track has all required properties by providing defaults
+        // This ensures we always have valid data even if the API returns inconsistent formats
+        const processedTrack = {
+            id: track.id || track.track_id || 0,
+            title: track.title || track.name || 'Unknown Title',
+            artist: track.artist || track.artist_name || 'Unknown Artist',
+            album: track.album || track.album_name || 'Unknown Album',
+            album_art_url: track.album_art_url || track.art_url || null,
+            duration: track.duration || 0,
+            file_path: track.file_path || '',
+            liked: Boolean(track.liked)
+        };
+        
+        console.log('Creating card for track:', processedTrack.title);
+        const trackCard = createTrackCard(processedTrack);
         resultsContainer.appendChild(trackCard);
     });
     
@@ -945,14 +958,14 @@ window.initPlayerPage = function() {
                 searchResults.innerHTML = '<div class="loading">Loading tracks...</div>';
             }
             
-            console.log('Fetching /explore');
-            fetch('/explore')
+            console.log('Fetching from /api/discover endpoint');
+            fetch('/api/discover')
                 .then(response => {
-                    console.log('Explore response received:', response);
+                    console.log('Discover response received:', response);
                     return response.json();
                 })
                 .then(data => {
-                    console.log('Explore data:', data);
+                    console.log('Discover data:', data);
                     if (Array.isArray(data) && data.length > 0) {
                         // Limit to 6 items only
                         displaySearchResults(data.slice(0, 6));
@@ -1962,15 +1975,56 @@ document.addEventListener('DOMContentLoaded', function() {
 
 window.loadExplore = function() {
     console.log('Global loadExplore called');
-    // ...existing code...
-    // Fetch explore data
-    fetch('/explore')
-        .then(response => response.json())
+    
+    // Update heading
+    const resultsHeading = document.getElementById('results-heading');
+    if (resultsHeading) {
+        resultsHeading.textContent = 'Discover';
+    }
+    
+    const searchResults = document.getElementById('search-results');
+    if (!searchResults) {
+        console.error('search-results element not found');
+        return;
+    }
+    
+    // Show loading indicator
+    searchResults.innerHTML = '<div class="loading">Loading tracks...</div>';
+    
+    // Hide the playlist container without recreating it
+    const playlistContainer = document.getElementById('playlist-container');
+    if (playlistContainer) {
+        playlistContainer.style.display = 'none';
+    }
+    
+    // Fetch discover data from the API endpoint instead of /explore
+    console.log('Fetching from /api/discover endpoint');
+    fetch('/api/discover')
+        .then(response => {
+            console.log('Discover response received:', response);
+            if (!response.ok) {
+                throw new Error(`HTTP error ${response.status}`);
+            }
+            return response.json();
+        })
         .then(data => {
-            // ...existing code...
+            console.log('Discover data received:', data);
+            if (Array.isArray(data) && data.length > 0) {
+                // Limit to 12 items for better performance
+                const displayData = data.slice(0, 12);
+                window.currentPlaylist = displayData;
+                displaySearchResults(displayData);
+            } else if (Array.isArray(data) && data.length === 0) {
+                searchResults.innerHTML = '<p>No tracks found. Try adding some music!</p>';
+            } else if (data.error) {
+                searchResults.innerHTML = `<p>Error: ${data.error}</p>`;
+            }
         })
         .catch(error => {
-            // ...existing code...
+            console.error('Error loading discover tracks:', error);
+            if (searchResults) {
+                searchResults.innerHTML = '<p>Failed to load tracks. See console for details.</p>';
+            }
         });
 };
 
@@ -2280,13 +2334,22 @@ window.loadExplore = function() {
         playlistContainer.style.display = 'none';
     }
     
-    // Fetch explore data
-    fetch('/explore')
-        .then(response => response.json())
+    // Fetch discover data from the API endpoint instead of /explore
+    console.log('Fetching from /api/discover endpoint');
+    fetch('/api/discover')
+        .then(response => {
+            console.log('Discover response received:', response);
+            if (!response.ok) {
+                throw new Error(`HTTP error ${response.status}`);
+            }
+            return response.json();
+        })
         .then(data => {
-            console.log('Explore data received:', data);
+            console.log('Discover data received:', data);
             if (Array.isArray(data) && data.length > 0) {
+                // Limit to 12 items for better performance
                 const displayData = data.slice(0, 12);
+                window.currentPlaylist = displayData;
                 displaySearchResults(displayData);
             } else if (Array.isArray(data) && data.length === 0) {
                 searchResults.innerHTML = '<p>No tracks found. Try adding some music!</p>';
@@ -2295,7 +2358,7 @@ window.loadExplore = function() {
             }
         })
         .catch(error => {
-            console.error('Error loading explore:', error);
+            console.error('Error loading discover tracks:', error);
             if (searchResults) {
                 searchResults.innerHTML = '<p>Failed to load tracks. See console for details.</p>';
             }
@@ -2813,3 +2876,44 @@ function saveCurrentPlaylist() {
         }
     }
 }
+
+// First, ensure the DOMContentLoaded handler checks for the playlist parameter
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('DOM loaded - initializing player.js');
+    
+    // Check for URL parameters immediately
+    const urlParams = new URLSearchParams(window.location.search);
+    const view = urlParams.get('view');
+    const playlistId = urlParams.get('playlist');
+    
+    console.log('URL parameters:', { view, playlistId });
+    
+    // If there's a playlist parameter, load that playlist
+    if (playlistId) {
+        console.log(`Loading playlist ${playlistId} from URL parameter`);
+        // Show playlist container
+        const playlistContainer = document.getElementById('playlist-container');
+        if (playlistContainer) {
+            playlistContainer.style.display = 'block';
+        }
+        // Load the playlist
+        window.loadPlaylist(playlistId);
+    }
+    // Otherwise proceed with normal view handling
+    else if (view === 'liked') {
+        console.log('Detected liked view, loading liked tracks');
+        window.loadLiked();
+    } else if (view === 'explore') {
+        console.log('Loading explore view from URL parameter');
+        window.loadExplore();
+    } else if (view === 'recent') {
+        console.log('Loading recent view from URL parameter');
+        window.loadRecent();
+    } else {
+        // Default view (no parameter)
+        console.log('Loading default explore view');
+        window.loadExplore();
+    }
+    
+    // Rest of your initialization code...
+});

@@ -43,6 +43,9 @@ from db_operations import (
     transaction_context, release_connection
 )
 
+# Initialize a placeholder logger EARLY, this will be configured properly later
+logger = logging.getLogger('web_player')
+
 
 import os
 import logging
@@ -175,7 +178,6 @@ if 'set_db_config' in dir():
         set_db_config(DB_PATH, DB_IN_MEMORY, DB_CACHE_SIZE_MB)
         logger.info(f"Database configuration set: in_memory={DB_IN_MEMORY}, cache_size={DB_CACHE_SIZE_MB}MB")
     except Exception as e:
-        logger = logging.getLogger('web_player')
         logger.error(f"Error setting database configuration: {e}")
 
 # Define a location for lock files
@@ -423,7 +425,7 @@ def throttled_save_to_disk(force=False):
         # Use your existing function from db_operations
         success = save_memory_db_to_disk(main_thread_conn, DB_PATH)
         
-        if success:
+        if (success):
             LAST_SAVE_TIME = current_time
             logger.info("Throttled database save completed successfully")
         else:
@@ -451,7 +453,7 @@ def db_write_worker():
                 # Get next write operation with timeout
                 operation = DB_WRITE_QUEUE.get(timeout=5)
                 
-                if operation is None:  # None is a signal to stop
+                if (operation is None):  # None is a signal to stop
                     logger.info("Received stop signal for DB write worker")
                     break
                     
@@ -1292,7 +1294,7 @@ def get_album_tracks(album):
     try:
         artist = request.args.get('artist')
         
-        if artist:
+        if (artist):
             tracks = execute_query_dict(
                 """SELECT id, file_path, title, artist, album, album_art_url, duration
                    FROM tracks
@@ -3292,6 +3294,15 @@ def db_diagnostic():
         logger.error(f"Error in db diagnostic: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/explore')
+def explore_view():
+    """Handle explore view requests (playlists, discover, etc)"""
+    logger.info("Explore view requested")
+    
+    # Return the main index page with view=explore parameter
+    # The frontend JavaScript will handle showing the right content
+    return render_template('index.html', view='explore')
+
 @app.route('/api/analysis/database-status', methods=['GET'])
 def get_analysis_database_status():
     """Get database analysis status (how many tracks are analyzed vs pending)"""
@@ -3326,6 +3337,111 @@ def get_analysis_database_status():
             'status': 'error',
             'error': str(e)
         }), 500
+
+
+@app.route('/api/discover')
+def discover_tracks():
+    """Return a selection of tracks for the Discover view"""
+    try:
+        logger.info("API: Discover tracks requested")
+        
+        # Initialize an empty list for each category
+        dance_tracks = []
+        recent_tracks = []
+        random_tracks = []
+        
+        # Try to get some tracks with high danceability if audio features exist
+        try:
+            dance_tracks = execute_query_dict(
+                """
+                SELECT t.* FROM tracks t
+                JOIN audio_features af ON t.id = af.track_id
+                WHERE af.danceability > 0.7
+                ORDER BY RANDOM()
+                LIMIT 5
+                """
+            ) or []
+            logger.debug(f"Retrieved {len(dance_tracks)} dance tracks")
+        except Exception as dance_error:
+            logger.warning(f"Failed to get dance tracks: {dance_error}")
+            # Continue execution even if this query fails
+        
+        # Get some recently added tracks
+        try:
+            recent_tracks = execute_query_dict(
+                """
+                SELECT * FROM tracks
+                ORDER BY date_added DESC
+                LIMIT 10
+                """
+            ) or []
+            logger.debug(f"Retrieved {len(recent_tracks)} recent tracks")
+        except Exception as recent_error:
+            logger.warning(f"Failed to get recent tracks: {recent_error}")
+        
+        # Get a few random tracks for variety
+        try:
+            random_tracks = execute_query_dict(
+                """
+                SELECT * FROM tracks
+                ORDER BY RANDOM()
+                LIMIT 15
+                """
+            ) or []
+            logger.debug(f"Retrieved {len(random_tracks)} random tracks")
+        except Exception as random_error:
+            logger.warning(f"Failed to get random tracks: {random_error}")
+        
+        # Combine all tracks and remove duplicates by ID
+        all_tracks = {}
+        for track in dance_tracks + recent_tracks + random_tracks:
+            if track and 'id' in track and track['id'] not in all_tracks:
+                # Ensure all tracks have the expected fields
+                processed_track = {
+                    'id': track.get('id'),
+                    'title': track.get('title', 'Unknown Title'),
+                    'artist': track.get('artist', 'Unknown Artist'),
+                    'album': track.get('album', 'Unknown Album'),
+                    'album_art_url': track.get('album_art_url'),
+                    'file_path': track.get('file_path', ''),
+                    'duration': track.get('duration', 0),
+                    'liked': bool(track.get('liked', False))
+                }
+                all_tracks[track['id']] = processed_track
+        
+        discover_tracks = list(all_tracks.values())
+        
+        logger.info(f"API: Returning {len(discover_tracks)} tracks for discover view")
+        return jsonify(discover_tracks)
+    except Exception as e:
+        logger.error(f"API: Error in discover tracks: {e}", exc_info=True)
+        return jsonify([])  # Return empty array instead of error for better UI handling
+
+@app.route('/settings')
+def settings():
+    """Settings page for the web player"""
+    logger.info("Settings page requested")
+    
+    # Get current settings from config file
+    try:
+        library_path = config.get('library', 'path', fallback='')
+        music_directory = config.get('library', 'music_directory', fallback='')
+        rescan_interval = config.get('library', 'rescan_interval', fallback='60')
+        debug_mode = config.get('app', 'debug', fallback='False') == 'True'
+        log_level = config.get('app', 'log_level', fallback='INFO')
+        
+        settings_data = {
+            'library_path': library_path,
+            'music_directory': music_directory,
+            'rescan_interval': rescan_interval,
+            'debug_mode': debug_mode,
+            'log_level': log_level
+        }
+        
+        return render_template('settings.html', settings=settings_data)
+    except Exception as e:
+        logger.error(f"Error loading settings page: {e}", exc_info=True)
+        return render_template('settings.html', settings={}, error=str(e))
 
 # Updated run_server function that initializes scheduler and runs startup actions
 def run_server():
