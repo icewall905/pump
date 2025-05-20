@@ -366,6 +366,127 @@ if [ ! -f "logging_config.py" ]; then
     # The code to create logging_config.py is already in your script
 fi
 
+# Function to install Docker on various systems
+install_docker() {
+    print_message "yellow" "Installing Docker..."
+    
+    # Check OS type
+    if command -v apt-get &> /dev/null; then
+        # Debian/Ubuntu
+        print_message "green" "Detected Debian/Ubuntu system"
+        sudo apt-get update
+        sudo apt-get install -y ca-certificates curl gnupg
+        
+        # Add Docker's official GPG key
+        sudo install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        sudo chmod a+r /etc/apt/keyrings/docker.gpg
+        
+        # Add Docker repository
+        echo \
+        "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+        $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+        sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        
+        # Install Docker packages
+        sudo apt-get update
+        sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        
+        # Add current user to docker group to avoid using sudo
+        sudo usermod -aG docker $USER
+        print_message "yellow" "User added to docker group. You might need to log out and back in for this to take effect."
+    
+    elif command -v dnf &> /dev/null; then
+        # Fedora/RHEL/CentOS
+        print_message "green" "Detected Fedora/RHEL/CentOS system"
+        sudo dnf -y install dnf-plugins-core
+        sudo dnf config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
+        sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        
+        # Start and enable Docker service
+        sudo systemctl start docker
+        sudo systemctl enable docker
+        
+        # Add current user to docker group
+        sudo usermod -aG docker $USER
+        print_message "yellow" "User added to docker group. You might need to log out and back in for this to take effect."
+    
+    elif command -v yum &> /dev/null; then
+        # Older RHEL/CentOS
+        print_message "green" "Detected older RHEL/CentOS system"
+        sudo yum install -y yum-utils
+        sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+        sudo yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        
+        # Start and enable Docker service
+        sudo systemctl start docker
+        sudo systemctl enable docker
+        
+        # Add current user to docker group
+        sudo usermod -aG docker $USER
+        print_message "yellow" "User added to docker group. You might need to log out and back in for this to take effect."
+    
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        # MacOS
+        print_message "green" "Detected MacOS system"
+        if command -v brew &> /dev/null; then
+            brew install --cask docker
+            print_message "yellow" "Docker Desktop installed. Please start Docker Desktop from your Applications folder."
+        else
+            print_message "red" "Homebrew not found. Please install Docker Desktop manually from https://www.docker.com/products/docker-desktop"
+        fi
+    
+    else
+        print_message "red" "Unsupported operating system. Please install Docker manually from https://docs.docker.com/get-docker/"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Function to install Docker Compose if needed
+install_docker_compose() {
+    print_message "yellow" "Installing Docker Compose..."
+    
+    # For systems that don't have the Docker Compose plugin
+    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            if command -v brew &> /dev/null; then
+                brew install docker-compose
+            else
+                print_message "red" "Homebrew not found. Please install Docker Compose manually."
+                return 1
+            fi
+        else
+            # Linux systems
+            COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d\" -f4)
+            sudo curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+            print_message "green" "Docker Compose installed successfully."
+        fi
+    else
+        print_message "green" "Docker Compose already installed."
+    fi
+    
+    return 0
+}
+
+# Check if Docker is installed, install if not
+print_message "green" "Checking for Docker installation..."
+if ! command -v docker &> /dev/null; then
+    print_message "yellow" "Docker not found. Installing Docker..."
+    install_docker
+    
+    # Check if Docker was successfully installed
+    if ! command -v docker &> /dev/null; then
+        print_message "red" "Failed to install Docker. Please install it manually."
+        print_message "yellow" "Visit https://docs.docker.com/get-docker/ for installation instructions."
+        exit 1
+    fi
+else
+    print_message "green" "Docker is already installed."
+fi
+
 # Check which docker compose command is available
 DOCKER_COMPOSE_CMD="docker compose"
 if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; then
@@ -373,8 +494,18 @@ if ! command -v docker &> /dev/null || ! docker compose version &> /dev/null; th
         print_message "yellow" "Using docker-compose instead of docker compose"
         DOCKER_COMPOSE_CMD="docker-compose"
     else
-        print_message "red" "Neither docker compose nor docker-compose found. Please install Docker."
-        exit 1
+        print_message "yellow" "Docker Compose not found. Installing Docker Compose..."
+        install_docker_compose
+        
+        # Check again which variant is available after installation
+        if docker compose version &> /dev/null; then
+            DOCKER_COMPOSE_CMD="docker compose"
+        elif command -v docker-compose &> /dev/null; then
+            DOCKER_COMPOSE_CMD="docker-compose"
+        else
+            print_message "red" "Failed to install Docker Compose. Please install it manually."
+            exit 1
+        fi
     fi
 fi
 
