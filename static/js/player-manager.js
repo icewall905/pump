@@ -95,16 +95,9 @@ class PlayerManager {
                 this.currentTrack = data;
                 this.currentTrackId = trackId;
                 
-                // FIXED: Use the correct streaming endpoint format based on API
-                // Try the ID-based endpoint first, and if file_path exists, use that as fallback
-                let streamUrl;
-                if (data.file_path) {
-                    // Use file path-based streaming if available
-                    streamUrl = `/api/stream?path=${encodeURIComponent(data.file_path)}`;
-                } else {
-                    // Otherwise use ID-based streaming
-                    streamUrl = `/stream/${trackId}`;
-                }
+                // FIXED: Always use the ID-based streaming endpoint for consistency
+                const streamUrl = `/stream/${trackId}`;
+                // Note: Removed the file_path based streaming to ensure consistency
                 
                 console.log(`Using stream URL: ${streamUrl}`);
                 

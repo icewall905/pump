@@ -291,7 +291,7 @@ function startQuickScan() {
         console.log('Path saved response:', data);
         
         // Now initiate the scan with explicit path parameter
-        return fetch('/scan_library', {
+        return fetch('/api/quick-scan', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -1250,7 +1250,7 @@ document.addEventListener('DOMContentLoaded', function() {
             this.textContent = 'Scanning...';
             
             // Make AJAX request to scan endpoint
-            fetch('/scan_library', {
+            fetch('/api/quick-scan', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

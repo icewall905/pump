@@ -672,7 +672,7 @@ def index():
     view = request.args.get('view', '')
     return render_template('index.html', view=view)
 
-@app.route('/search')  # Missing route decorator
+@app.route('/search')
 def search():
     """Search for tracks in the database"""
     query = request.args.get('query', '')
@@ -681,17 +681,14 @@ def search():
         return jsonify([])
     
     try:
-        # Use execute_query_dict instead of direct connection handling
+        # Update for PostgreSQL compatibility
         tracks = execute_query_dict(
-            DB_PATH,
-            '''SELECT id, file_path, title, artist, album, album_art_url, duration
-               FROM audio_files 
-               WHERE title LIKE ? OR artist LIKE ? OR album LIKE ? 
+            """SELECT id, file_path, title, artist, album, album_art_url, duration, liked
+               FROM tracks 
+               WHERE title ILIKE %s OR artist ILIKE %s OR album ILIKE %s 
                ORDER BY artist, album, title
-               LIMIT ?''',
-            (f'%{query}%', f'%{query}%', f'%{query}%', MAX_SEARCH_RESULTS),
-            in_memory=DB_IN_MEMORY,
-            cache_size_mb=DB_CACHE_SIZE_MB
+               LIMIT %s""",
+            (f'%{query}%', f'%{query}%', f'%{query}%', MAX_SEARCH_RESULTS)
         )
         
         logger.info(f"Search for '{query}' returned {len(tracks)} results")
@@ -1940,8 +1937,9 @@ def download_logs():
         return jsonify({"error": "Failed to download logs"}), 500
 
 
-@app.route('/scan_library', methods=['POST'])
-def scan_library_endpoint():
+@app.route('/api/quick-scan', methods=['POST'])
+def quick_scan_api():
+    """API endpoint for quick scanning music library"""
     try:
         # Add more verbose debugging
         logger.debug(f"Scan library request received: {request.get_data(as_text=True)}")
@@ -1985,18 +1983,39 @@ def scan_library_endpoint():
             recursive = recursive_param.lower() in ('true', '1', 't', 'y', 'yes')
         else:
             recursive = bool(recursive_param)
-        
-        # Start the scan process
-        analyzer = MusicAnalyzer()
-        result = analyzer.scan_library(folder_path, recursive)
-        
-        # Return success response
-        return jsonify({
-            'status': 'success',
-            'message': f"Scan complete: {result.get('files_processed', 0)} files processed",
-            'files_processed': result.get('files_processed', 0),
-            'tracks_added': result.get('tracks_added', 0)
-        })
+            
+        # Don't start if already running
+        if QUICK_SCAN_STATUS['running']:
+            return jsonify({
+                "status": "error", 
+                "message": "A scan is already in progress"
+            }), 409
+            
+        # Start quick scan in a background thread if available
+        if 'run_quick_scan' in globals():
+            thread = threading.Thread(
+                target=run_quick_scan,
+                args=(folder_path, recursive)
+            )
+            thread.daemon = True
+            thread.start()
+            
+            return jsonify({
+                'status': 'success',
+                'message': "Quick scan started in background"
+            })
+        else:
+            # Fall back to synchronous scan if run_quick_scan is not available
+            analyzer = MusicAnalyzer()
+            result = analyzer.scan_library(folder_path, recursive)
+            
+            # Return success response
+            return jsonify({
+                'status': 'success',
+                'message': f"Scan complete: {result.get('files_processed', 0)} files processed",
+                'files_processed': result.get('files_processed', 0),
+                'tracks_added': result.get('tracks_added', 0)
+            })
         
     except Exception as e:
         logger.error(f"Error scanning library: {e}")
