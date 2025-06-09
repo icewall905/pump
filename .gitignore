@@ -82,3 +82,6 @@ album_art_cache/
 lastfm_cache/
 spotify_cache/
 cache/
+
+# Documentation (sensitive instructions)
+notes/instructions.md
